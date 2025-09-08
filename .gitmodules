@@ -1,0 +1,6 @@
+[submodule "externals/pydramsim3"]
+	path = externals/pydramsim3
+	url = https://github.com/SKKU-COMPASSLAB/PyDRAMsim3.git
+[submodule "externals/pybooksim2"]
+	path = externals/pybooksim2
+	url = https://github.com/SKKU-COMPASSLAB/PyBooksim2.git
