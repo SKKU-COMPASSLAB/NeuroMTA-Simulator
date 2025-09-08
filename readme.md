@@ -12,6 +12,11 @@ NeuroMTA is a highly programmable cycle-level multi-tile deep learning accelerat
 conda create -n neuromta python=3.11    # python >= 3.11
 conda activate neuromta
 pip install -r requirements.txt
+
+# install pytorch with CPU backend ()
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# install NeuroMTA simulator
 pip install -e .
 ```
 
@@ -26,10 +31,10 @@ pip install cython  # extension modules are built upon Cython!
 # Install PyBookSim (python extension of booksim2)
 sudo apt update
 sudo apt install flex bison
-pip install ./externals/booksim2    # pybooksim2 (cycle-level NoC simulator)
+pip install ./externals/pybooksim2    # pybooksim2 (cycle-level NoC simulator)
 
 # Install PyDRAMSim (python extension of dramsim3)
-pip install ./externals/dramsim2    # pydramsim3 (cycle-level DRAM simulator)
+pip install ./externals/pydramsim3    # pydramsim3 (cycle-level DRAM simulator)
 ```
 
 ## Deep Dive into NeuroMTA
