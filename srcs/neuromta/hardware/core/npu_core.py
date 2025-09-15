@@ -41,57 +41,39 @@ class NPUCore(Core):
         )
 
     #############################################################
-    # Semaphore Management (Inter-Core Control Mechanism)
+    # Variable Management
     #############################################################
     
     @core_command_method
-    def sem_create(self, ptr: Pointer, initial_value: int=0):
+    def var_allocate(self, ptr: Pointer, initial_value: int=0):
         self.mem_handle.allocate_var_ptr(var_size=4, initial_value=initial_value, channel_id=0, dst_ptr=ptr)
     
     @core_command_method
-    def sem_remove(self, ptr: Pointer):
+    def var_deallocate(self, ptr: Pointer):
         self.mem_handle.deallocate_ptr(ptr)
         ptr.initialize()
         
     @core_conditional_command_method
-    def sem_compare_and_set(self, ptr: Pointer, cmp_value: int, new_value: int):
-        sem: Variable = self.mem_handle.get_data_element(ptr)
-        if sem.content == cmp_value:
-            sem.content = new_value
+    def var_compare_and_swap(self, ptr: Pointer, cmp_value: int | Pointer, new_value: int | Pointer):
+        if isinstance(cmp_value, Pointer):
+            cmp_value = self.mem_handle.get_data_element(cmp_value).content
+        if isinstance(new_value, Pointer):
+            new_value = self.mem_handle.get_data_element(new_value).content
+
+        var: Variable = self.mem_handle.get_data_element(ptr)
+        if var.content == cmp_value:
+            var.content = new_value
             return True
         else:
             return False
         
-    @core_command_method
-    def sem_set_value(self, ptr: Pointer, value: int):
-        self.mem_handle.set_content(ptr, value)
-            
-    # @core_command_method
-    # def sem_set_value(self, ptr: Pointer, value: int):
-    #     self.mem_handle.set_content(ptr, value)
-
-    # @core_command_method
-    # def sem_increase(self, ptr: Pointer, value: int=1):
-    #     sem: Variable = self.mem_handle.get_data_element(ptr)
-    #     sem.content += value
-
-    # @core_command_method
-    # def sem_decrease(self, ptr: Pointer, value: int=1):
-    #     sem: Variable = self.mem_handle.get_data_element(ptr)
-    #     sem.content -= value
-
-    # @core_conditional_command_method
-    # def sem_wait(self, ptr: Pointer, value: int=0):
-    #     sem: Variable = self.mem_handle.get_data_element(ptr)
-    #     return sem.content == value
-
     #############################################################
     # Circular Buffer Management (Intra-Core Control Management)
     #############################################################
 
     @core_conditional_command_method
     def cb_reserve_back(self, ref: Reference, n_pages: int):
-        handle: CircularBufferHandle = ref.handle
+        handle: CircularBufferHandle = ref.raw_handle
         if not handle.check_vacancy(n_pages):
             return False
         handle.allocate_cb_space(n_pages)
@@ -99,17 +81,17 @@ class NPUCore(Core):
         
     @core_command_method
     def cb_push_back(self, ref: Reference, n_pages: int):
-        handle: CircularBufferHandle = ref.handle
+        handle: CircularBufferHandle = ref.raw_handle
         handle.occupy_cb_space(n_pages)
         
     @core_conditional_command_method
     def cb_wait_front(self, ref: Reference, n_pages: int):
-        handle: CircularBufferHandle = ref.handle
+        handle: CircularBufferHandle = ref.raw_handle
         return handle.check_occupancy(n_pages)
     
     @core_command_method
     def cb_pop_front(self, ref: Reference, n_pages: int):
-        handle: CircularBufferHandle = ref.handle
+        handle: CircularBufferHandle = ref.raw_handle
         handle.deallocate_cb_space(n_pages)
         
     #############################################################
@@ -190,14 +172,12 @@ class NPUCore(Core):
         ).with_args(
             ptr=src_ptr,
             container=container
+        ).with_callbacks(
+            self.mem_load_page(dst_ptr, container)  # load page from container
         )
         
-        # store page to container
         self.async_rpc_send_req_msg(mem_reader_msg)
-        self.async_rpc_wait_rsp_msg(mem_reader_msg)
-
-        # load page from container
-        self.mem_load_page(dst_ptr, container)
+        
             
     @core_kernel_method
     def async_page_write(self, dst_ptr: Pointer, src_ptr: Pointer):
@@ -215,12 +195,8 @@ class NPUCore(Core):
             container=container
         )
         
-        # store page to container
         self.mem_store_page(src_ptr, container)
-        
-        # load page from container
         self.async_rpc_send_req_msg(mem_writer_msg)
-        self.async_rpc_wait_rsp_msg(mem_writer_msg)
             
     @core_kernel_method
     def async_buffer_read(self, dst_ref: Reference, src_ref: Reference):
@@ -269,6 +245,8 @@ class NPUCore(Core):
         ).with_args(
             ptr=src_ptr,
             container=container
+        ).with_callbacks(
+            self.mem_load_page(dst_ptr, container)  # load page from container
         )
         
         # NOTE: The code below assumes that the memory access and NoC data transfer is done sequentially without any
@@ -276,16 +254,8 @@ class NPUCore(Core):
         # data movement all the way through core->router->core.
         # TODO: Check whether the latency model implemented below is accurate.
         
-        # store page to container
         self.async_rpc_send_req_msg(mem_reader_msg)
-        self.async_rpc_wait_rsp_msg(mem_reader_msg)
-        
-        # transfer page through NoC
         self.async_rpc_send_req_msg(noc_trans_msg)
-        self.async_rpc_wait_rsp_msg(noc_trans_msg)
-        
-        # load page from container
-        self.mem_load_page(dst_ptr, container)
             
     @core_kernel_method
     def async_noc_page_write(self, dst_ptr: Pointer, src_ptr: Pointer):
@@ -319,16 +289,10 @@ class NPUCore(Core):
         # data movement all the way through core->router->core.
         # TODO: Check whether the latency model implemented below is accurate.
         
-        # store page to container
         self.mem_store_page(src_ptr, container)
         
-        # transfer page through NoC
         self.async_rpc_send_req_msg(noc_trans_msg)
-        self.async_rpc_wait_rsp_msg(noc_trans_msg)
-        
-        # load page from container
         self.async_rpc_send_req_msg(mem_writer_msg)
-        self.async_rpc_wait_rsp_msg(mem_writer_msg)
             
             
     @core_kernel_method
@@ -421,7 +385,6 @@ class NPUCore(Core):
         for i in range(burst_len):
             st = ptr_offset + i * self.vpu_context.vlen
             ed = ptr_offset + (i + 1) * self.vpu_context.vlen
-            # vreg_data = ptr.content_view(shape=(-1,), dtype=self.vpu_context.vdtype)[st:ed]
             vreg_data = self.mem_handle.get_content(ptr, shape=(-1,), dtype=self.vpu_context.vdtype)[st:ed]
             self.vpu_context.set_vector_reg(vreg_idx + i, vreg_data)
         
@@ -433,7 +396,6 @@ class NPUCore(Core):
         for i in range(burst_len):
             offset = (ptr_offset + i * self.vpu_context.vlen) * self.vpu_context.vdtype.itemsize
             vreg_data = self.vpu_context.get_vector_reg(vreg_idx + i)
-            # ptr.set_partial_page_content(vreg_data, offset=offset)
             self.mem_handle.set_content(ptr, vreg_data, offset=offset)
 
     @core_command_method

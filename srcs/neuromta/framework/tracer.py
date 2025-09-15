@@ -1,18 +1,26 @@
+import os
+import shutil
 from typing import Any
 
 from neuromta.framework.core import *
+from neuromta.framework.device import Device
 
 
 __all__ = [
     "TraceEntry",
     "Tracer",
+    "TracerHub",
 ]
+
+
+NEUROMTA_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+DEFAULT_TRACE_DIR = os.path.join(NEUROMTA_ROOT_DIR, ".logs", "traces")
 
 
 class TraceEntry:
     def __init__(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
         self.core_id = TraceEntry.convert_valid_core_id(core.core_id)
-        self.kernel_id = kernel.kernel_id_full
+        self.kernel_id = kernel.callstack
         self.cmd_id = cmd.cmd_id
         self.issue_time = issue_time
         self.commit_time = commit_time
@@ -20,7 +28,8 @@ class TraceEntry:
     @staticmethod
     def convert_valid_core_id(core_id: Any) -> str:
         core_id: str = core_id.__str__()
-        core_id = core_id.replace("/", "_").replace("\\", "_").replace(" ", "").replace(",", "_").replace("(", "").replace(")", "")
+        core_id = core_id.replace("/", "_").replace("\\", "_").replace(" ", "").replace(",", "_").replace("(", "").replace(")", ""
+                        ).replace("::", "_").replace(":", "_").replace("*", "ptr").replace("?", "q").replace("<", "_").replace(">", "_")
         return core_id
         
     @staticmethod
@@ -76,3 +85,50 @@ class Tracer:
     @property
     def is_empty(self) -> bool:
         return len(self._trace_entries) == 0
+    
+
+class TracerHub:
+    def __init__(self):
+        self._tracers: dict[str, Tracer] = {}
+        
+    @classmethod
+    def create_tracer_key(cls, device_id: str, core: Core) -> str:
+        return f"{device_id}_{type(core).__name__}_CORE{core.core_id}"
+    
+    def register_tracer(self, tracer_id: str, tracer: Tracer):
+        if tracer_id in self._tracers.keys():
+            raise Exception(f"[ERROR] Tracer with ID '{tracer_id}' already exists. Please use a unique ID.")
+        
+        self._tracers[tracer_id] = tracer
+        
+    def unregister_tracer(self, tracer_id: str):
+        if tracer_id not in self._tracers.keys():
+            raise Exception(f"[ERROR] Tracer with ID '{tracer_id}' does not exist.")
+        
+        del self._tracers[tracer_id]
+            
+    # def register_core(self, device_id: str, core: Core):
+    #     tracer = Tracer()
+    #     tracer.register_core(core)
+
+    #     self._tracers[TracerHub.create_tracer_key(device_id, core)] = tracer
+
+    # def unregister_core(self, device_id: str, core: Core):
+    #     tracer = self._tracers.pop(TracerHub.create_tracer_key(device_id, core), None)
+
+    #     if tracer is None:
+    #         raise Exception(f"[ERROR] Core with ID '{core.core_id}' in Device '{device_id}' is not registered in the TracerHub.")
+        
+    #     tracer.unregister_core(core)
+        
+    def save_traces(self, save_trace_dir: str = DEFAULT_TRACE_DIR):
+        if os.path.isdir(save_trace_dir):
+            shutil.rmtree(save_trace_dir)  # Remove existing directory
+        os.makedirs(save_trace_dir, exist_ok=True)
+        
+        for tracer_id, tracer in self._tracers.items():
+            if not tracer.is_empty:
+                trace_path = os.path.join(save_trace_dir, f"{tracer_id}.csv")
+                tracer.save_traces_as_file(trace_path)
+
+                print(f"[INFO] Trace for core {tracer_id} saved to \"{trace_path}\"")

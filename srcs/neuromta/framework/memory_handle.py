@@ -156,7 +156,7 @@ class Reference:
         self._item = item
         
     @property
-    def handle(self) -> 'BufferHandle':
+    def raw_handle(self) -> 'BufferHandle':
         return self._handle
         
     def __getitem__(self, new_item) -> 'Reference':

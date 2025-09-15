@@ -8,7 +8,7 @@ from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentD
 
 
 FILENAME = os.path.splitext(os.path.basename(__file__))[0]
-TRACE_DIR = os.path.join(os.path.dirname(__file__), ".logs", FILENAME)
+TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces", FILENAME)
 
 
 if __name__ == "__main__":
@@ -17,6 +17,12 @@ if __name__ == "__main__":
     device = TenstorrentDevice(**config)
     device.initialize()
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
+    
+    tracer_hub = TracerHub()
+    for core_id, core in device.cores.items():
+        tracer = Tracer()
+        tracer.register_core(core)
+        tracer_hub.register_tracer(f"{type(core).__name__}_{core.core_id}", tracer)
     
     M = 32
     N = 32
@@ -80,8 +86,10 @@ if __name__ == "__main__":
     device.npu_cores[0].dispatch_main_kernel("compute", kernel=kernel)
 
     st = time.time()
-    device.run_kernels(verbose=True, max_steps=-1, save_trace=True, save_trace_dir=TRACE_DIR)
+    device.run_kernels(verbose=True)
     ed = time.time()
+    
+    tracer_hub.save_traces(TRACE_DIR)
     
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

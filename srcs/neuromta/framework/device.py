@@ -5,7 +5,7 @@ from typing import Sequence, Callable  #, Any
 
 from neuromta.framework.core import Core, Kernel, Command, RPCMessage
 from neuromta.framework.companion import CompanionCore
-from neuromta.framework.tracer import Tracer, TraceEntry
+# from neuromta.framework.tracer import Tracer, TraceEntry
 
 
 __all__ = [
@@ -13,15 +13,12 @@ __all__ = [
 ]
 
 
-NEUROMTA_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
-DEFAULT_TRACE_DIR = os.path.join(NEUROMTA_ROOT_DIR, ".logs", "traces")
-
-
 class Device:
     def __init__(self):
         self._cores: dict[str, Core] = None
         
         self._verbose:      bool = False
+        self._verbose_hook_ids: dict[str, str] = {}
 
         self._rpc_req_send_inbox: dict[str, list[RPCMessage]] = {}
         self._rpc_rsp_send_inbox: dict[str, list[RPCMessage]] = {}
@@ -48,12 +45,14 @@ class Device:
             if core.core_id in self._cores.keys():
                 raise Exception(f"[ERROR] Core with ID '{core.core_id}' already exists. Please use a unique core ID.")
             self._cores[core.core_id] = core
-            core.register_command_debug_hook(self.default_command_debug_hook)
 
-    def initialize(self, create_trace: bool = None):
+    def initialize(self):
         self._cores = {}
         
         for name, core in self.__dict__.items():
+            if name == "_cores":
+                continue    # skip internal members
+            
             if isinstance(core, (Core, Sequence)):
                 self._register_core(name, core)
 
@@ -66,36 +65,47 @@ class Device:
         
         return self
     
-    def default_command_debug_hook(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
-        if self._verbose:
-            sys.stdout.write(f"[DEBUG] {issue_time:<4d} - {commit_time:<4d} | {core.core_id.__str__():<10s} | {kernel.kernel_id_full:<130s} | command: {cmd.cmd_id}\n")
+    def _verbose_command_debug_hook(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
+        sys.stdout.write(f"[DEBUG] {issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {kernel.callstack:<80s} | command: {cmd.cmd_id}\n")
+        
+    def run_single_step(self, cycle_resolution: int = 1):
+        if not self.is_initialized:
+            raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
+        
+        remaining_cycles = None
             
+        for core_id, core in self.cores.items():
+            c = core.get_remaining_cycles()
+            
+            if remaining_cycles is None:
+                remaining_cycles = c
+            elif c is not None:
+                remaining_cycles = min(remaining_cycles, c)
+                
+        for core_id, core in self.cores.items():
+            core.rpc_update_routine()
+
+        if remaining_cycles == 0 or remaining_cycles is None:
+            remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
+                
+            if remaining_cycles == 0 or remaining_cycles is None:
+                remaining_cycles = cycle_resolution
+        else:
+            self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
+
+        for core_id, core in self.cores.items():
+            core.update_cycle_time(cycle_time=remaining_cycles)
+
     def run_kernels(
         self, 
         cycle_resolution:   int  = 1,                   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
         verbose:            bool = False,               # whether to print verbose debug information
         max_steps:          int  = -1,                  # the maximum number of steps to run
-        save_trace:         bool = False,               # whether to save the trace
-        save_trace_dir:     str  = DEFAULT_TRACE_DIR    # the directory to save the trace
     ):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
-        
-        if save_trace:
-            if os.path.isdir(save_trace_dir):
-                shutil.rmtree(save_trace_dir)  # Remove existing directory
-            os.makedirs(save_trace_dir, exist_ok=True)
-            
-            tracers: dict[str, Tracer] = {}
-            
-            for core_id, core in self._cores.items():
-                tracer = Tracer()
-                tracer.register_core(core)
-                tracers[core_id] = tracer
 
-        self._verbose = verbose
-
-        core_ids: list[str] = list(self._cores.keys())
+        self.verbose = verbose
         
         step_cnt = 0
 
@@ -105,38 +115,7 @@ class Device:
                 print(f"[INFO] Reached maximum steps: {max_steps}. Stopping simulation.")
                 break
             
-            remaining_cycles = None
-            
-            for core_id in core_ids:
-                c = self._cores[core_id].get_remaining_cycles()
-                
-                if remaining_cycles is None:
-                    remaining_cycles = c
-                elif c is not None:
-                    remaining_cycles = min(remaining_cycles, c)
-                    
-            for core_id in core_ids:
-                self._cores[core_id].rpc_update_routine()
-                    
-            if remaining_cycles == 0 or remaining_cycles is None:
-                remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
-                    
-                if remaining_cycles == 0 or remaining_cycles is None:
-                    remaining_cycles = cycle_resolution
-            else:
-                self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
-            
-            for core_id in core_ids:
-                self._cores[core_id].update_cycle_time(cycle_time=remaining_cycles)
-        
-        if save_trace:
-            for core_id, tracer in tracers.items():
-                if not tracer.is_empty:
-                    core_id_str_expr = TraceEntry.convert_valid_core_id(core_id)
-                    trace_path = os.path.join(save_trace_dir, f"{core_id_str_expr}.csv")
-                    tracer.save_traces_as_file(trace_path)
-
-                    print(f"[INFO] Trace for core {core_id} saved to \"{trace_path}\"")
+            self.run_single_step(cycle_resolution=cycle_resolution)
 
     def register_command_debug_hook(self, hook: Callable):
         if not self.is_initialized:
@@ -149,6 +128,23 @@ class Device:
     def verbose(self) -> bool:
         return self._verbose
     
+    @verbose.setter
+    def verbose(self, v: bool):
+        if not self.is_initialized:
+            raise Exception("[ERROR] Device is not initialized. Please call initialize() before setting verbose option.")
+        
+        for core in self._cores.values():
+            hook_id = self._verbose_hook_ids.get(core.core_id, None)
+            if hook_id:
+                core.unregister_command_debug_hook(hook_id)
+        
+        self._verbose = v
+        
+        if self._verbose:
+            for core in self._cores.values():
+                hook_id = core.register_command_debug_hook(self._verbose_command_debug_hook)
+                self._verbose_hook_ids[core.core_id] = hook_id
+
     @property
     def timestamp(self) -> int:
         t = [core.timestamp for core in self._cores.values()]
@@ -161,3 +157,7 @@ class Device:
     @property
     def is_idle(self) -> bool:
         return all(core.is_idle for core in self._cores.values())
+    
+    @property
+    def cores(self) -> dict[str, Core]:
+        return self._cores

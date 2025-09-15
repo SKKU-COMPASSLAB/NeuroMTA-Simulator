@@ -8,14 +8,16 @@ from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentD
 
 
 FILENAME = os.path.splitext(os.path.basename(__file__))[0]
-TRACE_DIR = os.path.join(os.path.dirname(__file__), ".logs", FILENAME)
+TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces", FILENAME)
 
 
 @core_kernel_method
 def kernel_main(core: NPUCore, main_in_ptr: Reference, l1_ptr: Reference, main_out_ptr: Reference, n_pages: int):
     for i in range(n_pages):
         core.async_noc_buffer_read(l1_ptr[0], main_in_ptr[i])
+        core.async_rpc_wait_all()
         core.async_noc_buffer_write(main_out_ptr[i], l1_ptr[0])
+        core.async_rpc_wait_all()
 
 
 if __name__ == "__main__":
@@ -24,6 +26,12 @@ if __name__ == "__main__":
     device = TenstorrentDevice(**config)
     device.initialize()
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
+    
+    tracer_hub = TracerHub()
+    for core_id, core in device.cores.items():
+        tracer = Tracer()
+        tracer.register_core(core)
+        tracer_hub.register_tracer(f"{type(core).__name__}_{core.core_id}", tracer)
     
     page_size = 32 * 32 * 4
     n_pages = 4
@@ -43,8 +51,10 @@ if __name__ == "__main__":
     npu_core.dispatch_main_kernel("compute", kernel=kernel)
     
     st = time.time()
-    device.run_kernels(verbose=True, max_steps=-1, save_trace=True, save_trace_dir=TRACE_DIR)
+    device.run_kernels(verbose=True)
     ed = time.time()
+    
+    tracer_hub.save_traces(TRACE_DIR)
     
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

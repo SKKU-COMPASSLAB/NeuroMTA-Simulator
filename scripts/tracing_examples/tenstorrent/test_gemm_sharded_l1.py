@@ -8,7 +8,7 @@ from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentD
 
 
 FILENAME = os.path.splitext(os.path.basename(__file__))[0]
-TRACE_DIR = os.path.join(os.path.dirname(__file__), ".logs", FILENAME)
+TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces", FILENAME)
 
 
 @core_kernel_method
@@ -24,20 +24,22 @@ def read_kernel(
     cb_psum_ptr: Reference,
     
     n_seq_pages: int,   # number of sequential pages (especially for IFM and WGT)
-):
-    # load psum to the l1 circular buffer
-    core.cb_reserve_back(cb_psum_ptr, 1)
-    core.async_noc_buffer_read(cb_psum_ptr[0], bf_psum_ptr[0])
-    core.cb_push_back(cb_psum_ptr, 1)
-    
+):  
     # load ifm and wgt to the l1 circular buffer
     for i in range(n_seq_pages):
+        if i == 0:
+            core.cb_reserve_back(cb_psum_ptr, 1)
         core.cb_reserve_back(cb_ifm_ptr, 1)
         core.cb_reserve_back(cb_wgt_ptr, 1)
         
+        if i == 0:
+            core.async_noc_buffer_read(cb_psum_ptr[0], bf_psum_ptr[0])
         core.async_noc_buffer_read(cb_ifm_ptr[0], bf_ifm_ptr[i])
         core.async_noc_buffer_read(cb_wgt_ptr[0], bf_wgt_ptr[i])
+        core.async_rpc_wait_all()
         
+        if i == 0:
+            core.cb_push_back(cb_psum_ptr, 1)
         core.cb_push_back(cb_ifm_ptr, 1)
         core.cb_push_back(cb_wgt_ptr, 1)
         
@@ -89,6 +91,7 @@ def write_kernel(
 ):
     core.cb_wait_front(cb_ofm_ptr, 1)
     core.async_noc_buffer_write(bf_ofm_ptr[0], cb_ofm_ptr[0])
+    core.async_rpc_wait_all()
     core.cb_pop_front(cb_ofm_ptr, 1)
 
 
@@ -100,6 +103,12 @@ if __name__ == "__main__":
     device = TenstorrentDevice(**config)
     device.initialize()
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
+    
+    tracer_hub = TracerHub()
+    for core_id, core in device.cores.items():
+        tracer = Tracer()
+        tracer.register_core(core)
+        tracer_hub.register_tracer(f"{type(core).__name__}_{core.core_id}", tracer)
     
     M = 512
     N = 512
@@ -127,15 +136,19 @@ if __name__ == "__main__":
     wgt_tile_size = k_tile * n_tile * dtype.itemsize
     ofm_tile_size = m_tile * n_tile * acc_dtype.itemsize
 
-    n_cores = min(m_tile_num * n_tile_num, len(device.npu_cores))
-    npu_core_group = device.npu_core_ids[:n_cores]
-    dma_core_group = device.dma_core_ids
+    # n_cores = min(m_tile_num * n_tile_num, len(device.npu_cores))
+    n_cores = 32  # limit to 32 cores for faster profiling
+    core_group = device.npu_core_ids[:n_cores]
     cb_n_pages = 8
     
     ifm:  torch.Tensor = torch.arange(0, M * K, dtype=dtype).reshape(M, K)
     wgt:  torch.Tensor = torch.arange(0, K * N, dtype=dtype).reshape(K, N)
     psum: torch.Tensor = torch.arange(0, M * N, dtype=acc_dtype).reshape(M, N)
     ofm:  torch.Tensor = torch.zeros((M, N), dtype=acc_dtype)
+    
+    # print(f"\nIFM\n{ifm}")
+    # print(f"\nWGT\n{wgt}")
+    # print(f"\nPSUM\n{psum}")
 
     tiled_ifm  = ifm.reshape(m_tile_num, m_tile, k_tile_num, k_tile).permute(0, 2, 1, 3)
     tiled_wgt  = wgt.reshape(k_tile_num, k_tile, n_tile_num, n_tile).permute(2, 0, 1, 3)
@@ -147,15 +160,15 @@ if __name__ == "__main__":
     psum_size = psum.numel() * psum.element_size()
     ofm_size  = ofm.numel()  * ofm.element_size()
     
-    bf_ifm_ptr:  Reference = device.create_sharded_main_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num)
-    bf_wgt_ptr:  Reference = device.create_sharded_main_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num)
-    bf_psum_ptr: Reference = device.create_sharded_main_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num)
-    bf_ofm_ptr:  Reference = device.create_sharded_main_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num)
+    bf_ifm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num, core_ids=core_group)
+    bf_wgt_ptr:  Reference = device.create_sharded_l1_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num, core_ids=core_group)
+    bf_psum_ptr: Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_group)
+    bf_ofm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_group)
 
-    cb_ifm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_group)
-    cb_wgt_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=npu_core_group)
-    cb_psum_ptrs: list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_group)
-    cb_ofm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_group)
+    cb_ifm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=core_group)
+    cb_wgt_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=core_group)
+    cb_psum_ptrs: list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_group)
+    cb_ofm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_group)
 
     device.set_ptr_content(bf_ifm_ptr, tiled_ifm)
     device.set_ptr_content(bf_wgt_ptr, tiled_wgt)
@@ -166,7 +179,7 @@ if __name__ == "__main__":
         for n_it in range(n_tile_num):
             core_idx = (m_it * n_tile_num + n_it) % n_cores
 
-            core_id = npu_core_group[core_idx]
+            core_id = core_group[core_idx]
             core = device.get_core_from_id(core_id=core_id)
             
             core_bf_ifm_ptr  = bf_ifm_ptr[m_it * k_tile_num:(m_it + 1) * k_tile_num]
@@ -188,8 +201,10 @@ if __name__ == "__main__":
             core.dispatch_main_kernel("write", kernel=kernel3)
 
     st = time.time()
-    device.run_kernels(verbose=True, max_steps=-1, save_trace=True, save_trace_dir=TRACE_DIR)
+    device.run_kernels(verbose=True)
     ed = time.time()
+    
+    tracer_hub.save_traces(TRACE_DIR)
     
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
