@@ -2,6 +2,7 @@ import enum
 import itertools
 from typing import Callable, Sequence, Any
 
+from neuromta.framework.logger import logger
 from neuromta.framework.memory_handle import *
 
 
@@ -153,7 +154,7 @@ def core_kernel_method(_func: Callable):
             
             kernel_context.add_execution_step(kernel)
         else:
-            print(f"[WARNING] Kernel method '{_func.__name__}' is called outside of the compile or idle context. It implies that the kernel is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
+            logger.warning(f"Kernel method '{_func.__name__}' is called outside of the compile or idle context. It implies that the kernel is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
             raise Exception(f"[ERROR] Kernel method '{_func.__name__}' is called outside of the compile or idle context.")
         
         return kernel
@@ -186,7 +187,7 @@ def core_command_method(_func: Callable):
         if get_global_context_mode() == GlobalContextMode.COMPILE:
             kernel_context.add_execution_step(cmd)
         else:
-            print(f"[WARNING] Command method '{_func.__name__}' is called outside of the compile or idle context. It implies that the command is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
+            logger.warning(f"Command method '{_func.__name__}' is called outside of the compile or idle context. It implies that the command is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
             raise Exception(f"[ERROR] Command method '{_func.__name__}' is called outside of the compile or idle context.")
         
         return cmd
@@ -219,7 +220,7 @@ def core_conditional_command_method(_func: Callable):
         if get_global_context_mode() == GlobalContextMode.COMPILE:
             kernel_context.add_execution_step(cmd)
         else:
-            print(f"[WARNING] Command method '{_func.__name__}' is called outside of the compile or idle context. It implies that the command is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
+            logger.warning(f"Command method '{_func.__name__}' is called outside of the compile or idle context. It implies that the command is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
             raise Exception(f"[ERROR] Command method '{_func.__name__}' is called outside of the compile or idle context.")
         
         return cmd
@@ -681,7 +682,6 @@ class Core:
                 self._suspended_main_kernels[slot_id] = []
             self._suspended_main_kernels[slot_id].append(kernel)
         else:
-            # print(f"[DEBUG] [{self.core_id}] Dispatching kernel '{kernel.kernel_id_full}' to slot {slot_id}")
             self._dispatched_main_kernels[slot_id] = kernel
 
     def dispatch_rpc_kernel(self, kernel: Kernel, msg: RPCMessage):
@@ -726,13 +726,10 @@ class Core:
 
             if kernel.is_finished(self):
                 self._dispatched_main_kernels.pop(slot_id) # if the kernel is main kernel, simply remove the kernel from the "dispatched_kernels" dictionary
-                # print(f"[DEBUG] [{self.core_id}] Terminating kernel '{kernel.kernel_id_full}' to slot {slot_id}")
                 
                 if slot_id in self._suspended_main_kernels:
                     if len(self._suspended_main_kernels[slot_id]) > 0:
                         suspended_kernel = self._suspended_main_kernels[slot_id].pop(0)
-                        # self.dispatch_main_kernel(slot_id, suspended_kernel)
-                        # print(f"[DEBUG] [{self.core_id}] Dispatching suspended kernel '{suspended_kernel.kernel_id_full}' to slot {slot_id}")
                         self._dispatched_main_kernels[slot_id] = suspended_kernel  # TODO: directly dispatch the suspended kernel without going through the dispatch_main_kernel() method
 
         for slot_id in rpc_kernel_slot_ids:
@@ -773,7 +770,8 @@ class Core:
             try:
                 hook(self, kernel, cmd, issue_time, commit_time)
             except Exception as e:
-                print(f"[ERROR] Command debug hook '{hook_id}' failed with error: {e}")
+                logger.error(f"Command debug hook '{hook_id}' failed with error: {e}")
+                raise e
                 
     @core_command_method
     def debug_core_with_ambiguous_func(self, func: Callable, *args, **kwargs):

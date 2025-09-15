@@ -5,6 +5,7 @@ from typing import Sequence, Callable  #, Any
 
 from neuromta.framework.core import Core, Kernel, Command, RPCMessage
 from neuromta.framework.companion import CompanionCore
+from neuromta.framework.logger import logger
 # from neuromta.framework.tracer import Tracer, TraceEntry
 
 
@@ -17,7 +18,7 @@ class Device:
     def __init__(self):
         self._cores: dict[str, Core] = None
         
-        self._verbose:      bool = False
+        # self._verbose:      bool = False
         self._verbose_hook_ids: dict[str, str] = {}
 
         self._rpc_req_send_inbox: dict[str, list[RPCMessage]] = {}
@@ -62,11 +63,15 @@ class Device:
         for core in self._cores.values():
             core.initialize_kernel_dispatch_queue()
             core.initialize_mp_queue_inbox(rpc_req_send_inbox=self._rpc_req_send_inbox, rpc_rsp_send_inbox=self._rpc_rsp_send_inbox)
+            
+        for core in self._cores.values():
+            hook_id = core.register_command_debug_hook(self._verbose_command_debug_hook)
+            self._verbose_hook_ids[core.core_id] = hook_id
         
         return self
     
     def _verbose_command_debug_hook(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
-        sys.stdout.write(f"[DEBUG] {issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {kernel.callstack:<80s} | command: {cmd.cmd_id}\n")
+        logger.debug(f"{issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {kernel.callstack:<80s} | command: {cmd.cmd_id}")
         
     def run_single_step(self, cycle_resolution: int = 1):
         if not self.is_initialized:
@@ -99,20 +104,17 @@ class Device:
     def run_kernels(
         self, 
         cycle_resolution:   int  = 1,                   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
-        verbose:            bool = False,               # whether to print verbose debug information
         max_steps:          int  = -1,                  # the maximum number of steps to run
     ):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
-
-        self.verbose = verbose
         
         step_cnt = 0
 
         while not all(core.is_idle for core in self._cores.values()):  
             step_cnt += 1
             if step_cnt >= max_steps > 0:
-                print(f"[INFO] Reached maximum steps: {max_steps}. Stopping simulation.")
+                logger.info(f"Reached maximum steps: {max_steps}. Stopping simulation.")
                 break
             
             self.run_single_step(cycle_resolution=cycle_resolution)
@@ -123,27 +125,6 @@ class Device:
         
         for core in self._cores.values():
             core.register_command_debug_hook(hook)
-            
-    @property
-    def verbose(self) -> bool:
-        return self._verbose
-    
-    @verbose.setter
-    def verbose(self, v: bool):
-        if not self.is_initialized:
-            raise Exception("[ERROR] Device is not initialized. Please call initialize() before setting verbose option.")
-        
-        for core in self._cores.values():
-            hook_id = self._verbose_hook_ids.get(core.core_id, None)
-            if hook_id:
-                core.unregister_command_debug_hook(hook_id)
-        
-        self._verbose = v
-        
-        if self._verbose:
-            for core in self._cores.values():
-                hook_id = core.register_command_debug_hook(self._verbose_command_debug_hook)
-                self._verbose_hook_ids[core.core_id] = hook_id
 
     @property
     def timestamp(self) -> int:

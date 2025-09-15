@@ -6,5 +6,6 @@ from neuromta.framework.memory_handle import *
 from neuromta.framework.parser_utils import *
 from neuromta.framework.tracer import *
 from neuromta.framework.companion import *
-from neuromta.framework.logger import *
 from neuromta.framework.profiler import *
+from neuromta.framework.logger import logger, LogLevel
+from neuromta.framework.monitoring import MonitoringWindow

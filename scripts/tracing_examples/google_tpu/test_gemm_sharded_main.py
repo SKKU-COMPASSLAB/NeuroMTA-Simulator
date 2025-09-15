@@ -87,6 +87,7 @@ def compute_kernel(
 
 
 if __name__ == "__main__":
+    logger.set_print_options(LogLevel.DEBUG)
     torch.set_printoptions(linewidth=1024, sci_mode=False)
     
     config = GoogleTPUConfig.V4()
@@ -172,7 +173,7 @@ if __name__ == "__main__":
     core.dispatch_main_kernel("compute", kernel=kernel)
     
     st = time.time()
-    device.run_kernels(verbose=True)
+    device.run_kernels()
     ed = time.time()
     
     tracer_hub.save_traces(TRACE_DIR)

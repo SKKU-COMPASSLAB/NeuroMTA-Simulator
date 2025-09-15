@@ -3,7 +3,7 @@ import shutil
 from typing import Any
 
 from neuromta.framework.core import *
-from neuromta.framework.device import Device
+from neuromta.framework.logger import logger
 
 
 __all__ = [
@@ -106,20 +106,6 @@ class TracerHub:
             raise Exception(f"[ERROR] Tracer with ID '{tracer_id}' does not exist.")
         
         del self._tracers[tracer_id]
-            
-    # def register_core(self, device_id: str, core: Core):
-    #     tracer = Tracer()
-    #     tracer.register_core(core)
-
-    #     self._tracers[TracerHub.create_tracer_key(device_id, core)] = tracer
-
-    # def unregister_core(self, device_id: str, core: Core):
-    #     tracer = self._tracers.pop(TracerHub.create_tracer_key(device_id, core), None)
-
-    #     if tracer is None:
-    #         raise Exception(f"[ERROR] Core with ID '{core.core_id}' in Device '{device_id}' is not registered in the TracerHub.")
-        
-    #     tracer.unregister_core(core)
         
     def save_traces(self, save_trace_dir: str = DEFAULT_TRACE_DIR):
         if os.path.isdir(save_trace_dir):
@@ -131,4 +117,4 @@ class TracerHub:
                 trace_path = os.path.join(save_trace_dir, f"{tracer_id}.csv")
                 tracer.save_traces_as_file(trace_path)
 
-                print(f"[INFO] Trace for core {tracer_id} saved to \"{trace_path}\"")
+                logger.info(f"Trace for core {tracer_id} saved to \"{trace_path}\"")

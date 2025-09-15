@@ -12,6 +12,7 @@ TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces", FILENAME)
 
 
 if __name__ == "__main__":
+    logger.set_print_options(LogLevel.DEBUG)
     config = GoogleTPUConfig.V4()
     
     device = GoogleTPUDevice(**config)
@@ -86,7 +87,7 @@ if __name__ == "__main__":
     device.npu_cores[0].dispatch_main_kernel("compute", kernel=kernel)
 
     st = time.time()
-    device.run_kernels(verbose=True)
+    device.run_kernels()
     ed = time.time()
     
     tracer_hub.save_traces(TRACE_DIR)

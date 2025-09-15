@@ -21,6 +21,8 @@ def kernel_main(core: NPUCore, main_in_ptr: Reference, l1_ptr: Reference, main_o
 
 
 if __name__ == "__main__":
+    logger.set_print_options(LogLevel.DEBUG)
+    
     config = TenstorrentConfig.BLACKHOLE()
     
     device = TenstorrentDevice(**config)
@@ -51,7 +53,7 @@ if __name__ == "__main__":
     npu_core.dispatch_main_kernel("compute", kernel=kernel)
     
     st = time.time()
-    device.run_kernels(verbose=True)
+    device.run_kernels()
     ed = time.time()
     
     tracer_hub.save_traces(TRACE_DIR)

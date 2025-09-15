@@ -96,6 +96,7 @@ def write_kernel(
 
 
 if __name__ == "__main__":
+    logger.set_print_options(LogLevel.DEBUG)
     torch.set_printoptions(linewidth=1024, sci_mode=False)
     
     config = TenstorrentConfig.BLACKHOLE()
@@ -199,7 +200,7 @@ if __name__ == "__main__":
         profiler = CommandUtilizationProfiler(core, window_size=8, thres=0.05)
         profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
         
-    profiler_hub.run_profile(device, verbose=True)
+    profiler_hub.run_profile(device)
     profiler_hub.save_profiles(save_profile_dir=PROFILE_DIR)
     
     print(f"simulation terminated with {device.timestamp}")

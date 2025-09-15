@@ -6,6 +6,7 @@ from collections import deque
 
 from neuromta.framework.core import Core, Kernel, Command
 from neuromta.framework.device import Device
+from neuromta.framework.logger import logger
 
 
 __all__ = [
@@ -125,19 +126,16 @@ class ProfilerHub:
             raise Exception(f"[ERROR] Profiler with name '{profiler_id}' does not exist.")
         del self._profilers[profiler_id]
         
-    def run_profile(self, device: Device, verbose: bool=False, cycle_resolution: int=1):
+    def run_profile(self, device: Device, cycle_resolution: int=1):
         if not device.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
-        
-        device.verbose = verbose
         
         while True:
             if all(core.is_idle for core in device.cores.values()):
                 break
             
             if all(profiler.check_convergence() for profiler in self._profilers.values()):
-                if verbose:
-                    print("[INFO] All profilers have detected convergence. Stopping simulation.")
+                logger.info("All profilers have detected convergence. Stopping simulation.")
                 break
             
             device.run_single_step(cycle_resolution=cycle_resolution)
@@ -151,5 +149,5 @@ class ProfilerHub:
             profile_path = os.path.join(save_profile_dir, f"{profiler_id}.csv")
             profiler.save_as_file(profile_path)
 
-            print(f"[INFO] Profile {profiler_id} saved to \"{profile_path}\"")
+            logger.info(f"Profile {profiler_id} saved to \"{profile_path}\"")
 
