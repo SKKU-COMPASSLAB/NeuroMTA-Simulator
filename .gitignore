@@ -209,6 +209,8 @@ __marimo__/
 .github/
 
 .logs/
+.traces/
+.profiles/
 scripts/*/.logs/
 
 build/
