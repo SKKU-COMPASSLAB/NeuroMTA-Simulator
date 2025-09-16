@@ -127,7 +127,7 @@ class MXUContext:
             if wgt_tile.shape != self.wgt_tile_shape:
                 raise Exception(f"[ERROR] WGT tile shape {wgt_tile.shape} does not match expected shape {self.wgt_tile_shape}.")
             
-            self._pe_arr_regs = (ifm_tile @ wgt_tile) + self._pe_arr_regs
+            self._pe_arr_regs = (ifm_tile.to(dtype=self._acc_dtype) @ wgt_tile.to(dtype=self._acc_dtype)) + self._pe_arr_regs
         elif self._dataflow == MXUDataflow.WS:
             if wgt_tile is not None:
                 raise Exception("[ERROR] WGT tile should not be provided for WS dataflow.")
@@ -136,7 +136,7 @@ class MXUContext:
             if psum_tile is None:
                 psum_tile = self._acc_regs
             
-            self._acc_regs[:, :] = (ifm_tile @ self._pe_arr_regs) + psum_tile
+            self._acc_regs[:, :] = (ifm_tile.to(dtype=self._acc_dtype) @ self._pe_arr_regs) + psum_tile.to(dtype=self._acc_dtype)
         else:
             raise Exception(f"[ERROR] Unsupported MXU dataflow: {self._dataflow}.")
         

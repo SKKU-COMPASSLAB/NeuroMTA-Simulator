@@ -1,4 +1,5 @@
 import math
+from typing import Any
 
 
 __all__ = [
@@ -9,6 +10,7 @@ __all__ = [
     
     "parse_freq_str",
     "parse_mem_cap_str",
+    "parse_arguments",
 ]
 
 
@@ -55,3 +57,25 @@ def parse_mem_cap_str(expr: str) -> int:
         except:
             raise Exception(f"[ERROR] Invalid memory capacity expression: {expr}")
     return expr
+
+
+def parse_arguments(args: list[Any], kwargs: dict[str, Any], param_names: list[str]) -> dict[str, Any]:
+    parsed_args = {}
+    
+    for i, arg in enumerate(args):
+        if i < len(param_names):
+            parsed_args[param_names[i]] = arg
+        else:
+            raise Exception(f"[ERROR] Too many positional arguments: expected {len(param_names)}, got {len(args)}")
+    
+    for k, v in kwargs.items():
+        if k in param_names:
+            if k in parsed_args:
+                raise Exception(f"[ERROR] Multiple values for argument '{k}'")
+            parsed_args[k] = v
+            
+    for pname in param_names:
+        if pname not in parsed_args:
+            raise Exception(f"[ERROR] Cannot obtain argument '{pname}'")
+    
+    return parsed_args

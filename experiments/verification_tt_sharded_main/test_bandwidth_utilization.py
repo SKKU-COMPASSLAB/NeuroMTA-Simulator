@@ -4,12 +4,16 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
+from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
+from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
 from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentDevice
 
 
-FILENAME = os.path.splitext(os.path.basename(__file__))[0]
-TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces", FILENAME)
-PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".profiles", FILENAME)
+TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces")
+PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".profiles")
+ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), ".analysis")
+
+os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 
 @core_kernel_method
@@ -53,9 +57,12 @@ def compute_kernel(
     cb_psum_ptr: Reference,
     cb_ofm_ptr:  Reference,
     
-    k_tile_num: int
+    k_tile_num: int,
+    
+    dtype: torch.dtype,
+    acc_dtype: torch.dtype,
 ):  
-    core.mxu_reconfigure(dtype=torch.int32, acc_dtype=torch.int32)
+    core.mxu_reconfigure(dtype=dtype, acc_dtype=acc_dtype)
     
     core.cb_wait_front(cb_psum_ptr, 1)
     core.cb_reserve_back(cb_ofm_ptr, 1)
@@ -109,7 +116,7 @@ if __name__ == "__main__":
     M = 512
     N = 512
     K = 128
-    dtype = torch.int32
+    dtype = torch.int8
     acc_dtype = torch.int32
     
     m_tile = 32
@@ -133,7 +140,7 @@ if __name__ == "__main__":
     ofm_tile_size = m_tile * n_tile * acc_dtype.itemsize
 
     # n_cores = min(m_tile_num * n_tile_num, len(device.npu_cores))
-    n_cores = 32  # limit to 32 cores for faster profiling
+    n_cores = 16  # limit to 16 cores for faster profiling (128x128 = 32x32x16)
     npu_core_group = device.npu_core_ids[:n_cores]
     dma_core_group = device.dma_core_ids
     cb_n_pages = 8
@@ -186,7 +193,7 @@ if __name__ == "__main__":
             core_cb_ofm_ptr  = cb_ofm_ptrs[core_idx]  if n_cores > 1 else cb_ofm_ptrs
 
             kernel1 = read_kernel(core, core_bf_ifm_ptr, core_bf_wgt_ptr, core_bf_psum_ptr, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, n_seq_pages=k_tile_num)
-            kernel2 = compute_kernel(core, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, core_cb_ofm_ptr, k_tile_num=k_tile_num)
+            kernel2 = compute_kernel(core, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, core_cb_ofm_ptr, k_tile_num=k_tile_num, dtype=dtype, acc_dtype=acc_dtype)
             kernel3 = write_kernel(core, core_bf_ofm_ptr, core_cb_ofm_ptr)
             
             core.dispatch_main_kernel("read",  kernel=kernel1)
@@ -204,6 +211,9 @@ if __name__ == "__main__":
         if isinstance(core, NPUCore) and (not core.is_idle):
             profiler = CommandUtilizationProfiler(core)
             profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
+            
+    icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
+    main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
 
     with MonitoringWindow() as monitor:
         for core_id, core in device.cores.items():
@@ -217,11 +227,15 @@ if __name__ == "__main__":
     
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
+    icnt_core_tracer.save_traces(os.path.join(ANALYSIS_DIR, "icnt_core_trace.csv"))
+    icnt_core_tracer.save_bandwidth_analysis(os.path.join(ANALYSIS_DIR, "icnt_core_bandwidth_analysis.csv"), bin_size=1)
+    main_mem_core_tracer.save_traces(os.path.join(ANALYSIS_DIR, "main_mem_core_trace.csv"))
+    main_mem_core_tracer.save_bandwidth_analysis(os.path.join(ANALYSIS_DIR, "main_mem_core_bandwidth_analysis.csv"), bin_size=1)
 
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
     
-    reference = torch.matmul(ifm, wgt) + psum
+    reference = torch.matmul(ifm.to(dtype=acc_dtype), wgt.to(dtype=acc_dtype)) + psum
     simulated = device.get_ptr_content(bf_ofm_ptr, shape=(m_tile_num, n_tile_num, m_tile, n_tile), dtype=acc_dtype).permute(0, 2, 1, 3).reshape(M, N)
 
     # print(f"\n=== REFERENCE ===\n{reference}")

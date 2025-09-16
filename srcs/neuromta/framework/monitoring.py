@@ -130,21 +130,28 @@ class MWDrawingProcess(mp.Process):
 
         self.cmd_recv_queue = cmd_recv_queue
         self.default_term_height = default_term_height
+        self._enable_prompt = False
         
     def setup_terminal(self):
         sys.stdout.write("\033[2J")     # erase the entire screen
         sys.stdout.write("\033[?25l")   # hide cursor (prevent blinking)
 
-    def teardown_terminal(self, height):
+    def teardown_terminal(self, height: int):
         sys.stdout.write(f"\033[{height};1H\n")     # move cursor to the line after the last log line
         sys.stdout.write("\033[?25h")                   # show cursor again
         sys.stdout.flush()
         
     def draw(self, log_messages: list[LogEntryHandle], pbar_handles: list[ProgressBarHandle], term_width: int, term_height: int):
-        sys.stdout.write("\033[2;1H")  # move cursor to (2, 1)
-        sys.stdout.write("\033[J")     # erase from cursor to end of screen
+        PROMPT_LINES = 1 if self._enable_prompt else 0
         
-        window_height_offset = 1
+        sys.stdout.write("\033[2;1H")  # move cursor to (2, 1)
+        for _ in range(term_height - PROMPT_LINES):
+            sys.stdout.write("\033[K")  # erase the entire line
+            sys.stdout.write("\033[B")  # move cursor down by 1 line
+        
+        sys.stdout.write("\033[2;1H")  # move cursor to (2, 1)
+        
+        window_height_offset = 0
         window_width_offset = 0
 
         if len(pbar_handles) > 0:
@@ -172,7 +179,7 @@ class MWDrawingProcess(mp.Process):
         sys.stdout.write("=== LOG MESSAGES " + "=" * (term_width - 17) + "\n")
         window_height_offset += 1
         
-        log_window_height = term_height - (window_height_offset)
+        log_window_height = term_height - (window_height_offset) - PROMPT_LINES
 
         while len(log_messages) > log_window_height:
             log_messages.pop(0)
@@ -212,17 +219,10 @@ class MWDrawingProcess(mp.Process):
         
 
 class MonitoringWindow:
-    def __init__(self, leave: bool=False, update_interval: float=0.1, default_term_height: int = -1):
+    def __init__(self, leave: bool=False, update_interval: float=0.05, default_term_height: int = -1):
         self.leave = leave
         self.update_interval = update_interval
         self.default_term_height = default_term_height
-
-        # global _global_monitoring_window
-        
-        # if _global_monitoring_window is not None:
-        #     raise RuntimeError("[ERROR] Only one MonitoringWindow instance is allowed.")
-
-        # _global_monitoring_window = self  # save the instance globally
         
         set_global_monitoring_window(self)
         

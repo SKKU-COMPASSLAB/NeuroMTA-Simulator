@@ -25,11 +25,11 @@ class DMACore(Core):
         self.cmap_context = cmap_context
     
     @core_kernel_method
-    def mem_load_page(self, ptr: Pointer, container: DataContainer):
+    def mem_page_read(self, ptr: Pointer, container: DataContainer):
         msg = RPCMessage(
             src_core_id=self.core_id,
             dst_core_id=self.cmap_context.main_mem_core_id,
-            cmd_id="mem_load_page"
+            cmd_id="mem_load_page_to_container"
         ).with_args(
             ptr=ptr,
             container=container
@@ -39,11 +39,11 @@ class DMACore(Core):
         self.async_rpc_wait_rsp_msg(msg)
         
     @core_kernel_method
-    def mem_store_page(self, ptr: Pointer, container: DataContainer):
+    def mem_page_write(self, ptr: Pointer, container: DataContainer):
         msg = RPCMessage(
             src_core_id=self.core_id,
             dst_core_id=self.cmap_context.main_mem_core_id,
-            cmd_id="mem_store_page"
+            cmd_id="mem_store_page_from_container"
         ).with_args(
             ptr=ptr,
             container=container

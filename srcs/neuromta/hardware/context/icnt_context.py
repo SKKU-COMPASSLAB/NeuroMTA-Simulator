@@ -10,7 +10,7 @@ __all__ = [
 ]
 
 
-class IcntConfig(dict):
+class IcntConfig:
     def __init__(
         self,
         
@@ -19,9 +19,7 @@ class IcntConfig(dict):
         control_packet_size: int        = parse_mem_cap_str("32B"),
         booksim2_enable: bool           = False,
         booksim2_config: BookSim2Config = None,
-    ):
-        super().__init__()
-        
+    ):  
         if booksim2_enable and booksim2_config is None:
             x_dim = shape[0]
             y_dim = shape[1]

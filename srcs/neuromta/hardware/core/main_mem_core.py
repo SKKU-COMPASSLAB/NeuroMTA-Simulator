@@ -37,7 +37,7 @@ class MainMemoryCore(Core):
         return PYDRAMSIM3_AVAILABLE and self.mem_context.main_config.dramsim3_enable
     
     @core_kernel_method
-    def mem_load_page(self, ptr: Pointer, container: DataContainer):
+    def mem_load_page_to_container(self, ptr: Pointer, container: DataContainer):
         if self.is_dramsim3_enabled:
             msg = RPCMessage(
                 src_core_id=self.core_id,
@@ -51,10 +51,10 @@ class MainMemoryCore(Core):
             self.async_rpc_send_req_msg(msg)
             self.async_rpc_wait_rsp_msg(msg)
             
-        self._static_load_page(ptr, container)
+        self._static_load_page_to_container(ptr, container)
         
     @core_kernel_method
-    def mem_store_page(self, ptr: Pointer, container: DataContainer):
+    def mem_store_page_from_container(self, ptr: Pointer, container: DataContainer):
         if self.is_dramsim3_enabled:
             msg = RPCMessage(
                 src_core_id=self.core_id,
@@ -68,10 +68,10 @@ class MainMemoryCore(Core):
             self.async_rpc_send_req_msg(msg)
             self.async_rpc_wait_rsp_msg(msg)
             
-        self._static_store_page(ptr, container)
+        self._static_store_page_to_container(ptr, container)
 
     @core_command_method
-    def _static_load_page(self, ptr: Pointer, container: DataContainer):
+    def _static_load_page_to_container(self, ptr: Pointer, container: DataContainer):
         if ptr.ptr_type != PointerType.PAGE:
             raise ValueError("[ERROR] Memory copy requires page pointer.")
 
@@ -79,10 +79,10 @@ class MainMemoryCore(Core):
             raise ValueError("[ERROR] The source container must be a DataContainer instance.")
 
         page_elem: Page = self.mem_handle.get_data_element(ptr)
-        page_elem.content = container.data
+        container.data = page_elem.content.clone()  # Copy the content of the page element to the container        
 
     @core_command_method
-    def _static_store_page(self, ptr: Pointer, container: DataContainer):
+    def _static_store_page_to_container(self, ptr: Pointer, container: DataContainer):
         if ptr.ptr_type != PointerType.PAGE:
             raise ValueError("[ERROR] Memory copy requires page pointer.")
 
@@ -90,7 +90,7 @@ class MainMemoryCore(Core):
             raise ValueError("[ERROR] The target container must be a DataContainer instance.")
 
         page_elem: Page = self.mem_handle.get_data_element(ptr)
-        container.data = page_elem.content.clone()  # Copy the content of the page element to the container
+        page_elem.content = container.data
         
 class MainMemoryCoreCycleModel(CoreCycleModel):
     def __init__(self, core: MainMemoryCore):
@@ -98,12 +98,12 @@ class MainMemoryCoreCycleModel(CoreCycleModel):
         
         self.core = core
         
-    def _static_load_page(self, ptr: Pointer, container: DataContainer):
+    def _static_load_page_to_container(self, ptr: Pointer, container: DataContainer):
         if self.core.is_dramsim3_enabled:
             return 1    # if DRAMSim is enabled, simulation time will be reflected at the behavioral model
         return self.core.mem_context.main_config.get_cycles(size=ptr.size)
 
-    def _static_store_page(self, ptr: Pointer, container: DataContainer):
+    def _static_store_page_to_container(self, ptr: Pointer, container: DataContainer):
         if self.core.is_dramsim3_enabled:
             return 1    # if DRAMSim is enabled, simulation time will be reflected at the behavioral model
         return self.core.mem_context.main_config.get_cycles(size=ptr.size)

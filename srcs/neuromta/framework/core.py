@@ -302,8 +302,13 @@ class RPCMessage:
         self.kwargs = kwargs
         return self
     
-    def with_callbacks(self, *callbacks: Sequence['Command | Kernel']):
-        self.callbacks.extend(callbacks)
+    def with_callbacks(self, method: Callable, *args, **kwargs):
+        if method.__name__ == "__core_kernel_method_wrapper":
+            callback = Kernel(kernel_id=f"{self.kernel_id}.cb{len(self.callbacks)}", func=method, *args, **kwargs)
+        elif method.__name__ == "__core_command_method_wrapper":
+            callback = Kernel(kernel_id=f"{self.kernel_id}.cb{len(self.callbacks)}", func=lambda core: method(*args, **kwargs))
+        callback.root_kernel_id = self.root_kernel_id
+        self.callbacks.append(callback)
         return self
         
     def response(self, rpc_kernel: 'Kernel') -> 'RPCMessage':
@@ -508,8 +513,8 @@ class Kernel:
         
         self._execution_steps.insert(self._execution_cursor, step)
         
-        if isinstance(step, Kernel):
-            step.root_kernel = self
+        # if isinstance(step, Kernel):
+        #     step.root_kernel = self
             
     def add_parallel_kernel_step(self) -> 'Kernel':
         if get_global_context_mode() != GlobalContextMode.COMPILE:
@@ -677,6 +682,8 @@ class Core:
         if not isinstance(kernel, Kernel):
             raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of CompiledKernel")
 
+        kernel.root_kernel_id = f"MAIN<{slot_id}>"  # set the root kernel ID to the slot ID
+        
         if slot_id in self._dispatched_main_kernels:
             if slot_id not in self._suspended_main_kernels:
                 self._suspended_main_kernels[slot_id] = []
@@ -875,7 +882,7 @@ class Core:
             func = getattr(self, msg.cmd_id, None)
             
             if func is None:
-                raise Exception(f"[ERROR] Command '{msg.cmd_id}' is not registered in the core '{self.core_id}' for RPC processing")
+                raise Exception(f"[ERROR] Command '{msg.cmd_id}' is not registered in the core '{type(self).__name__}(core_id={self.core_id})' for RPC processing")
             elif func.__name__ == "__core_command_method_wrapper":
                 kernel = Kernel(kernel_id="__auto_remote", func=func, *msg.args, **msg.kwargs)
                 with new_global_context(GlobalContextMode.COMPILE, self, kernel):

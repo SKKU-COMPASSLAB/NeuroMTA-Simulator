@@ -127,7 +127,7 @@ class NPUCore(Core):
     #############################################################
     
     @core_command_method
-    def mem_load_page(self, ptr: Pointer, container: DataContainer):
+    def mem_page_write(self, ptr: Pointer, container: DataContainer):
         if ptr.ptr_type != PointerType.PAGE:
             raise ValueError("[ERROR] Memory copy requires page pointer.")
 
@@ -141,7 +141,7 @@ class NPUCore(Core):
         page_elem.content = container.data
 
     @core_command_method
-    def mem_store_page(self, ptr: Pointer, container: DataContainer):
+    def mem_page_read(self, ptr: Pointer, container: DataContainer):
         if ptr.ptr_type != PointerType.PAGE:
             raise ValueError("[ERROR] Memory copy requires page pointer.")
 
@@ -168,16 +168,16 @@ class NPUCore(Core):
         mem_reader_msg = RPCMessage(
             src_core_id=dst_owner_id,   # source of the RPC message will be myself
             dst_core_id=src_owner_id,   # destination of the RPC message will be owner of the source pointer,
-            cmd_id="mem_store_page",
+            cmd_id="mem_page_read",
         ).with_args(
             ptr=src_ptr,
             container=container
         ).with_callbacks(
-            self.mem_load_page(dst_ptr, container)  # load page from container
+            # self.mem_page_write(dst_ptr, container)  # load page from container
+            method=self.mem_page_write, ptr=dst_ptr, container=container  # load page from container
         )
         
         self.async_rpc_send_req_msg(mem_reader_msg)
-        
             
     @core_kernel_method
     def async_page_write(self, dst_ptr: Pointer, src_ptr: Pointer):
@@ -189,13 +189,13 @@ class NPUCore(Core):
         mem_writer_msg = RPCMessage(
             src_core_id=src_owner_id,   # source of the RPC message will be myself
             dst_core_id=dst_owner_id,   # destination of the RPC message will be owner of the source pointer,
-            cmd_id="mem_load_page",
+            cmd_id="mem_page_write",
         ).with_args(
             ptr=dst_ptr,
             container=container
         )
         
-        self.mem_store_page(src_ptr, container)
+        self.mem_page_read(src_ptr, container)
         self.async_rpc_send_req_msg(mem_writer_msg)
             
     @core_kernel_method
@@ -241,12 +241,13 @@ class NPUCore(Core):
         mem_reader_msg = RPCMessage(
             src_core_id=self.core_id,   # source of the RPC message will be myself
             dst_core_id=src_owner_id,   # destination of the RPC message will be owner of the source pointer,
-            cmd_id="mem_store_page",
+            cmd_id="mem_page_read",
         ).with_args(
             ptr=src_ptr,
             container=container
         ).with_callbacks(
-            self.mem_load_page(dst_ptr, container)  # load page from container
+            # self.mem_page_write(dst_ptr, container)  # load page from container
+            method=self.mem_page_write, ptr=dst_ptr, container=container  # load page from container
         )
         
         # NOTE: The code below assumes that the memory access and NoC data transfer is done sequentially without any
@@ -278,7 +279,7 @@ class NPUCore(Core):
         mem_writer_msg = RPCMessage(
             src_core_id=self.core_id,   # source of the RPC message will be myself
             dst_core_id=dst_owner_id,   # destination of the RPC message will be owner of the source pointer,
-            cmd_id="mem_load_page",
+            cmd_id="mem_page_write",
         ).with_args(
             ptr=dst_ptr,
             container=container
@@ -289,7 +290,7 @@ class NPUCore(Core):
         # data movement all the way through core->router->core.
         # TODO: Check whether the latency model implemented below is accurate.
         
-        self.mem_store_page(src_ptr, container)
+        self.mem_page_read(src_ptr, container)
         
         self.async_rpc_send_req_msg(noc_trans_msg)
         self.async_rpc_send_req_msg(mem_writer_msg)
@@ -419,11 +420,11 @@ class NPUCoreCycleModel(CoreCycleModel):
         return self.core.mem_context.l1_config.get_cycles(size=src_ptr.size)
 
     @core_command_method
-    def mem_load_page(self, ptr: Pointer, container: DataContainer):
+    def mem_page_write(self, ptr: Pointer, container: DataContainer):
         return self.core.mem_context.l1_config.get_cycles(size=ptr.size)
 
     @core_command_method
-    def mem_store_page(self, ptr: Pointer, container: DataContainer):
+    def mem_page_read(self, ptr: Pointer, container: DataContainer):
         return self.core.mem_context.l1_config.get_cycles(size=ptr.size)
 
     def mxu_tiled_gemm(

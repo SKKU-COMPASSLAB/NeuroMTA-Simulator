@@ -11,3 +11,5 @@ from neuromta.hardware.core.main_mem_core import *
 
 from neuromta.hardware.implementation.multi_tile_accelerator import *
 from neuromta.hardware.implementation.multi_core_accelerator import *
+
+from neuromta.hardware import analyzer

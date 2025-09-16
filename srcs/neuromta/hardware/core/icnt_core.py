@@ -47,6 +47,9 @@ class IcntCore(Core):
                 is_write=False, is_response=False
             )
             
+            self.async_rpc_send_req_msg(data_req_msg)
+            self.async_rpc_wait_rsp_msg(data_req_msg)
+            
             data_rsq_msg = RPCMessage(
                 src_core_id=self.core_id,
                 dst_core_id=COMPANION_CORE_ID,
@@ -57,9 +60,6 @@ class IcntCore(Core):
                 subnet=0, n_flits=n_flits, 
                 is_write=False, is_response=True
             )
-            
-            self.async_rpc_send_req_msg(data_req_msg)
-            self.async_rpc_wait_rsp_msg(data_req_msg)
             
             self.async_rpc_send_req_msg(data_rsq_msg)
             self.async_rpc_wait_rsp_msg(data_rsq_msg)
@@ -83,22 +83,28 @@ class IcntCore(Core):
                 is_write=True, is_response=False
             )
             
-            data_rsq_msg = RPCMessage(
-                src_core_id=self.core_id,
-                dst_core_id=COMPANION_CORE_ID,
-                cmd_id="send_companion_command",
-            ).with_args(
-                self.cmap_context.config.booksim_module_id,
-                dst_id, src_id, 
-                subnet=0, n_flits=n_flits, 
-                is_write=True, is_response=True
-            )
-            
             self.async_rpc_send_req_msg(data_req_msg)
             self.async_rpc_wait_rsp_msg(data_req_msg)
             
-            self.async_rpc_send_req_msg(data_rsq_msg)
-            self.async_rpc_wait_rsp_msg(data_rsq_msg)
+            # TODO: Currently, I just ignore the write response. It's because it may seem unnecessary
+            # for the write transaction to have a response. It assumes that the network is reliable enough
+            # and the producer node does not need to check whether the write transaction is successfully
+            # received by the consumer node. However, if you want to ensure the reliability of the write 
+            # transaction, you can uncomment the following code to wait for the write response.
+            
+            # data_rsq_msg = RPCMessage(
+            #     src_core_id=self.core_id,
+            #     dst_core_id=COMPANION_CORE_ID,
+            #     cmd_id="send_companion_command",
+            # ).with_args(
+            #     self.cmap_context.config.booksim_module_id,
+            #     dst_id, src_id, 
+            #     subnet=0, n_flits=n_flits, 
+            #     is_write=True, is_response=True
+            # )
+            
+            # self.async_rpc_send_req_msg(data_rsq_msg)
+            # self.async_rpc_wait_rsp_msg(data_rsq_msg)
             
         else:
             self._static_noc_create_data_write_transaction(src_id, dst_id, data_size)
