@@ -212,6 +212,7 @@ __marimo__/
 .traces/
 .profiles/
 .analysis/
+experiments/*/.archive/
 scripts/*/.logs/
 
 build/
