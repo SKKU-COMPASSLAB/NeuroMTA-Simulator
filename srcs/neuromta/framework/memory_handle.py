@@ -155,6 +155,9 @@ class Reference:
         self._handle = handle
         self._item = item
         
+        if self._item is None:
+            self._item = slice(0, handle.n_pages, 1)
+        
     @property
     def raw_handle(self) -> 'BufferHandle':
         return self._handle
@@ -204,7 +207,13 @@ class Reference:
         elif isinstance(self._item, slice):
             start = (self._item.start + offset) % self._handle.n_pages
             stop = (self._item.stop + offset) % self._handle.n_pages
-            page_ptrs = page_ptrs[start:stop]
+            
+            if start < stop:
+                page_ptrs = page_ptrs[start:stop]
+            else:
+                page_ptrs = page_ptrs[start:] + page_ptrs[:stop]
+            
+            # page_ptrs = page_ptrs[start:stop]
         elif isinstance(self._item, tuple):
             page_ptrs = [page_ptrs[(i + offset) % self._handle.n_pages] for i in self._item]
         
@@ -489,20 +498,20 @@ def create_page_ptr(mem_handle: MemoryHandle, page_size: int) -> Pointer | None:
 def create_uniform_buffer(mem_handle: MemoryHandle, page_size: int, n_pages: int, is_circular: bool, channel_id: int | Sequence[int]=0) -> Reference | None:
     bf_handle = mem_handle.allocate_buffer_ptr(page_size, n_pages, is_circular=is_circular, channel_id=channel_id)
     if bf_handle is None:
-        return None
+        raise Exception(f"[ERROR] Out of Memory: Failed to allocate page pointer from memory handle {mem_handle}.")
     return Reference(handle=bf_handle, item=None)
 
 def create_distributed_buffer(mem_handles: list[MemoryHandle], page_size: int, n_pages: int, channel_id: int=0) -> Reference | None:
     n_page_per_handle = math.ceil(n_pages / len(mem_handles))
     page_ptrs = []
     
-    for mem_handle in mem_handles:
-        for i in range(n_page_per_handle):
+    for i in range(n_page_per_handle):
+        for mem_handle in mem_handles:
             if len(page_ptrs) >= n_pages:
                 break
             page_ptr = mem_handle.allocate_page_ptr(page_size, channel_id=channel_id)
             if page_ptr is None:
-                return None
+                raise Exception(f"[ERROR] Out of Memory: Failed to allocate page pointer from memory handle {mem_handle}.")
             page_ptrs.append(page_ptr)
             
     bf_handle = BufferHandle(page_size=page_size, n_pages=n_pages, page_ptrs=page_ptrs)

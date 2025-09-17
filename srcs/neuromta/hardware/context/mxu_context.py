@@ -134,7 +134,7 @@ class MXUContext:
             if ifm_tile.shape != self.ifm_tile_shape:
                 raise Exception(f"[ERROR] IFM tile shape {ifm_tile.shape} does not match expected shape {self.ifm_tile_shape}.")
             if psum_tile is None:
-                psum_tile = self._acc_regs
+                raise Exception("[ERROR] PSUM tile must be provided for WS dataflow.")
             
             self._acc_regs[:, :] = (ifm_tile.to(dtype=self._acc_dtype) @ self._pe_arr_regs) + psum_tile.to(dtype=self._acc_dtype)
         else:

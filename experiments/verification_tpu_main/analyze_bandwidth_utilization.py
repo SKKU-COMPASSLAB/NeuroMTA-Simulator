@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
 from neuromta.framework import *
@@ -9,6 +10,7 @@ from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyze
 from neuromta.ip.tenstorrent.architecture import TenstorrentConfig
 
 
+PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".profiles")
 ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), ".analysis")
 ICNT_CORE_TRACE_FNAME = os.path.join(ANALYSIS_DIR, "icnt_core_trace.csv")
 MAIN_MEM_CORE_TRACE_FNAME = os.path.join(ANALYSIS_DIR, "main_mem_core_trace.csv")
@@ -36,24 +38,31 @@ def create_bandwidth_utilization_plot(ax: plt.Axes, arr: np.ndarray, title: str,
     return ax
 
 if __name__ == "__main__":
-    hw_config = TenstorrentConfig.BLACKHOLE()
-    icnt_config: IcntConfig = hw_config["icnt_config"]
+    results = []
     
-    flit_size = icnt_config.flit_size
-    
-    icnt_core_analyzer = IcntCoreAnalyzer()
+    for filename in os.listdir(PROFILE_DIR):
+        filepath = os.path.join(PROFILE_DIR, filename)
+        
+        df = pd.read_csv(filepath)
+        
+        df['command_id'] = df['command_id'].str.strip()
+        mxu_row = df[df['command_id'] == 'mxu_tiled_gemm']
+        
+        result = mxu_row['duration'].iloc[0] / mxu_row['last_commit_time'].iloc[0]
+        results.append(result)
+
+    print(f"Average MXU Utilization: {sum(results)/len(results)*100:.2f}%")
+
     main_mem_core_analyzer = MainMemCoreAnalyzer()
-    
-    icnt_core_analyzer.load_traces(ICNT_CORE_TRACE_FNAME)
     main_mem_core_analyzer.load_traces(MAIN_MEM_CORE_TRACE_FNAME)
     
-    icnt_bandwidth_arr = np.array(icnt_core_analyzer.dump_bandwidth_analysis(bin_size=1), dtype=np.float32) * flit_size
     main_mem_bandwidth_arr = np.array(main_mem_core_analyzer.dump_bandwidth_analysis(bin_size=1), dtype=np.float32)
+    
+    print(f"Main Memory Bandwidth: mean={np.mean(main_mem_bandwidth_arr):.2f} B/cycle, max={np.max(main_mem_bandwidth_arr):.2f} B/cycle")
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+    fig, ax1 = plt.subplots(1, 1, figsize=(12, 4))
 
-    create_bandwidth_utilization_plot(ax1, icnt_bandwidth_arr, "ICNT Bandwidth Utilization", "Time (cycle)", "Bandwidth (B/cycle)")
-    create_bandwidth_utilization_plot(ax2, main_mem_bandwidth_arr, "Main Memory Bandwidth Utilization", "Time (cycle)", "Bandwidth (B/cycle)")
+    create_bandwidth_utilization_plot(ax1, main_mem_bandwidth_arr, "Main Memory Bandwidth Utilization", "Time (cycle)", "Bandwidth (B/cycle)")
 
     plt.tight_layout()
     plt.savefig(IMG_SAVE_FNAME, dpi=1000)

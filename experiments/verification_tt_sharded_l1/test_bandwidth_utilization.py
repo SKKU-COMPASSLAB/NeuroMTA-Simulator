@@ -29,24 +29,27 @@ def read_kernel(
     cb_psum_ptr: Reference,
     
     n_seq_pages: int,   # number of sequential pages (especially for IFM and WGT)
+    load_burst_len: int,
 ):
-    # load psum, ifm and wgt to the l1 circular buffer
-    for i in range(n_seq_pages):
+    for i in range(0, n_seq_pages, load_burst_len):
+        ed = min(i + load_burst_len, n_seq_pages)
+        n_pages = ed - i
+        
         if i == 0:
             core.cb_reserve_back(cb_psum_ptr, 1)
-        core.cb_reserve_back(cb_ifm_ptr, 1)
-        core.cb_reserve_back(cb_wgt_ptr, 1)
+        core.cb_reserve_back(cb_ifm_ptr, n_pages)
+        core.cb_reserve_back(cb_wgt_ptr, n_pages)
         
         if i == 0:
             core.async_noc_buffer_read(cb_psum_ptr[0], bf_psum_ptr[0])
-        core.async_noc_buffer_read(cb_ifm_ptr[0], bf_ifm_ptr[i])
-        core.async_noc_buffer_read(cb_wgt_ptr[0], bf_wgt_ptr[i])
+        core.async_noc_buffer_read(cb_ifm_ptr[0:n_pages], bf_ifm_ptr[i:ed])
+        core.async_noc_buffer_read(cb_wgt_ptr[0:n_pages], bf_wgt_ptr[i:ed])
         core.async_rpc_wait_all()
         
         if i == 0:
             core.cb_push_back(cb_psum_ptr, 1)
-        core.cb_push_back(cb_ifm_ptr, 1)
-        core.cb_push_back(cb_wgt_ptr, 1)
+        core.cb_push_back(cb_ifm_ptr, n_pages)
+        core.cb_push_back(cb_wgt_ptr, n_pages)
         
 @core_kernel_method
 def compute_kernel(
@@ -114,7 +117,7 @@ if __name__ == "__main__":
     
     M = 512
     N = 512
-    K = 128
+    K = 512
     dtype = torch.int8
     acc_dtype = torch.int32
     
@@ -138,10 +141,14 @@ if __name__ == "__main__":
     wgt_tile_size = k_tile * n_tile * dtype.itemsize
     ofm_tile_size = m_tile * n_tile * acc_dtype.itemsize
 
-    # n_cores = min(m_tile_num * n_tile_num, len(device.npu_cores))
-    n_cores = 16  # limit to 16 cores for faster profiling (128x128 = 32x32x16)
-    core_group = device.npu_core_ids[:n_cores]
-    cb_n_pages = 8
+    core_grid_shape = (4, 4)
+    core_grid = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape)
+    
+    core_ids = core_grid[:, :]
+    n_cores = len(core_ids)
+    
+    cb_n_pages = 4
+    load_burst_len = cb_n_pages // 2  # should be less than cb_n_pages to avoid deadlock
     
     ifm:  torch.Tensor = torch.arange(0, M * K, dtype=dtype).reshape(M, K)
     wgt:  torch.Tensor = torch.arange(0, K * N, dtype=dtype).reshape(K, N)
@@ -162,15 +169,15 @@ if __name__ == "__main__":
     psum_size = psum.numel() * psum.element_size()
     ofm_size  = ofm.numel()  * ofm.element_size()
     
-    bf_ifm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num, core_ids=core_group)
-    bf_wgt_ptr:  Reference = device.create_sharded_l1_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num, core_ids=core_group)
-    bf_psum_ptr: Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_group)
-    bf_ofm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_group)
+    bf_ifm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num, core_ids=core_ids)
+    bf_wgt_ptr:  Reference = device.create_sharded_l1_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num, core_ids=core_ids)
+    bf_psum_ptr: Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_ids)
+    bf_ofm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_ids)
 
-    cb_ifm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=core_group)
-    cb_wgt_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=core_group)
-    cb_psum_ptrs: list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_group)
-    cb_ofm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_group)
+    cb_ifm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_wgt_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_psum_ptrs: list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_ofm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
 
     device.set_ptr_content(bf_ifm_ptr, tiled_ifm)
     device.set_ptr_content(bf_wgt_ptr, tiled_wgt)
@@ -181,7 +188,7 @@ if __name__ == "__main__":
         for n_it in range(n_tile_num):
             core_idx = (m_it * n_tile_num + n_it) % n_cores
 
-            core_id = core_group[core_idx]
+            core_id = core_ids[core_idx]
             core = device.get_core_from_id(core_id=core_id)
             
             core_bf_ifm_ptr  = bf_ifm_ptr[m_it * k_tile_num:(m_it + 1) * k_tile_num]
@@ -194,7 +201,7 @@ if __name__ == "__main__":
             core_cb_psum_ptr = cb_psum_ptrs[core_idx] if n_cores > 1 else cb_psum_ptrs
             core_cb_ofm_ptr  = cb_ofm_ptrs[core_idx]  if n_cores > 1 else cb_ofm_ptrs
 
-            kernel1 = read_kernel(core, core_bf_ifm_ptr, core_bf_wgt_ptr, core_bf_psum_ptr, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, n_seq_pages=k_tile_num)
+            kernel1 = read_kernel(core, core_bf_ifm_ptr, core_bf_wgt_ptr, core_bf_psum_ptr, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, n_seq_pages=k_tile_num, load_burst_len=load_burst_len)
             kernel2 = compute_kernel(core, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, core_cb_ofm_ptr, k_tile_num=k_tile_num, dtype=dtype, acc_dtype=acc_dtype)
             kernel3 = write_kernel(core, core_bf_ofm_ptr, core_cb_ofm_ptr)
             
@@ -215,7 +222,6 @@ if __name__ == "__main__":
             profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
             
     icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
-    main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
 
     with MonitoringWindow() as monitor:
         for core_id, core in device.cores.items():
@@ -231,8 +237,6 @@ if __name__ == "__main__":
     profiler_hub.save_profiles(PROFILE_DIR)
     icnt_core_tracer.save_traces(os.path.join(ANALYSIS_DIR, "icnt_core_trace.csv"))
     icnt_core_tracer.save_bandwidth_analysis(os.path.join(ANALYSIS_DIR, "icnt_core_bandwidth_analysis.csv"), bin_size=1)
-    main_mem_core_tracer.save_traces(os.path.join(ANALYSIS_DIR, "main_mem_core_trace.csv"))
-    main_mem_core_tracer.save_bandwidth_analysis(os.path.join(ANALYSIS_DIR, "main_mem_core_bandwidth_analysis.csv"), bin_size=1)
 
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

@@ -45,7 +45,7 @@ class ProgressBarHandle:
         self.ncols = state['ncols']
         self.percentage = state['percentage']
         
-    def bind_core(self, core):
+    def bind_core(self, core: Core):
         self._binded_core = core
         self._hook_id = core.register_command_debug_hook(self._update_pbar_debug_hook)
         
@@ -70,7 +70,7 @@ class ProgressBarHandle:
         for slot_id in core._dispatched_main_kernels.keys():
             ongoing_kernel = core._dispatched_main_kernels[slot_id]
             n_ongoing_kernels += 1
-            kernel_progress += max(((ongoing_kernel._execution_cursor + 1) / len(ongoing_kernel._execution_steps)) if len(ongoing_kernel._execution_steps) > 0 else 1.0, 1.0)
+            kernel_progress += max(((ongoing_kernel._execution_cursor) / len(ongoing_kernel._execution_steps)) if len(ongoing_kernel._execution_steps) > 0 else 1.0, 1.0)
             
             if slot_id in core._suspended_main_kernels:
                 suspended_kernels = core._suspended_main_kernels[slot_id]

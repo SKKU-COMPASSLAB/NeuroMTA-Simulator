@@ -1,10 +1,5 @@
-import time
 import sys
-import os
 import enum
-import threading as th
-import multiprocessing as mp
-from typing import Any
 
 
 __all__ = [
@@ -12,6 +7,7 @@ __all__ = [
     "logger",
     "set_global_monitoring_window",
     "unset_global_monitoring_window",
+    "get_global_monitoring_window",
     "_LOG_LEVEL_COLORS",
     "_COLOR_RESET",
 ]
@@ -49,6 +45,9 @@ def set_global_monitoring_window(monitoring_window):
 def unset_global_monitoring_window():
     global _global_monitoring_window
     _global_monitoring_window = None
+    
+def get_global_monitoring_window():
+    return _global_monitoring_window
 
 
 class logger:
