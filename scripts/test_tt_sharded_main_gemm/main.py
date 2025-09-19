@@ -41,11 +41,15 @@ def read_kernel(
         core.cb_reserve_back(cb_wgt_ptr, n_pages)
         
         if i == 0:
-            core.async_noc_buffer_read(cb_psum_ptr[0], bf_psum_ptr[0])
-        core.async_noc_buffer_read(cb_ifm_ptr[0:n_pages], bf_ifm_ptr[i:ed])
-        core.async_noc_buffer_read(cb_wgt_ptr[0:n_pages], bf_wgt_ptr[i:ed])
-        core.async_rpc_wait_all()
-        
+            with new_parallel_thread():
+                core.mem_buffer_copy(cb_psum_ptr[0], bf_psum_ptr[0])
+        with new_parallel_thread():
+            core.mem_buffer_copy(cb_ifm_ptr[0:n_pages], bf_ifm_ptr[i:ed])
+        with new_parallel_thread():
+            core.mem_buffer_copy(cb_wgt_ptr[0:n_pages], bf_wgt_ptr[i:ed])
+
+        core.parallel_merge()
+
         if i == 0:
             core.cb_push_back(cb_psum_ptr, 1)
         core.cb_push_back(cb_ifm_ptr, n_pages)
@@ -65,10 +69,14 @@ def compute_kernel(
     dtype: torch.dtype,
     acc_dtype: torch.dtype,
 ):  
+    containers = [DataContainer() for _ in range(4)]
+    
     core.mxu_reconfigure(dtype=dtype, acc_dtype=acc_dtype)
     
     core.cb_wait_front(cb_psum_ptr, 1)
     core.cb_reserve_back(cb_ofm_ptr, 1)
+    
+    core.mem_read_with_container(cb_psum_ptr[0], containers[2])
     
     for k_it in range(k_tile_num):
         preload_psum = True if (k_it == 0) else False
@@ -77,11 +85,11 @@ def compute_kernel(
         core.cb_wait_front(cb_ifm_ptr, 1)
         core.cb_wait_front(cb_wgt_ptr, 1)
         
+        core.mem_read_with_container(cb_ifm_ptr[0], containers[0])
+        core.mem_read_with_container(cb_wgt_ptr[0], containers[1])
+        
         core.mxu_tiled_gemm(
-            ifm_ptr=cb_ifm_ptr[0],
-            wgt_ptr=cb_wgt_ptr[0],
-            psum_ptr=cb_psum_ptr[0],
-            ofm_ptr=cb_ofm_ptr[0],
+            *containers,
             preload_wgt=False,
             preload_psum=preload_psum,
             flush_ofm=flush_ofm,
@@ -89,6 +97,8 @@ def compute_kernel(
         
         core.cb_pop_front(cb_ifm_ptr, 1)
         core.cb_pop_front(cb_wgt_ptr, 1)
+        
+    core.mem_write_with_container(cb_psum_ptr[0], containers[3])
     
     core.cb_pop_front(cb_psum_ptr, 1)
     core.cb_push_back(cb_ofm_ptr, 1)
@@ -101,8 +111,7 @@ def write_kernel(
     cb_ofm_ptr: Reference,
 ):
     core.cb_wait_front(cb_ofm_ptr, 1)
-    core.async_noc_buffer_write(bf_ofm_ptr[0], cb_ofm_ptr[0])
-    core.async_rpc_wait_all()
+    core.mem_buffer_copy(bf_ofm_ptr[0], cb_ofm_ptr[0])
     core.cb_pop_front(cb_ofm_ptr, 1)
 
 
@@ -143,9 +152,10 @@ if __name__ == "__main__":
     ofm_tile_size = m_tile * n_tile * acc_dtype.itemsize
 
     core_grid_shape = (4, 4)
-    core_grid = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape)
+    # core_grid = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape)
     
-    core_ids = core_grid[:, :]
+    core_ids = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape)
+    # core_ids = device.npu_core_ids[:16]
     n_cores = len(core_ids)
     
     cb_n_pages = 4

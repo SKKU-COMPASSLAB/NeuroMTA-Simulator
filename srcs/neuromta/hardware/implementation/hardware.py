@@ -19,16 +19,16 @@ from neuromta.hardware.companions.dramsim import DRAMSim3
 
 
 __all__ = [
-    "MultiTileAccelerator"
+    "MultiCoreAccelerator",
+    "MultiTileAccelerator",
 ]
 
 
-class MultiTileAccelerator(Device):
+class MultiCoreAccelerator(Device):
     def __init__(
         self, 
         
-        cmap_config: CmapConfig, 
-        icnt_config: IcntConfig,
+        cmap_config: CmapConfig,
         mem_config: MemConfig,
         mxu_config: MXUConfig,
         vpu_config: VPUConfig,
@@ -36,7 +36,6 @@ class MultiTileAccelerator(Device):
         super().__init__()
         
         self.cmap_context = CmapContext(config=cmap_config)
-        self.icnt_context = IcntContext(config=icnt_config)
         self.mem_context  = MemContext(config=mem_config)
         
         self.mxu_config = mxu_config
@@ -58,14 +57,7 @@ class MultiTileAccelerator(Device):
             for core_id in self.dma_core_ids
         ]
         
-        self.icnt_core = IcntCore(cmap_context=self.cmap_context, icnt_context=self.icnt_context)
         self.main_mem_core = MainMemoryCore(mem_context=self.mem_context, cmap_context=self.cmap_context)
-        
-        if self.icnt_context.booksim2_enable:
-            self.companion_core.register_companion_module(
-                self.cmap_context.config.booksim_module_id,
-                module=BookSim2(config=self.icnt_context.config.booksim2_config)
-            )
         
         if self.mem_context.main_config.dramsim3_enable:
             self.companion_core.register_companion_module(
@@ -73,23 +65,21 @@ class MultiTileAccelerator(Device):
                 module=DRAMSim3(config=self.mem_context.main_config.dramsim3_config)
             )
     
-    def get_npu_core(self, core_id: int=None, coord: tuple[int, int]=None, addr: int=None) -> NPUCore:
-        if core_id is None and coord is None and addr is None:
+    def get_npu_core(self, core_id: int=None, addr: int=None) -> NPUCore:
+        if core_id is None and addr is None:
             raise Exception(f"[ERROR] Please provide exactly one of core_id, coord, or addr to identify the NPU core.")
             
         if core_id is None:
-            if coord is not None:
-                core_id = self.icnt_context.coord_to_core_id(coord)
-            elif addr is not None:
+            if addr is not None:
                 addr_space_entry = self.cmap_context.get_addr_space_entry_from_address(addr)
                 core_id = addr_space_entry.core_ids[0]  # TODO: only one?
 
         core_idx = self.npu_core_id_to_idx_mappings[core_id]
 
         return self.npu_cores[core_idx]
-    
-    def get_l1_mem_handle(self, core_id: int=None, coord: tuple[int, int]=None, addr: int=None) -> MemoryHandle:
-        core = self.get_npu_core(core_id=core_id, coord=coord, addr=addr)
+
+    def get_l1_mem_handle(self, core_id: int=None, addr: int=None) -> MemoryHandle:
+        core = self.get_npu_core(core_id=core_id, addr=addr)
         return core.mem_handle
     
     def get_main_mem_handle(self) -> MemoryHandle:
@@ -128,17 +118,6 @@ class MultiTileAccelerator(Device):
         if len(core_ids) == 1:
             return ptrs[0]
         return ptrs
-
-    def create_sharded_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> Reference:
-        if core_ids is None:
-            core_ids = self.cmap_context.config.get_core_ids(CmapCoreType.NPU)
-        if not isinstance(core_ids, Sequence):
-            core_ids = [core_ids]
-
-        mem_handles = [self.get_l1_mem_handle(core_id=core_id) for core_id in core_ids]
-        ptr = create_distributed_buffer(mem_handles=mem_handles, page_size=page_size, n_pages=n_pages)
-
-        return ptr
 
     def create_sharded_main_buffer(self, page_size: int, n_pages: int, channel_id: int | Sequence[int]=None) -> Reference:        
         if channel_id is None:
@@ -226,3 +205,61 @@ class MultiTileAccelerator(Device):
         content = mem_handle.get_content(ptr, shape=shape, dtype=dtype)
 
         return content
+    
+    
+class MultiTileAccelerator(MultiCoreAccelerator):
+    def __init__(
+        self, 
+        
+        cmap_config: CmapConfig, 
+        icnt_config: IcntConfig,
+        mem_config: MemConfig,
+        mxu_config: MXUConfig,
+        vpu_config: VPUConfig,
+    ):
+        super().__init__(cmap_config=cmap_config, mem_config=mem_config, mxu_config=mxu_config, vpu_config=vpu_config)
+        
+        self.icnt_context = IcntContext(config=icnt_config)
+        self.icnt_core = IcntCore(cmap_context=self.cmap_context, icnt_context=self.icnt_context)
+        
+        if self.icnt_context.booksim2_enable:
+            self.companion_core.register_companion_module(
+                self.cmap_context.config.booksim_module_id,
+                module=BookSim2(config=self.icnt_context.config.booksim2_config)
+            )
+            
+        npu_core_rows, npu_core_cols = [], []
+        
+        for core_id in self.npu_core_ids:
+            coord = self.icnt_context.core_id_to_coord(core_id)
+            npu_core_rows.append(coord[0])
+            npu_core_cols.append(coord[1])
+            
+        npu_core_rows = sorted(list(set(npu_core_rows)))
+        npu_core_cols = sorted(list(set(npu_core_cols)))
+        
+        self.npu_core_grid = torch.tensor([[self.icnt_context.coord_to_core_id((r, c)) for c in npu_core_cols]for r in npu_core_rows])
+        self.npu_core_grid_enabled = True
+        
+        for core_id in torch.unique(self.npu_core_grid):
+            if core_id not in self.npu_core_ids:
+                self.npu_core_grid_enabled = False  # the accelerator does not have a full mesh of NPU cores
+                break
+
+    def get_npu_core_grid(self, offset: tuple[int, int], shape: tuple[int, int]) -> list[int]:
+        if not self.npu_core_grid_enabled:
+            raise Exception("[ERROR] Unable to get npu core grid since the accelerator does not have a full mesh of NPU cores.")
+
+        grid = self.npu_core_grid[offset[0]:offset[0]+shape[0], offset[1]:offset[1]+shape[1]]
+        return grid.flatten().tolist()
+
+    def create_sharded_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None, contiguous_n_pages: int=1) -> Reference:
+        if core_ids is None:
+            core_ids = self.cmap_context.config.get_core_ids(CmapCoreType.NPU)
+        if not isinstance(core_ids, Sequence):
+            core_ids = [core_ids]
+
+        mem_handles = [self.get_l1_mem_handle(core_id=core_id) for core_id in core_ids]
+        ptr = create_distributed_buffer(mem_handles=mem_handles, page_size=page_size, n_pages=n_pages, contiguous_n_pages=contiguous_n_pages)
+
+        return ptr

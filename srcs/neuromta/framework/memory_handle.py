@@ -1,10 +1,11 @@
 import enum
 import math
 import torch
-from typing import Any, Sequence
+from typing import Any, Sequence, TypeVar, Generic
 
 
 __all__ = [
+    "DataContainer",
     "Variable",
     "Page",
     "PointerType",
@@ -21,26 +22,18 @@ __all__ = [
 ]
 
 
+T = TypeVar('T')
+
+class DataContainer(Generic[T]):
+    def __init__(self, data: T=None):
+        self.data: T = data
+
+
 class _DataElement:
     def __init__(self, addr: int, size: int, content: Any=None):
         self._addr = addr
         self._size = size
         self._content = content
-        
-    def copy_from(self, other: '_DataElement'):
-        if not isinstance(other, _DataElement):
-            raise TypeError(f"Expected _DataElement, got {type(other)}")
-        
-        self._addr = other.addr
-        self._size = other.size
-        
-        if isinstance(self._content, torch.Tensor):
-            if isinstance(other.content, torch.Tensor):
-                self._content.copy_(other.content)
-            else:
-                self._content.fill_(other.content)
-        else:            
-            self._content = other.content
 
     @property
     def addr(self) -> int:
@@ -149,6 +142,9 @@ class Pointer:
     def ptr_type(self) -> PointerType:
         return self._ptr_type
     
+    def __str__(self):
+        return f"Pointer(addr={self._addr}, size={self._size}, type={self._ptr_type})"
+    
     
 class Reference:
     def __init__(self, handle: 'BufferHandle', item: int | slice | tuple[int, ...] | None=None):
@@ -157,6 +153,10 @@ class Reference:
         
         if self._item is None:
             self._item = slice(0, handle.n_pages, 1)
+            
+    @property
+    def size(self) -> int:
+        return self._handle.size
         
     @property
     def raw_handle(self) -> 'BufferHandle':
@@ -212,8 +212,6 @@ class Reference:
                 page_ptrs = page_ptrs[start:stop]
             else:
                 page_ptrs = page_ptrs[start:] + page_ptrs[:stop]
-            
-            # page_ptrs = page_ptrs[start:stop]
         elif isinstance(self._item, tuple):
             page_ptrs = [page_ptrs[(i + offset) % self._handle.n_pages] for i in self._item]
         
@@ -254,6 +252,10 @@ class BufferHandle:
     @property
     def page_ptrs(self) -> list[Pointer]:
         return self._page_ptrs
+    
+    @property
+    def size(self) -> int:
+        return self._page_size * self._n_pages
     
     
 class CircularBufferHandle(BufferHandle):
@@ -339,10 +341,11 @@ class MemoryHandle:
                 content = content.view(dtype=dtype)
             if shape is not None:
                 content = content.reshape(shape=shape)
+            content = content.clone()
         
         return content
     
-    def set_content(self, key: Any, value: Any, offset: int=0):
+    def set_content(self, key: Any, value: Any, page_offset: int=0):
         if isinstance(key, Reference):
             key = key.resolve(is_read=False)
         
@@ -355,11 +358,11 @@ class MemoryHandle:
             if not isinstance(value, torch.Tensor):
                 raise TypeError(f"[ERROR] Buffer content must be a torch.Tensor, got {type(value)}.")
             
-            paged_value = value.view(dtype=torch.uint8).reshape((key.n_pages, -1))
+            paged_value = value.view(dtype=torch.uint8).reshape((key.n_pages, -1)).clone()
             
             for page_idx, page_ptr in enumerate(key.page_ptrs):
                 page: Page = self.get_data_element(page_ptr)
-                page.set_content(value=paged_value[page_idx, :], offset=offset)
+                page.set_content(value=paged_value[page_idx, :], offset=page_offset)
         else:
             raise TypeError(f"[ERROR] Key must be an int or Pointer, got {type(key)}.")
 
@@ -498,21 +501,33 @@ def create_page_ptr(mem_handle: MemoryHandle, page_size: int) -> Pointer | None:
 def create_uniform_buffer(mem_handle: MemoryHandle, page_size: int, n_pages: int, is_circular: bool, channel_id: int | Sequence[int]=0) -> Reference | None:
     bf_handle = mem_handle.allocate_buffer_ptr(page_size, n_pages, is_circular=is_circular, channel_id=channel_id)
     if bf_handle is None:
-        raise Exception(f"[ERROR] Out of Memory: Failed to allocate page pointer from memory handle {mem_handle}.")
+        return None
     return Reference(handle=bf_handle, item=None)
 
-def create_distributed_buffer(mem_handles: list[MemoryHandle], page_size: int, n_pages: int, channel_id: int=0) -> Reference | None:
-    n_page_per_handle = math.ceil(n_pages / len(mem_handles))
-    page_ptrs = []
+def create_distributed_buffer(mem_handles: list[MemoryHandle], page_size: int, n_pages: int, channel_id: int=0, contiguous_n_pages: int=1) -> Reference | None:
+    # n_page_per_handle = math.ceil(n_pages / len(mem_handles))
+    if n_pages % (len(mem_handles) * contiguous_n_pages) != 0:
+        n_pages += (len(mem_handles) * contiguous_n_pages - (n_pages % (len(mem_handles) * contiguous_n_pages)))
+    n_page_group_per_handle = n_pages // len(mem_handles) // contiguous_n_pages
     
-    for i in range(n_page_per_handle):
+    page_ptrs: list[Pointer] = []
+    page_ptr_to_handle: list[MemoryHandle] = []
+    
+    for _ in range(n_page_group_per_handle):
         for mem_handle in mem_handles:
-            if len(page_ptrs) >= n_pages:
-                break
-            page_ptr = mem_handle.allocate_page_ptr(page_size, channel_id=channel_id)
-            if page_ptr is None:
-                raise Exception(f"[ERROR] Out of Memory: Failed to allocate page pointer from memory handle {mem_handle}.")
-            page_ptrs.append(page_ptr)
+            for _ in range(contiguous_n_pages):
+                if len(page_ptrs) >= n_pages:
+                    break
+                
+                page_ptr = mem_handle.allocate_page_ptr(page_size, channel_id=channel_id)
+                
+                if page_ptr is None:
+                    for h, p in zip(page_ptr_to_handle, page_ptrs):
+                        h.deallocate_ptr(p)   # deallocate previously allocated pages
+                    return None
+                
+                page_ptrs.append(page_ptr)
+                page_ptr_to_handle.append(mem_handle)
             
     bf_handle = BufferHandle(page_size=page_size, n_pages=n_pages, page_ptrs=page_ptrs)
     if bf_handle is None:

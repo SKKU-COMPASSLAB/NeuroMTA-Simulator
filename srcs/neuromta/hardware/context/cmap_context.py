@@ -192,7 +192,7 @@ class CmapContext:
         self._npu_core_ids: tuple[int] = tuple(sorted(self.config.get_core_ids(CmapCoreType.NPU)))
         self._dma_core_ids: tuple[int] = tuple(sorted(self.config.get_core_ids(CmapCoreType.DMA)))
         
-    def get_nxt_mem_core_id(self, src_core_id: int, addr: int) -> int:
+    def get_mem_owner_core_id(self, src_core_id: int, addr: int) -> int:
         if self.config.check_l1_mem_addr(addr):
             base_addr = self.config.get_mem_base_addr(addr)
             addr_space_entry = self.config.addr_space[base_addr]

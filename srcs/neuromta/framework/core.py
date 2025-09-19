@@ -12,7 +12,6 @@ __all__ = [
     "get_global_kernel_context",
     "get_global_pid",
 
-    "DataContainer",
     "RPCMessage",
     "Command",
     "ConditionalCommand",
@@ -256,25 +255,7 @@ def end_parallel_thread():
 #################################################
 # Implementation
 #################################################
-
-class DataContainer:
-    def __init__(self, data: Any=None):
-        self.data = data
-    
-    def copy_from(self, other: 'DataContainer'):
-        if not isinstance(other, DataContainer):
-            raise Exception(f"[ERROR] Cannot copy from non-DataContainer object of type {type(other).__name__}")
-        self.data = other.data
-
-    def __getstate__(self) -> dict[str, Any]:
-        return {
-            "data": self.data
-        }
         
-    def __setstate__(self, state: dict):
-        self.data = state["data"]
-        
-
 class RPCMessage:
     def __init__(self, src_core_id: str, dst_core_id: str, cmd_id: str):
         self.msg_type = 0        # 0 for request, 1 for response
@@ -326,23 +307,8 @@ class RPCMessage:
         return msg
         
     def copy_args_from_rsp(self, rsp_msg: 'RPCMessage'):
-        for arg_idx in range(len(self.args)):
-            req_arg = self.args[arg_idx]
-            rsp_arg = rsp_msg.args[arg_idx]
-
-            if isinstance(req_arg, DataContainer):
-                req_arg.copy_from(rsp_arg)  # copy the response arguments to the request arguments
-            else:
-                self.args[arg_idx] = rsp_arg
-
-        for arg_name in self.kwargs.keys():
-            req_arg = self.kwargs[arg_name]
-            rsp_arg = rsp_msg.kwargs[arg_name]
-
-            if isinstance(req_arg, DataContainer):
-                req_arg.copy_from(rsp_arg)  # copy the response arguments to the request arguments
-            else:
-                self.kwargs[arg_name] = rsp_arg
+        self.args = rsp_msg.args
+        self.kwargs = rsp_msg.kwargs
     
     def __str__(self):
         return f"RPCMessage(msg_id={self.msg_id}, src_core_id={self.src_core_id}, dst_core_id={self.dst_core_id}, kernel_id={self.kernel_id}, cmd_id={self.cmd_id})"
@@ -859,16 +825,16 @@ class Core:
 
         return True
     
-    @core_conditional_command_method
-    def async_rpc_wait_all(self):
-        current_context = get_global_kernel_context()
-        dept_rpc_msg_ids = list(rpc_msg_id for rpc_msg_id, main_kernel_slot_id in self._suspended_rpc_to_main_kernels_mapping.items() if main_kernel_slot_id == current_context.root_kernel_id)
+    # @core_conditional_command_method
+    # def async_rpc_wait_all(self):
+    #     current_context = get_global_kernel_context()
+    #     dept_rpc_msg_ids = list(rpc_msg_id for rpc_msg_id, main_kernel_slot_id in self._suspended_rpc_to_main_kernels_mapping.items() if main_kernel_slot_id == current_context.root_kernel_id)
         
-        for msg_id in dept_rpc_msg_ids:
-            if not self.async_rpc_wait_rsp_msg(self._suspended_rpc_req_msg[msg_id]):
-                return False
+    #     for msg_id in dept_rpc_msg_ids:
+    #         if not self.async_rpc_wait_rsp_msg(self._suspended_rpc_req_msg[msg_id]):
+    #             return False
                 
-        return True
+    #     return True
 
     def _rpc_req_kernel_dispatch_routine(self):
         while len(self.rpc_req_recv_queue):

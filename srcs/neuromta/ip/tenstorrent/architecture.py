@@ -12,7 +12,6 @@ from neuromta.hardware.companions.dramsim import PYDRAMSIM3_AVAILABLE, DRAMSim3C
 __all__ = [
     "TenstorrentConfig",
     "TenstorrentDevice",
-    "TenstorrentCoreGrid",
 ]
 
 
@@ -31,8 +30,6 @@ class TenstorrentConfig(dict):
         mem_config: MemConfig,
         mxu_config: MXUConfig,
         vpu_config: VPUConfig, 
-        dma_core_cols: list[int],
-        npu_core_cols: list[int],
     ):
         self["processor_clock_freq"] = processor_clock_freq
         self["icnt_config"] = icnt_config
@@ -40,8 +37,6 @@ class TenstorrentConfig(dict):
         self["mem_config"] = mem_config
         self["mxu_config"] = mxu_config
         self["vpu_config"] = vpu_config
-        self["dma_core_cols"] = dma_core_cols
-        self["npu_core_cols"] = npu_core_cols
         
     @classmethod
     def BLACKHOLE(cls) -> 'TenstorrentConfig':
@@ -72,9 +67,6 @@ class TenstorrentConfig(dict):
         )
         
         dma_core_group: dict[int, list[int]] = {}
-        
-        dma_core_cols = [0, 8]
-        npu_core_cols = [i for i in range(1, 15) if i not in dma_core_cols]
 
         for row in range(12):
             inter_ch_idx = row // n_dma_core_per_channel
@@ -171,50 +163,11 @@ class TenstorrentConfig(dict):
             mem_config=mem_config,
             mxu_config=mxu_config,
             vpu_config=vpu_config,
-            dma_core_cols=dma_core_cols,
-            npu_core_cols=npu_core_cols,
         )
 
 
 class TenstorrentDevice(MultiTileAccelerator):
-    def __init__(self, processor_clock_freq, cmap_config, icnt_config, mem_config, mxu_config, vpu_config, dma_core_cols, npu_core_cols):
+    def __init__(self, processor_clock_freq, cmap_config, icnt_config, mem_config, mxu_config, vpu_config):
         super().__init__(cmap_config, icnt_config, mem_config, mxu_config, vpu_config)
         
         self.processor_clock_freq = processor_clock_freq
-        self.dma_core_cols = dma_core_cols
-        self.npu_core_cols = npu_core_cols
-    
-    def get_npu_core_grid(self, offset: tuple[int, int], shape: tuple) -> 'TenstorrentCoreGrid':
-        grid = torch.tensor([[self.icnt_context.config.coord_to_core_id((r, c)) for c in self.npu_core_cols]for r in range(self.icnt_context.config.shape[0])])
-        core_ids = grid[offset[0]:offset[0]+shape[0], offset[1]:offset[1]+shape[1]].tolist()
-        return TenstorrentCoreGrid(offset=offset, shape=shape, core_ids=core_ids)
-    
-    
-class TenstorrentCoreGrid:
-    def __init__(self, offset: tuple[int, int], shape: tuple[int, int], core_ids: list[list[int]]):
-        self.offset = offset
-        self.shape = shape
-        self.core_ids = core_ids
-        
-    def __getitem__(self, idx):
-        if isinstance(idx, tuple) and len(idx) == 2:
-            r_idx = idx[0]
-            c_idx = idx[1]
-            
-            if isinstance(r_idx, slice):
-                core_ids = []
-                
-                for r in range(*r_idx.indices(self.shape[0])):
-                    if isinstance(c_idx, slice):
-                        for c in range(*c_idx.indices(self.shape[1])):
-                            core_ids.append(self.core_ids[r][c])
-                    else:
-                        core_ids.append(self.core_ids[r][c_idx])
-                return core_ids
-            else:
-                if isinstance(c_idx, slice):
-                    return self.core_ids[r_idx][c_idx]
-                else:
-                    return self.core_ids[r_idx][c_idx]
-        
-        raise IndexError(f"[ERROR] Cannot get core ids from the core grid since the index '{idx}' is invalid.")

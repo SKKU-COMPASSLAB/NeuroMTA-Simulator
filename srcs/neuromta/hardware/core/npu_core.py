@@ -95,224 +95,96 @@ class NPUCore(Core):
         handle.deallocate_cb_space(n_pages)
         
     #############################################################
-    # Buffer Management
+    # Memory Copy Commands
     #############################################################
+    
+    @core_command_method
+    def mem_read_with_container(self, handle: Reference | Pointer, container: DataContainer, offset: int=0, size: int=None, shape: tuple[int, ...]=(-1,), dtype: torch.dtype=torch.uint8):
+        if isinstance(handle, Reference):
+            handle = handle.resolve(is_read=True)
+        
+        if size is None:
+            size = handle.size
+            
+        data: torch.Tensor = self.mem_handle.get_content(handle, shape=(-1,), dtype=torch.uint8)[offset:offset+size]
+        container.data = data.view(dtype=dtype).reshape(shape)
+
+    @core_command_method
+    def mem_write_with_container(self, handle: Reference | Pointer, container: DataContainer, offset: int=0):
+        if isinstance(handle, Reference):
+            rd_handle = handle.resolve(is_read=True)
+            wr_handle = handle.resolve(is_read=False)
+        else:
+            rd_handle = handle
+            wr_handle = handle
+            
+        raw_data: torch.Tensor = self.mem_handle.get_content(rd_handle, shape=(-1,), dtype=torch.uint8)
+        wr_data:  torch.Tensor = container.data.view(torch.uint8).reshape(-1)
+        
+        raw_data[offset:offset+wr_data.numel()] = wr_data
+        self.mem_handle.set_content(wr_handle, raw_data)
         
     @core_command_method
     def local_memcopy_page(self, dst_ptr: Pointer, src_ptr: Pointer):
-        if dst_ptr.ptr_type != PointerType.PAGE or src_ptr.ptr_type != PointerType.PAGE:
-            raise ValueError("[ERROR] Memory copy requires page pointers.")
-
-        if dst_ptr.size != src_ptr.size:
-            raise ValueError(f"[ERROR] Page sizes do not match: {dst_ptr.size} != {src_ptr.size}")
-
-        if not self.use_functional_model:
-            return  # Terminate the operation if not using functional model
-
-        dst_elem = self.mem_handle.get_data_element(dst_ptr)
-        src_elem = self.mem_handle.get_data_element(src_ptr)
-
-        dst_elem.copy_from(src_elem)
+        content = self.mem_handle.get_content(src_ptr)
+        self.mem_handle.set_content(dst_ptr, content)
 
     @core_kernel_method
-    def local_memcopy_buffer(self, dst_ref: Reference, src_ref: Reference):  
+    def mem_page_copy(self, dst_ptr: Pointer, src_ptr: Pointer):
+        condainer = DataContainer()
+        
+        src_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, src_ptr.addr)
+        dst_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, dst_ptr.addr)
+        
+        if self.cmap_context.config.check_l1_mem_addr(src_ptr.addr):
+            src_read_msg = RPCMessage(self.core_id, src_owner_id, cmd_id="mem_read_with_container").with_args(handle=src_ptr, container=condainer, offset=0, size=src_ptr.size)
+        elif self.cmap_context.config.check_main_mem_addr(src_ptr.addr):
+            src_read_msg = RPCMessage(self.core_id, src_owner_id, cmd_id="mem_page_read").with_args(ptr=src_ptr, container=condainer)
+        else:
+            raise Exception(f"[ERROR] Invalid source memory address {src_ptr.addr} in core {self.core_id}")
+        
+        noc_transaction_msgs = []
+        
+        if src_owner_id != self.core_id:
+            noc_read_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_read_transaction").with_args(src_id=src_owner_id, dst_id=self.core_id, data_size=src_ptr.size)
+            noc_transaction_msgs.append(noc_read_msg)
+        if dst_owner_id != self.core_id:
+            noc_write_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_write_transaction").with_args(src_id=self.core_id, dst_id=dst_owner_id, data_size=dst_ptr.size)
+            noc_transaction_msgs.append(noc_write_msg)
+            
+        if self.cmap_context.config.check_l1_mem_addr(dst_ptr.addr):
+            dst_write_msg = RPCMessage(self.core_id, dst_owner_id, cmd_id="mem_write_with_container").with_args(handle=dst_ptr, container=condainer, offset=0)
+        elif self.cmap_context.config.check_main_mem_addr(dst_ptr.addr):
+            dst_write_msg = RPCMessage(self.core_id, dst_owner_id, cmd_id="mem_page_write").with_args(ptr=dst_ptr, container=condainer)
+        else:
+            raise Exception(f"[ERROR] Invalid destination memory address {dst_ptr.addr} in core {self.core_id}")
+        
+        if src_owner_id == dst_owner_id == self.core_id:
+            self.local_memcopy_page(dst_ptr=dst_ptr, src_ptr=src_ptr)
+        else:
+            self.async_rpc_send_req_msg(src_read_msg)
+            self.async_rpc_wait_rsp_msg(src_read_msg)
+            
+            for msg in noc_transaction_msgs:
+                self.async_rpc_send_req_msg(msg)
+                self.async_rpc_wait_rsp_msg(msg)
+                
+            self.async_rpc_send_req_msg(dst_write_msg)
+            self.async_rpc_wait_rsp_msg(dst_write_msg)
+
+    @core_kernel_method
+    def mem_buffer_copy(self, dst_ref: Reference, src_ref: Reference, page_offset: int=0, n_pages: int=None):
         dst_handle = dst_ref.resolve(is_read=False)
         src_handle = src_ref.resolve(is_read=True)
-
-        for dst_ptr, src_ptr in zip(dst_handle.page_ptrs, src_handle.page_ptrs):
-            self.local_memcopy_page(dst_ptr, src_ptr)
-            
-    #############################################################
-    # Data Container (NoC Interface)
-    #############################################################
-    
-    @core_command_method
-    def mem_page_write(self, ptr: Pointer, container: DataContainer):
-        if ptr.ptr_type != PointerType.PAGE:
-            raise ValueError("[ERROR] Memory copy requires page pointer.")
-
-        if not isinstance(container, DataContainer):
-            raise ValueError("[ERROR] The source container must be a DataContainer instance.")
-
-        if not self.use_functional_model:
-            return  # Terminate the operation if not using functional model
         
-        page_elem = self.mem_handle.get_data_element(ptr)
-        page_elem.content = container.data
-
-    @core_command_method
-    def mem_page_read(self, ptr: Pointer, container: DataContainer):
-        if ptr.ptr_type != PointerType.PAGE:
-            raise ValueError("[ERROR] Memory copy requires page pointer.")
-
-        if not isinstance(container, DataContainer):
-            raise ValueError("[ERROR] The target container must be a DataContainer instance.")
+        if n_pages is None:
+            n_pages = min(dst_handle.n_pages - page_offset, src_handle.n_pages - page_offset)
         
-        if not self.use_functional_model:
-            return  # Terminate the operation if not using functional model
-
-        page_elem = self.mem_handle.get_data_element(ptr)
-        container.data = page_elem.content.clone()  # Copy the content of the page element to the container
-        
-    #############################################################
-    # Remote Asynchronous Memory Access (without NoC)
-    #############################################################
-    
-    @core_kernel_method
-    def async_page_read(self, dst_ptr: Pointer, src_ptr: Pointer):
-        src_owner_id = self.cmap_context.get_nxt_mem_core_id(self.core_id, src_ptr.addr)
-        dst_owner_id = self.core_id
-        
-        container = DataContainer()
-
-        mem_reader_msg = RPCMessage(
-            src_core_id=dst_owner_id,   # source of the RPC message will be myself
-            dst_core_id=src_owner_id,   # destination of the RPC message will be owner of the source pointer,
-            cmd_id="mem_page_read",
-        ).with_args(
-            ptr=src_ptr,
-            container=container
-        ).with_callbacks(
-            # self.mem_page_write(dst_ptr, container)  # load page from container
-            method=self.mem_page_write, ptr=dst_ptr, container=container  # load page from container
-        )
-        
-        self.async_rpc_send_req_msg(mem_reader_msg)
-            
-    @core_kernel_method
-    def async_page_write(self, dst_ptr: Pointer, src_ptr: Pointer):
-        src_owner_id = self.core_id
-        dst_owner_id = self.cmap_context.get_nxt_mem_core_id(self.core_id, dst_ptr.addr)
-        
-        container = DataContainer()
-        
-        mem_writer_msg = RPCMessage(
-            src_core_id=src_owner_id,   # source of the RPC message will be myself
-            dst_core_id=dst_owner_id,   # destination of the RPC message will be owner of the source pointer,
-            cmd_id="mem_page_write",
-        ).with_args(
-            ptr=dst_ptr,
-            container=container
-        )
-        
-        self.mem_page_read(src_ptr, container)
-        self.async_rpc_send_req_msg(mem_writer_msg)
-            
-    @core_kernel_method
-    def async_buffer_read(self, dst_ref: Reference, src_ref: Reference):
-        dst_handle = dst_ref.resolve(is_read=False)
-        src_handle = src_ref.resolve(is_read=True)  
-
-        for dst_ptr, src_ptr in zip(dst_handle.page_ptrs, src_handle.page_ptrs):
+        for i in range(n_pages):
             with new_parallel_thread():
-                self.async_page_read(dst_ptr, src_ptr)
-
-    @core_kernel_method
-    def async_buffer_write(self, dst_ref: Reference, src_ref: Reference):
-        dst_handle = dst_ref.resolve(is_read=False)
-        src_handle = src_ref.resolve(is_read=True)  
-
-        for dst_ptr, src_ptr in zip(dst_handle.page_ptrs, src_handle.page_ptrs):
-            with new_parallel_thread():
-                self.async_page_write(dst_ptr, src_ptr)
-        
-    #############################################################
-    # Remote Asynchronous Memory Access (via NoC)
-    #############################################################
-        
-    @core_kernel_method
-    def async_noc_page_read(self, dst_ptr: Pointer, src_ptr: Pointer):
-        icnt_core_id = self.cmap_context.icnt_core_id
-        src_owner_id = self.cmap_context.get_nxt_mem_core_id(self.core_id, src_ptr.addr)
-        dst_owner_id = self.core_id
-        
-        container = DataContainer()
-
-        noc_trans_msg = RPCMessage(
-            src_core_id=self.core_id,
-            dst_core_id=icnt_core_id,
-            cmd_id="noc_create_data_read_transaction"
-        ).with_args(
-            src_id=src_owner_id,
-            dst_id=dst_owner_id,
-            data_size=dst_ptr.size,
-        )
-        
-        mem_reader_msg = RPCMessage(
-            src_core_id=self.core_id,   # source of the RPC message will be myself
-            dst_core_id=src_owner_id,   # destination of the RPC message will be owner of the source pointer,
-            cmd_id="mem_page_read",
-        ).with_args(
-            ptr=src_ptr,
-            container=container
-        ).with_callbacks(
-            # self.mem_page_write(dst_ptr, container)  # load page from container
-            method=self.mem_page_write, ptr=dst_ptr, container=container  # load page from container
-        )
-        
-        # NOTE: The code below assumes that the memory access and NoC data transfer is done sequentially without any
-        # pipelining. I think that this scenario is unrealistic since the real hardware may attempt to pipeline the 
-        # data movement all the way through core->router->core.
-        # TODO: Check whether the latency model implemented below is accurate.
-        
-        self.async_rpc_send_req_msg(mem_reader_msg)
-        self.async_rpc_send_req_msg(noc_trans_msg)
-            
-    @core_kernel_method
-    def async_noc_page_write(self, dst_ptr: Pointer, src_ptr: Pointer):
-        icnt_core_id = self.cmap_context.icnt_core_id
-        src_owner_id = self.core_id
-        dst_owner_id = self.cmap_context.get_nxt_mem_core_id(self.core_id, dst_ptr.addr)
-        
-        container = DataContainer()
-        
-        noc_trans_msg = RPCMessage(
-            src_core_id=self.core_id,
-            dst_core_id=icnt_core_id,
-            cmd_id="noc_create_data_write_transaction"
-        ).with_args(
-            src_id=src_owner_id,
-            dst_id=dst_owner_id,
-            data_size=dst_ptr.size,
-        )
-        
-        mem_writer_msg = RPCMessage(
-            src_core_id=self.core_id,   # source of the RPC message will be myself
-            dst_core_id=dst_owner_id,   # destination of the RPC message will be owner of the source pointer,
-            cmd_id="mem_page_write",
-        ).with_args(
-            ptr=dst_ptr,
-            container=container
-        )
-        
-        # NOTE: The code below assumes that the memory access and NoC data transfer is done sequentially without any
-        # pipelining. I think that this scenario is unrealistic since the real hardware may attempt to pipeline the 
-        # data movement all the way through core->router->core.
-        # TODO: Check whether the latency model implemented below is accurate.
-        
-        self.mem_page_read(src_ptr, container)
-        
-        self.async_rpc_send_req_msg(noc_trans_msg)
-        self.async_rpc_send_req_msg(mem_writer_msg)
-            
-            
-    @core_kernel_method
-    def async_noc_buffer_read(self, dst_ref: Reference, src_ref: Reference):
-        dst_handle = dst_ref.resolve(is_read=False)
-        src_handle = src_ref.resolve(is_read=True)  
-
-        for dst_ptr, src_ptr in zip(dst_handle.page_ptrs, src_handle.page_ptrs):
-            with new_parallel_thread():
-                self.async_noc_page_read(dst_ptr, src_ptr)
-
-    @core_kernel_method
-    def async_noc_buffer_write(self, dst_ref: Reference, src_ref: Reference):
-        dst_handle = dst_ref.resolve(is_read=False)
-        src_handle = src_ref.resolve(is_read=True)  
-
-        for dst_ptr, src_ptr in zip(dst_handle.page_ptrs, src_handle.page_ptrs):
-            with new_parallel_thread():
-                self.async_noc_page_write(dst_ptr, src_ptr)
+                dst_ptr = dst_handle.page_ptrs[page_offset + i]
+                src_ptr = src_handle.page_ptrs[page_offset + i]
+                self.mem_page_copy(dst_ptr=dst_ptr, src_ptr=src_ptr)
 
     #############################################################
     # MXU Commands
@@ -325,10 +197,10 @@ class NPUCore(Core):
     @core_command_method
     def mxu_tiled_gemm(
         self, 
-        ifm_ptr:  Reference,
-        wgt_ptr:  Reference,
-        psum_ptr: Reference,
-        ofm_ptr:  Reference,
+        ifm_cont:  DataContainer[torch.Tensor],
+        wgt_cont:  DataContainer[torch.Tensor],
+        psum_cont: DataContainer[torch.Tensor],
+        ofm_cont:  DataContainer[torch.Tensor],
         preload_wgt:   bool,
         preload_psum:  bool,
         flush_ofm:     bool,
@@ -338,7 +210,7 @@ class NPUCore(Core):
 
         if preload_psum:
             if self.mxu_context.dataflow == MXUDataflow.OS:
-                psum_tile = self.mem_handle.get_content(psum_ptr, shape=self.mxu_context.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
+                psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ofm_tile_shape)
                 self.mxu_context.load_tile_pe_arr(psum_tile)
             elif self.mxu_context.dataflow == MXUDataflow.WS:
                 raise Exception(f"[ERROR] PSUM preload is not supported in WS dataflow")    
@@ -347,18 +219,18 @@ class NPUCore(Core):
             if self.mxu_context.dataflow == MXUDataflow.OS:
                 raise Exception("[ERROR] WGT preload is not supported in OS dataflow.")
             elif self.mxu_context.dataflow == MXUDataflow.WS:
-                wgt_tile = self.mem_handle.get_content(wgt_ptr, shape=self.mxu_context.wgt_tile_shape, dtype=self.mxu_context.dtype)
+                wgt_tile = wgt_cont.data.view(self.mxu_context.dtype).reshape(self.mxu_context.wgt_tile_shape)
                 self.mxu_context.load_tile_pe_arr(wgt_tile)
 
         if self.mxu_context.dataflow == MXUDataflow.OS:
-            ifm_tile = self.mem_handle.get_content(ifm_ptr, shape=self.mxu_context.ifm_tile_shape, dtype=self.mxu_context.dtype)
-            wgt_tile = self.mem_handle.get_content(wgt_ptr, shape=self.mxu_context.wgt_tile_shape, dtype=self.mxu_context.dtype)
+            ifm_tile = ifm_cont.data.view(self.mxu_context.dtype).reshape(self.mxu_context.ifm_tile_shape)
+            wgt_tile = wgt_cont.data.view(self.mxu_context.dtype).reshape(self.mxu_context.wgt_tile_shape)
 
             self.mxu_context.execute_gemm(ifm_tile=ifm_tile, wgt_tile=wgt_tile)
 
         elif self.mxu_context.dataflow == MXUDataflow.WS:
-            ifm_tile = self.mem_handle.get_content(ifm_ptr, shape=self.mxu_context.ifm_tile_shape, dtype=self.mxu_context.dtype)
-            psum_tile = self.mem_handle.get_content(psum_ptr, shape=self.mxu_context.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
+            ifm_tile = ifm_cont.data.view(self.mxu_context.dtype).reshape(self.mxu_context.ifm_tile_shape)
+            psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ofm_tile_shape)
 
             self.mxu_context.execute_gemm(ifm_tile=ifm_tile, psum_tile=psum_tile)
             
@@ -368,7 +240,7 @@ class NPUCore(Core):
             elif self.mxu_context.dataflow == MXUDataflow.WS:
                 psum_tile = self.mxu_context.get_acc_regs() 
             
-            self.mem_handle.set_content(ofm_ptr, psum_tile)
+            ofm_cont.data = psum_tile
 
     #############################################################
     # VPU Commands
@@ -379,25 +251,30 @@ class NPUCore(Core):
         self.vpu_context.reconfigure_vector_reg_file(vlen=vlen, vdtype=vdtype)
         
     @core_command_method
-    def vpu_load_reg(self, ptr: Pointer, ptr_offset: int, vreg_idx: int, burst_len: int=1):
+    def vpu_load_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1):
         if not self.use_functional_model:
             return  # Terminate the command to reduce the simulation time without actual VPU functional unit (do not return anything to make sure that the command is executed only once)
         
+        data = data_cont.data.view(self.vpu_context.vdtype).reshape(-1)
+        
         for i in range(burst_len):
-            st = ptr_offset + i * self.vpu_context.vlen
-            ed = ptr_offset + (i + 1) * self.vpu_context.vlen
-            vreg_data = self.mem_handle.get_content(ptr, shape=(-1,), dtype=self.vpu_context.vdtype)[st:ed]
+            st = i * self.vpu_context.vlen
+            ed = (i + 1) * self.vpu_context.vlen
+            vreg_data = data[st:ed]
             self.vpu_context.set_vector_reg(vreg_idx + i, vreg_data)
         
     @core_command_method
-    def vpu_store_reg(self, ptr: Pointer, ptr_offset: int, vreg_idx: int, burst_len: int=1):
+    def vpu_store_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1):
         if not self.use_functional_model:
             return  # Terminate the command to reduce the simulation time without actual VPU functional unit (do not return anything to make sure that the command is executed only once)
 
+        data: list[torch.Tensor] = []
+        
         for i in range(burst_len):
-            offset = (ptr_offset + i * self.vpu_context.vlen) * self.vpu_context.vdtype.itemsize
             vreg_data = self.vpu_context.get_vector_reg(vreg_idx + i)
-            self.mem_handle.set_content(ptr, vreg_data, offset=offset)
+            data.append(vreg_data)
+            
+        data_cont.data = torch.cat(data, dim=0)
 
     @core_command_method
     def vpu_execute(self, opcode: VPUOperator, vreg_a: int, vreg_b: int=None, vreg_dest: int=None, inplace: bool=False, burst_len: int=1):
@@ -418,21 +295,13 @@ class NPUCoreCycleModel(CoreCycleModel):
 
     def local_memcopy_page(self, dst_ptr: Pointer, src_ptr: Pointer):
         return self.core.mem_context.l1_config.get_cycles(size=src_ptr.size)
-
-    @core_command_method
-    def mem_page_write(self, ptr: Pointer, container: DataContainer):
-        return self.core.mem_context.l1_config.get_cycles(size=ptr.size)
-
-    @core_command_method
-    def mem_page_read(self, ptr: Pointer, container: DataContainer):
-        return self.core.mem_context.l1_config.get_cycles(size=ptr.size)
-
+    
     def mxu_tiled_gemm(
         self, 
-        ifm_ptr:  Reference,
-        wgt_ptr:  Reference,
-        psum_ptr: Reference,
-        ofm_ptr:  Reference,
+        ifm_cont:  DataContainer[torch.Tensor],
+        wgt_cont:  DataContainer[torch.Tensor],
+        psum_cont: DataContainer[torch.Tensor],
+        ofm_cont:  DataContainer[torch.Tensor],
         preload_wgt:   bool,
         preload_psum:  bool,
         flush_ofm:     bool,
@@ -460,6 +329,12 @@ class NPUCoreCycleModel(CoreCycleModel):
                 total_cycles += self.core.mxu_context.get_flush_acc_regs_cycles()
                     
         return total_cycles
+    
+    def vpu_load_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1):
+        return burst_len  # TODO: Assume that loading one vector register takes 1 cycle
+        
+    def vpu_store_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1):
+        return burst_len  # TODO: Assume that storing one vector register takes 1 cycle
     
     def vpu_execute(self, opcode: VPUOperator, vreg_a: int, vreg_b: int=None, vreg_dest: int=None, inplace: bool=False, burst_len: int=1):
         if opcode.is_unary:
