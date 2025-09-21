@@ -2,7 +2,8 @@ import enum
 import torch
 import math
 import copy
-from typing import Sequence
+import functools
+from typing import Sequence, Callable
 
 from neuromta.framework import *
 from neuromta.hardware.implementation.hardware import MultiCoreAccelerator, MultiTileAccelerator
@@ -14,6 +15,9 @@ __all__ = [
     "TensorMemoryType",
     "TensorMemoryLayout",
     "TensorBuffer",
+    
+    "RuntimeOperator",
+    "runtime_kernel_method",
 ]
 
 
@@ -299,5 +303,46 @@ class TensorBuffer:
         return self._reference
     
     
+def runtime_kernel_method(_func: Callable):
+    def __wrapper(_rt: 'RuntimeOperator', _core: 'Core', *_args, **_kwargs) -> Kernel:
+        if not isinstance(_core, Core):
+            raise Exception(f"[ERROR] Command method '{_func.__name__}' can only be called on an instance of Core")
+        
+        if len(_args):
+            raise Exception(f"[ERROR] Command method '{_func.__name__}' does not accept positional arguments")
+        if len(_kwargs):
+            raise Exception(f"[ERROR] Command method '{_func.__name__}' does not accept keyword arguments")
+        
+        kernel = Kernel(
+            _func.__name__,                 # the kernel ID is the name of the function
+            functools.partial(_func, _rt),  # the behavioral model is the function itself
+        )
+
+        if get_global_context_mode() == GlobalContextMode.IDLE:
+            pass  # do not automatically dispatch kernel
+        elif get_global_context_mode() == GlobalContextMode.COMPILE:
+            kernel_context = get_global_kernel_context()
+            
+            if kernel_context is None:
+                raise Exception(f"[ERROR] Cannot register kernel '{kernel.kernel_id}' to the compiled kernel since it is called outside of a low-level kernel function")
+            
+            kernel_context.add_execution_step(kernel)
+        else:
+            logger.warning(f"Kernel method '{_func.__name__}' is called outside of the compile or idle context. It implies that the kernel is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
+            raise Exception(f"[ERROR] Kernel method '{_func.__name__}' is called outside of the compile or idle context.")
+        
+        return kernel
+
+    __wrapper._is_kernel_method = True  # mark this function as a kernel method (for debugging and profiling purposes)
+    __wrapper._is_rt_kernel_method = True
+
+    return __wrapper
+    
+    
 class RuntimeOperator:
-    pass
+    def dispatch_runtime_to_core(self, core: Core):
+        rt_kernel_methods: dict[str, Callable] = {attr: getattr(self, attr) for attr in dir(self) if callable(getattr(self, attr)) and hasattr(getattr(self, attr), '_is_rt_kernel_method')}
+        rt_kernels: dict[str, Kernel] = {method_name: method(core) for method_name, method in rt_kernel_methods.items()}
+        
+        for slot_id, kernel in rt_kernels.items():
+            core.dispatch_main_kernel(slot_id, kernel)

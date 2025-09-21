@@ -16,105 +16,113 @@ ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), ".analysis")
 os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 
-@core_kernel_method
-def read_kernel(
-    core: NPUCore,
+class RT_TT_SHARDED_L1_GEMM(RuntimeOperator):
+    def __init__(
+        self,
+    
+        bf_ifm_ptr:  Reference,
+        bf_wgt_ptr:  Reference,
+        bf_psum_ptr: Reference,
+        bf_ofm_ptr:  Reference,
 
-    bf_ifm_ptr:  Reference,
-    bf_wgt_ptr:  Reference,
-    bf_psum_ptr: Reference,
+        cb_ifm_ptr:  Reference,
+        cb_wgt_ptr:  Reference,
+        cb_psum_ptr: Reference,
+        cb_ofm_ptr:  Reference,
+        
+        k_tile_num: int,
+        load_burst_len: int, 
+        
+        dtype: torch.dtype,
+        acc_dtype: torch.dtype,
+    ):
+        super().__init__()
+        
+        self.bf_ifm_ptr  = bf_ifm_ptr
+        self.bf_wgt_ptr  = bf_wgt_ptr
+        self.bf_psum_ptr = bf_psum_ptr
+        self.bf_ofm_ptr  = bf_ofm_ptr
+        
+        self.cb_ifm_ptr  = cb_ifm_ptr
+        self.cb_wgt_ptr  = cb_wgt_ptr
+        self.cb_psum_ptr = cb_psum_ptr
+        self.cb_ofm_ptr  = cb_ofm_ptr
+        
+        self.k_tile_num = k_tile_num
+        self.load_burst_len = load_burst_len
+        
+        self.dtype = dtype
+        self.acc_dtype = acc_dtype
     
-    cb_ifm_ptr:  Reference,
-    cb_wgt_ptr:  Reference,
-    cb_psum_ptr: Reference,
-    
-    n_seq_pages: int,   # number of sequential pages (especially for IFM and WGT)
-    load_burst_len: int,
-):
-    for i in range(0, n_seq_pages, load_burst_len):
-        ed = min(i + load_burst_len, n_seq_pages)
-        n_pages = ed - i
-        
-        if i == 0:
-            core.cb_reserve_back(cb_psum_ptr, 1)
-        core.cb_reserve_back(cb_ifm_ptr, n_pages)
-        core.cb_reserve_back(cb_wgt_ptr, n_pages)
-        
-        if i == 0:
-            with new_parallel_thread():
-                core.mem_buffer_copy(cb_psum_ptr[0], bf_psum_ptr[0])
-        
-        with new_parallel_thread():
-            core.mem_buffer_copy(cb_ifm_ptr[0:n_pages], bf_ifm_ptr[i:ed])
-        
-        with new_parallel_thread():
-            core.mem_buffer_copy(cb_wgt_ptr[0:n_pages], bf_wgt_ptr[i:ed])
+    @runtime_kernel_method
+    def read_kernel(self, core: NPUCore):
+        for i in range(0, self.k_tile_num, self.load_burst_len):
+            ed = min(i + self.load_burst_len, self.k_tile_num)
+            n_pages = ed - i
             
-        core.parallel_merge()
+            if i == 0:
+                core.cb_reserve_back(self.cb_psum_ptr, 1)
+            core.cb_reserve_back(self.cb_ifm_ptr, n_pages)
+            core.cb_reserve_back(self.cb_wgt_ptr, n_pages)
+            
+            if i == 0:
+                with new_parallel_thread():
+                    core.mem_buffer_copy(self.cb_psum_ptr[0], self.bf_psum_ptr[0])
+            
+            with new_parallel_thread():
+                core.mem_buffer_copy(self.cb_ifm_ptr[0:n_pages], self.bf_ifm_ptr[i:ed])
+            
+            with new_parallel_thread():
+                core.mem_buffer_copy(self.cb_wgt_ptr[0:n_pages], self.bf_wgt_ptr[i:ed])
+                
+            core.parallel_merge()
+            
+            if i == 0:
+                core.cb_push_back(self.cb_psum_ptr, 1)
+            core.cb_push_back(self.cb_ifm_ptr, n_pages)
+            core.cb_push_back(self.cb_wgt_ptr, n_pages)
+            
+    @runtime_kernel_method
+    def compute_kernel(self, core: NPUCore):  
+        core.mxu_reconfigure(dtype=self.dtype, acc_dtype=self.acc_dtype)
         
-        if i == 0:
-            core.cb_push_back(cb_psum_ptr, 1)
-        core.cb_push_back(cb_ifm_ptr, n_pages)
-        core.cb_push_back(cb_wgt_ptr, n_pages)
+        containers = [DataContainer() for _ in range(4)]
         
-@core_kernel_method
-def compute_kernel(
-    core: NPUCore,    
-    
-    cb_ifm_ptr:  Reference,
-    cb_wgt_ptr:  Reference,
-    cb_psum_ptr: Reference,
-    cb_ofm_ptr:  Reference,
-    
-    k_tile_num: int,
-    
-    dtype: torch.dtype,
-    acc_dtype: torch.dtype,
-):  
-    core.mxu_reconfigure(dtype=dtype, acc_dtype=acc_dtype)
-    
-    containers = [DataContainer() for _ in range(4)]
-    
-    core.cb_wait_front(cb_psum_ptr, 1)
-    core.cb_reserve_back(cb_ofm_ptr, 1)
-    
-    core.mem_read_with_container(cb_psum_ptr[0], containers[2])
-    
-    for k_it in range(k_tile_num):
-        preload_psum = True if (k_it == 0) else False
-        flush_ofm    = True if (k_it == k_tile_num - 1) else False
+        core.cb_wait_front(self.cb_psum_ptr, 1)
+        core.cb_reserve_back(self.cb_ofm_ptr, 1)
+        
+        core.mem_read_with_container(self.cb_psum_ptr[0], containers[2])
+        
+        for k_it in range(k_tile_num):
+            preload_psum = True if (k_it == 0) else False
+            flush_ofm    = True if (k_it == (k_tile_num - 1)) else False
 
-        core.cb_wait_front(cb_ifm_ptr, 1)
-        core.cb_wait_front(cb_wgt_ptr, 1)
+            core.cb_wait_front(self.cb_ifm_ptr, 1)
+            core.cb_wait_front(self.cb_wgt_ptr, 1)
+            
+            core.mem_read_with_container(self.cb_ifm_ptr[0], containers[0])
+            core.mem_read_with_container(self.cb_wgt_ptr[0], containers[1])
+            
+            core.mxu_tiled_gemm(
+                *containers,
+                preload_wgt=False,
+                preload_psum=preload_psum,
+                flush_ofm=flush_ofm,
+            )
+            
+            core.cb_pop_front(self.cb_ifm_ptr, 1)
+            core.cb_pop_front(self.cb_wgt_ptr, 1)
+            
+        core.mem_write_with_container(self.cb_ofm_ptr[0], containers[3])
         
-        core.mem_read_with_container(cb_ifm_ptr[0], containers[0])
-        core.mem_read_with_container(cb_wgt_ptr[0], containers[1])
+        core.cb_pop_front(self.cb_psum_ptr, 1)
+        core.cb_push_back(self.cb_ofm_ptr, 1)
         
-        core.mxu_tiled_gemm(
-            *containers,
-            preload_wgt=False,
-            preload_psum=preload_psum,
-            flush_ofm=flush_ofm,
-        )
-        
-        core.cb_pop_front(cb_ifm_ptr, 1)
-        core.cb_pop_front(cb_wgt_ptr, 1)
-        
-    core.mem_write_with_container(cb_ofm_ptr[0], containers[3])
-    
-    core.cb_pop_front(cb_psum_ptr, 1)
-    core.cb_push_back(cb_ofm_ptr, 1)
-    
-@core_kernel_method
-def write_kernel(
-    core: NPUCore,
-    
-    bf_ofm_ptr: Reference,
-    cb_ofm_ptr: Reference,
-):
-    core.cb_wait_front(cb_ofm_ptr, 1)
-    core.mem_buffer_copy(bf_ofm_ptr[0], cb_ofm_ptr[0])
-    core.cb_pop_front(cb_ofm_ptr, 1)
+    @runtime_kernel_method
+    def write_kernel(self, core: NPUCore):
+        core.cb_wait_front(self.cb_ofm_ptr, 1)
+        core.mem_buffer_copy(self.bf_ofm_ptr[0], self.cb_ofm_ptr[0])
+        core.cb_pop_front(self.cb_ofm_ptr, 1)
 
 
 if __name__ == "__main__":
@@ -214,13 +222,33 @@ if __name__ == "__main__":
             core_cb_psum_ptr = cb_psum_ptrs[core_idx] if n_cores > 1 else cb_psum_ptrs
             core_cb_ofm_ptr  = cb_ofm_ptrs[core_idx]  if n_cores > 1 else cb_ofm_ptrs
 
-            kernel1 = read_kernel(core, core_bf_ifm_ptr, core_bf_wgt_ptr, core_bf_psum_ptr, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, n_seq_pages=k_tile_num, load_burst_len=load_burst_len)
-            kernel2 = compute_kernel(core, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, core_cb_ofm_ptr, k_tile_num=k_tile_num, dtype=dtype, acc_dtype=acc_dtype)
-            kernel3 = write_kernel(core, core_bf_ofm_ptr, core_cb_ofm_ptr)
+            rt_kernel = RT_TT_SHARDED_L1_GEMM(
+                bf_ifm_ptr=core_bf_ifm_ptr,
+                bf_wgt_ptr=core_bf_wgt_ptr,
+                bf_psum_ptr=core_bf_psum_ptr,
+                bf_ofm_ptr=core_bf_ofm_ptr,
+                
+                cb_ifm_ptr=core_cb_ifm_ptr,
+                cb_wgt_ptr=core_cb_wgt_ptr,
+                cb_psum_ptr=core_cb_psum_ptr,
+                cb_ofm_ptr=core_cb_ofm_ptr,
+                
+                k_tile_num=k_tile_num,
+                load_burst_len=load_burst_len,
+                
+                dtype=dtype,
+                acc_dtype=acc_dtype,
+            )
             
-            core.dispatch_main_kernel("read",  kernel=kernel1)
-            core.dispatch_main_kernel("compute", kernel=kernel2)
-            core.dispatch_main_kernel("write", kernel=kernel3)
+            rt_kernel.dispatch_runtime_to_core(core=core)
+            
+            # kernel1 = read_kernel(core, core_bf_ifm_ptr, core_bf_wgt_ptr, core_bf_psum_ptr, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, n_seq_pages=k_tile_num, load_burst_len=load_burst_len)
+            # kernel2 = compute_kernel(core, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, core_cb_ofm_ptr, k_tile_num=k_tile_num, dtype=dtype, acc_dtype=acc_dtype)
+            # kernel3 = write_kernel(core, core_bf_ofm_ptr, core_cb_ofm_ptr)
+            
+            # core.dispatch_main_kernel("read",  kernel=kernel1)
+            # core.dispatch_main_kernel("compute", kernel=kernel2)
+            # core.dispatch_main_kernel("write", kernel=kernel3)
 
     tracer_hub = TracerHub()
     for core_id, core in device.cores.items():

@@ -13,7 +13,7 @@ conda create -n neuromta python=3.11    # python >= 3.11
 conda activate neuromta
 pip install -r requirements.txt
 
-# install pytorch with CPU backend ()
+# install pytorch with CPU backend (unnecessary if PyTorch is already installed)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # install NeuroMTA simulator

@@ -7,12 +7,25 @@ from neuromta.ip.tenstorrent.architecture import *
 
 
 __all__ = [
-    "TenstorrentTensor",
+    "",
 ]
 
 
-class TenstorrentTensor(torch.Tensor):
-    def __init__(self, data: torch.Tensor, device: TenstorrentDevice):
-        assert isinstance(device, TenstorrentDevice)
-        self.device = device
-        super().__init__(data)
+class TT_RT_LINEAR(RuntimeOperator):
+    def __init__(
+        self, 
+        
+        batch_size: int, 
+        in_features: int, 
+        out_features: int, 
+        bias: bool=True,
+        
+        mem_type: TensorMemoryType=TensorMemoryType.MAIN,
+    ):
+        super().__init__()
+        
+        self.batch_size = batch_size    
+        self.in_features = in_features
+        self.out_features = out_features
+        self.bias = bias
+        

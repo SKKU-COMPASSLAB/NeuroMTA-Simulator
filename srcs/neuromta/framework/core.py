@@ -11,6 +11,11 @@ __all__ = [
     "get_global_core_context",
     "get_global_kernel_context",
     "get_global_pid",
+    
+    "get_global_context_mode",
+    "GlobalContextMode",
+    
+    "new_global_context",
 
     "RPCMessage",
     "Command",
