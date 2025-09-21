@@ -6,7 +6,7 @@ import multiprocessing as mp
 from typing import Any
 
 from neuromta.framework.logger import LogLevel, _LOG_LEVEL_COLORS, _COLOR_RESET, set_global_monitoring_window, unset_global_monitoring_window
-from neuromta.framework.core import Core
+from neuromta.framework.core import Core, Kernel, Command
 
 __all__ = [
     "MonitoringWindow",
@@ -21,7 +21,9 @@ class ProgressBarHandle:
         
         self._hook_id = None
         self._binded_core = None
+        
         self._cached_total = None
+        self._cached_progress = None
 
     def draw(self):
         header = f"{self.desc} {self.percentage:6.2f}% |"
@@ -29,7 +31,7 @@ class ProgressBarHandle:
         
         bar_width = max(0, self.ncols - len(header) - len(tail) - 1)
         filled_len = int(round(bar_width * self.percentage / 100))
-        bar = '█' * filled_len + '-' * (bar_width - filled_len)
+        bar = '█' * filled_len + ' ' * (bar_width - filled_len)
         
         sys.stdout.write(f"{header}{bar}{tail}")
         
@@ -57,33 +59,19 @@ class ProgressBarHandle:
             self._binded_core = None
             self._cached_total = None
     
-    def _update_pbar_debug_hook(self, core: Core, *args, **kwargs):
+    def _update_pbar_debug_hook(self, core: Core, kernel: Kernel, command: Command, *args, **kwargs):
         if core.is_idle:
             self.percentage = 100.0
             self._cached_total = None
             return
         
-        n_ongoing_kernels = 0
-        n_suspended_kernels = 0
-        kernel_progress = 0.0
-        
-        for slot_id in core._dispatched_main_kernels.keys():
-            ongoing_kernel = core._dispatched_main_kernels[slot_id]
-            n_ongoing_kernels += 1
-            kernel_progress += max(((ongoing_kernel._execution_cursor) / len(ongoing_kernel._execution_steps)) if len(ongoing_kernel._execution_steps) > 0 else 1.0, 1.0)
+        if self._cached_total is None or self._cached_progress is None and kernel.is_compiled:
+            self._cached_total = core.n_dispatched_main_commands
+            self._cached_progress = 0
             
-            if slot_id in core._suspended_main_kernels:
-                suspended_kernels = core._suspended_main_kernels[slot_id]
-                n_suspended_kernels += len(suspended_kernels)
-                
-        if self._cached_total is None:
-            self._cached_total = n_ongoing_kernels + n_suspended_kernels
-        
-        net_ongoing = self._cached_total - (n_ongoing_kernels + n_suspended_kernels) + kernel_progress
-        self.percentage = ((net_ongoing) / self._cached_total * 100) if self._cached_total > 0 else 100.0
-
-        if net_ongoing >= self._cached_total:
-            self._cached_total = None
+        if kernel.is_main:
+            self._cached_progress += 1
+            self.percentage = ((self._cached_progress) / self._cached_total * 100) if self._cached_total > 0 else 100.0
         
         
 class LogEntryHandle:

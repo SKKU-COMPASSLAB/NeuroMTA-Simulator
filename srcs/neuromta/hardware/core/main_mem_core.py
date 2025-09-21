@@ -79,7 +79,7 @@ class MainMemoryCore(Core):
             raise ValueError("[ERROR] The source container must be a DataContainer instance.")
 
         page_elem: Page = self.mem_handle.get_data_element(ptr)
-        container.data = page_elem.content.clone()  # Copy the content of the page element to the container        
+        container.data = page_elem.content   # Copy the content of the page element to the container        
 
     @core_command_method
     def _static_store_page_to_container(self, ptr: Pointer, container: DataContainer):

@@ -161,6 +161,10 @@ class Reference:
     @property
     def raw_handle(self) -> 'BufferHandle':
         return self._handle
+    
+    @property
+    def is_circular(self) -> bool:
+        return isinstance(self._handle, CircularBufferHandle)
         
     def __getitem__(self, new_item) -> 'Reference':
         if isinstance(new_item, (int, slice, tuple)):

@@ -131,31 +131,32 @@ class NPUCore(Core):
 
     @core_kernel_method
     def mem_page_copy(self, dst_ptr: Pointer, src_ptr: Pointer):
-        condainer = DataContainer()
+        container = DataContainer()
         
         src_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, src_ptr.addr)
         dst_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, dst_ptr.addr)
         
         if self.cmap_context.config.check_l1_mem_addr(src_ptr.addr):
-            src_read_msg = RPCMessage(self.core_id, src_owner_id, cmd_id="mem_read_with_container").with_args(handle=src_ptr, container=condainer, offset=0, size=src_ptr.size)
+            src_read_msg = RPCMessage(self.core_id, src_owner_id, cmd_id="mem_read_with_container").with_args(handle=src_ptr, container=container, offset=0, size=src_ptr.size)
         elif self.cmap_context.config.check_main_mem_addr(src_ptr.addr):
-            src_read_msg = RPCMessage(self.core_id, src_owner_id, cmd_id="mem_page_read").with_args(ptr=src_ptr, container=condainer)
+            src_read_msg = RPCMessage(self.core_id, src_owner_id, cmd_id="mem_page_read").with_args(ptr=src_ptr, container=container)
         else:
             raise Exception(f"[ERROR] Invalid source memory address {src_ptr.addr} in core {self.core_id}")
         
         noc_transaction_msgs = []
         
-        if src_owner_id != self.core_id:
-            noc_read_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_read_transaction").with_args(src_id=src_owner_id, dst_id=self.core_id, data_size=src_ptr.size)
-            noc_transaction_msgs.append(noc_read_msg)
-        if dst_owner_id != self.core_id:
-            noc_write_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_write_transaction").with_args(src_id=self.core_id, dst_id=dst_owner_id, data_size=dst_ptr.size)
-            noc_transaction_msgs.append(noc_write_msg)
+        if self.check_rpc_inbox(self.cmap_context.icnt_core_id):  # check if it is possible to send NOC transaction request (if not, the )
+            if src_owner_id != self.core_id:
+                noc_read_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_read_transaction").with_args(src_id=src_owner_id, dst_id=self.core_id, data_size=src_ptr.size)
+                noc_transaction_msgs.append(noc_read_msg)
+            if dst_owner_id != self.core_id:
+                noc_write_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_write_transaction").with_args(src_id=self.core_id, dst_id=dst_owner_id, data_size=dst_ptr.size)
+                noc_transaction_msgs.append(noc_write_msg)
             
         if self.cmap_context.config.check_l1_mem_addr(dst_ptr.addr):
-            dst_write_msg = RPCMessage(self.core_id, dst_owner_id, cmd_id="mem_write_with_container").with_args(handle=dst_ptr, container=condainer, offset=0)
+            dst_write_msg = RPCMessage(self.core_id, dst_owner_id, cmd_id="mem_write_with_container").with_args(handle=dst_ptr, container=container, offset=0)
         elif self.cmap_context.config.check_main_mem_addr(dst_ptr.addr):
-            dst_write_msg = RPCMessage(self.core_id, dst_owner_id, cmd_id="mem_page_write").with_args(ptr=dst_ptr, container=condainer)
+            dst_write_msg = RPCMessage(self.core_id, dst_owner_id, cmd_id="mem_page_write").with_args(ptr=dst_ptr, container=container)
         else:
             raise Exception(f"[ERROR] Invalid destination memory address {dst_ptr.addr} in core {self.core_id}")
         
@@ -185,6 +186,8 @@ class NPUCore(Core):
                 dst_ptr = dst_handle.page_ptrs[page_offset + i]
                 src_ptr = src_handle.page_ptrs[page_offset + i]
                 self.mem_page_copy(dst_ptr=dst_ptr, src_ptr=src_ptr)
+                
+        self.parallel_merge()
 
     #############################################################
     # MXU Commands

@@ -275,21 +275,10 @@ class RPCMessage:
         self.kwargs = {}
         
         self.msg_id:     str = None  # message ID is None by default
-        
-        self.callbacks: list[Command | Kernel] = []
-        
+
     def with_args(self, *args, **kwargs):
         self.args = list(args)
         self.kwargs = kwargs
-        return self
-    
-    def with_callbacks(self, method: Callable, *args, **kwargs):
-        if method.__name__ == "__core_kernel_method_wrapper":
-            callback = Kernel(kernel_id=f"{self.kernel_id}.cb{len(self.callbacks)}", func=method, *args, **kwargs)
-        elif method.__name__ == "__core_command_method_wrapper":
-            callback = Kernel(kernel_id=f"{self.kernel_id}.cb{len(self.callbacks)}", func=lambda core: method(*args, **kwargs))
-        callback.root_kernel_id = self.root_kernel_id
-        self.callbacks.append(callback)
         return self
         
     def response(self, rpc_kernel: 'Kernel') -> 'RPCMessage':
@@ -441,6 +430,15 @@ class ThreadGroup(list['Kernel']):
     
     def is_finished(self, core: 'Core') -> bool:
         return all(kernel.is_finished(core) for kernel in self)    
+    
+    def compile(self, core: 'Core', main: bool=False):
+        for kernel in self:
+            if not kernel.is_compiled:
+                kernel.compile(core, main=main)
+
+    @property
+    def n_commands(self) -> int:
+        return sum(kernel.n_commands for kernel in self)
 
 class Kernel:
     def __init__(self, kernel_id: str, func: Callable, *args, **kwargs):
@@ -453,6 +451,7 @@ class Kernel:
         
         self._is_compiled = False
         self._is_parallel = False
+        self._is_main = False
         
         self._execution_steps: list[Command | Kernel | ThreadGroup] = []
         self._execution_cursor: int = 0
@@ -473,15 +472,6 @@ class Kernel:
         if isinstance(step, Kernel):
             step.root_kernel = self
             
-    def insert_execution_step(self, step: 'Command | Kernel'):
-        if not isinstance(step, (Command, Kernel)):
-            raise TypeError(f"[ERROR] Execution step must be an instance of Command or Kernel, but got {type(step).__name__}")
-        
-        self._execution_steps.insert(self._execution_cursor, step)
-        
-        # if isinstance(step, Kernel):
-        #     step.root_kernel = self
-            
     def add_parallel_kernel_step(self) -> 'Kernel':
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception(f"[ERROR] Cannot add parallel kernel step to the kernel '{self.kernel_id}' since it is not in compile mode")
@@ -495,19 +485,34 @@ class Kernel:
 
         parallel_kernel = Kernel(kernel_id=f"{self.kernel_id}.{parallel_kernel_idx}", func=None, core=None).set_parallel()
         parallel_kernel.root_kernel = self.root_kernel
+        
+        parallel_kernel.mark_kernel_type(self.is_main)
 
         self._execution_steps[-1].append(parallel_kernel)
 
         return parallel_kernel
 
-    def compile(self, core: 'Core'):
+    def compile(self, core: 'Core', main: bool=False):
+        if self.is_compiled:
+            return
+        
         with new_global_context(GlobalContextMode.COMPILE, core, self):
             self.func(core, *self.args, **self.kwargs)
+            
+            for step in self._execution_steps:
+                if isinstance(step, Kernel) and not step.is_compiled:
+                    step.mark_kernel_type(main)
+                elif isinstance(step, ThreadGroup):
+                    for thread in step:
+                        thread.mark_kernel_type(main)
+
         self._is_compiled = True
+        self.mark_kernel_type(main)
         
     def get_remaining_cycles(self, core: 'Core') -> int:
         if not self.is_compiled:
             self.compile(core)
+            
         if self.is_finished(core):
             return None
         
@@ -545,6 +550,17 @@ class Kernel:
             return None
         
         return self._execution_steps[self._execution_cursor]
+    
+    def mark_kernel_type(self, is_main: bool):
+        self._is_main = is_main
+    
+    @property
+    def is_main(self) -> bool:
+        return self._is_main
+    
+    @property
+    def is_rpc(self) -> bool:
+        return not self._is_main
         
     @property
     def is_compiled(self) -> bool:
@@ -581,6 +597,21 @@ class Kernel:
         if self.root_callstack is None:
             return self.kernel_id
         return f"{self.root_callstack}::{self.kernel_id}"
+    
+    @property
+    def n_commands(self) -> int:
+        if not self.is_compiled:
+            return 0
+        
+        n = 0
+        
+        for step in self._execution_steps:
+            if isinstance(step, Command):
+                n += 1
+            elif isinstance(step, (Kernel, ThreadGroup)):
+                n += step.n_commands
+        
+        return n
     
 
 class CoreCycleModel:
@@ -647,6 +678,9 @@ class Core:
     def dispatch_main_kernel(self, slot_id: Any, kernel: Kernel):
         if not isinstance(kernel, Kernel):
             raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of CompiledKernel")
+        
+        if not kernel.is_compiled:
+            kernel.compile(self, main=True)
 
         kernel.root_kernel_id = f"MAIN<{slot_id}>"  # set the root kernel ID to the slot ID
         
@@ -812,29 +846,8 @@ class Core:
         self._suspended_rpc_req_msg.pop(msg_id)  # remove the request message from the suspended RPC request message list
         self._suspended_rpc_rsp_msg.pop(msg_id)  # remove the response message from the suspended RPC response message list
         self._suspended_rpc_to_main_kernels_mapping.pop(msg_id)  # remove the mapping from the suspended RPC to main kernel mapping
-        
-        current_context = get_global_kernel_context()
-        
-        if len(req_msg.callbacks):
-            for callback in req_msg.callbacks:
-                if isinstance(callback, (Command, Kernel)):
-                    current_context.insert_execution_step(callback)
-                else:
-                    raise Exception(f"[ERROR] Callback '{callback}' is not a valid command or kernel")
-            return False
 
         return True
-    
-    # @core_conditional_command_method
-    # def async_rpc_wait_all(self):
-    #     current_context = get_global_kernel_context()
-    #     dept_rpc_msg_ids = list(rpc_msg_id for rpc_msg_id, main_kernel_slot_id in self._suspended_rpc_to_main_kernels_mapping.items() if main_kernel_slot_id == current_context.root_kernel_id)
-        
-    #     for msg_id in dept_rpc_msg_ids:
-    #         if not self.async_rpc_wait_rsp_msg(self._suspended_rpc_req_msg[msg_id]):
-    #             return False
-                
-    #     return True
 
     def _rpc_req_kernel_dispatch_routine(self):
         while len(self.rpc_req_recv_queue):
@@ -925,3 +938,16 @@ class Core:
     @property
     def timestamp(self) -> int:
         return self._timestamp
+    
+    @property
+    def n_dispatched_main_commands(self) -> int:
+        n = 0
+        
+        for kernel in self._dispatched_main_kernels.values():
+            n += kernel.n_commands
+        
+        for kernel_list in self._suspended_main_kernels.values():
+            for kernel in kernel_list:
+                n += kernel.n_commands
+                
+        return n

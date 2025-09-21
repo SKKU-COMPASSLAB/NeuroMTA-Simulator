@@ -297,3 +297,7 @@ class TensorBuffer:
     @property
     def reference(self) -> Reference:
         return self._reference
+    
+    
+class RuntimeOperator:
+    pass
