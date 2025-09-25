@@ -65,13 +65,15 @@ class ProgressBarHandle:
             self._cached_total = None
             return
         
-        if self._cached_total is None or self._cached_progress is None and kernel.is_compiled:
-            self._cached_total = core.n_dispatched_main_commands
-            self._cached_progress = 0
+        self.percentage = 100 # TODO: fixme please...
+        
+        # if self._cached_total is None or self._cached_progress is None and kernel.is_compiled:
+        #     self._cached_total = core.n_dispatched_main_commands
+        #     self._cached_progress = 0
             
-        if kernel.is_main:
-            self._cached_progress += 1
-            self.percentage = ((self._cached_progress) / self._cached_total * 100) if self._cached_total > 0 else 100.0
+        # if kernel.is_main:
+        #     self._cached_progress += 1
+        #     self.percentage = ((self._cached_progress) / self._cached_total * 100) if self._cached_total > 0 else 100.0
         
         
 class LogEntryHandle:
@@ -163,7 +165,9 @@ class MWDrawingProcess(mp.Process):
                 
             sys.stdout.write("\n")
             window_height_offset += 1  # extra line between progress bars and logs
-            
+        else:
+            sys.stdout.write("\n")
+        
         sys.stdout.write("=== LOG MESSAGES " + "=" * (term_width - 17) + "\n")
         window_height_offset += 1
         

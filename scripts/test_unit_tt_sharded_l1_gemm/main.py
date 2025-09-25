@@ -16,17 +16,17 @@ ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), ".analysis")
 os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 
-@core_kernel_method
+@jit_prototype
 def read_kernel(
     core: NPUCore,
 
-    bf_ifm_ptr:  Reference,
-    bf_wgt_ptr:  Reference,
-    bf_psum_ptr: Reference,
+    bf_ifm_ptr:  BufferPointer,
+    bf_wgt_ptr:  BufferPointer,
+    bf_psum_ptr: BufferPointer,
     
-    cb_ifm_ptr:  Reference,
-    cb_wgt_ptr:  Reference,
-    cb_psum_ptr: Reference,
+    cb_ifm_ptr:  BufferPointer,
+    cb_wgt_ptr:  BufferPointer,
+    cb_psum_ptr: BufferPointer,
     
     n_seq_pages: int,   # number of sequential pages (especially for IFM and WGT)
     load_burst_len: int,
@@ -42,13 +42,13 @@ def read_kernel(
         
         if i == 0:
             with new_parallel_thread():
-                core.mem_buffer_copy(cb_psum_ptr[0], bf_psum_ptr[0])
+                core.mem_buffer_copy(cb_psum_ptr[0], bf_psum_ptr[0], n_pages=1)
         
         with new_parallel_thread():
-            core.mem_buffer_copy(cb_ifm_ptr[0:n_pages], bf_ifm_ptr[i:ed])
+            core.mem_buffer_copy(cb_ifm_ptr[0:n_pages], bf_ifm_ptr[i:ed], n_pages=n_pages)
         
         with new_parallel_thread():
-            core.mem_buffer_copy(cb_wgt_ptr[0:n_pages], bf_wgt_ptr[i:ed])
+            core.mem_buffer_copy(cb_wgt_ptr[0:n_pages], bf_wgt_ptr[i:ed], n_pages=n_pages)
             
         core.parallel_merge()
         
@@ -57,14 +57,14 @@ def read_kernel(
         core.cb_push_back(cb_ifm_ptr, n_pages)
         core.cb_push_back(cb_wgt_ptr, n_pages)
         
-@core_kernel_method
+@jit_prototype
 def compute_kernel(
     core: NPUCore,    
     
-    cb_ifm_ptr:  Reference,
-    cb_wgt_ptr:  Reference,
-    cb_psum_ptr: Reference,
-    cb_ofm_ptr:  Reference,
+    cb_ifm_ptr:  BufferPointer,
+    cb_wgt_ptr:  BufferPointer,
+    cb_psum_ptr: BufferPointer,
+    cb_ofm_ptr:  BufferPointer,
     
     k_tile_num: int,
     
@@ -105,15 +105,15 @@ def compute_kernel(
     core.cb_pop_front(cb_psum_ptr, 1)
     core.cb_push_back(cb_ofm_ptr, 1)
     
-@core_kernel_method
+@jit_prototype
 def write_kernel(
     core: NPUCore,
     
-    bf_ofm_ptr: Reference,
-    cb_ofm_ptr: Reference,
+    bf_ofm_ptr: BufferPointer,
+    cb_ofm_ptr: BufferPointer,
 ):
     core.cb_wait_front(cb_ofm_ptr, 1)
-    core.mem_buffer_copy(bf_ofm_ptr[0], cb_ofm_ptr[0])
+    core.mem_buffer_copy(bf_ofm_ptr[0], cb_ofm_ptr[0], n_pages=1)
     core.cb_pop_front(cb_ofm_ptr, 1)
 
 
@@ -154,10 +154,7 @@ if __name__ == "__main__":
     ofm_tile_size = m_tile * n_tile * acc_dtype.itemsize
 
     core_grid_shape = (4, 4)
-    # core_grid = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape)
-    
-    core_ids = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape)
-    # core_ids = device.npu_core_ids[:16]
+    core_ids = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape).core_ids
     n_cores = len(core_ids)
     
     cb_n_pages = 4
@@ -182,15 +179,15 @@ if __name__ == "__main__":
     psum_size = psum.numel() * psum.element_size()
     ofm_size  = ofm.numel()  * ofm.element_size()
     
-    bf_ifm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num, core_ids=core_ids)
-    bf_wgt_ptr:  Reference = device.create_sharded_l1_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num, core_ids=core_ids)
-    bf_psum_ptr: Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_ids)
-    bf_ofm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_ids)
+    bf_ifm_ptr:  BufferPointer = device.create_sharded_l1_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num, core_ids=core_ids)
+    bf_wgt_ptr:  BufferPointer = device.create_sharded_l1_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num, core_ids=core_ids)
+    bf_psum_ptr: BufferPointer = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_ids)
+    bf_ofm_ptr:  BufferPointer = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_ids)
 
-    cb_ifm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
-    cb_wgt_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
-    cb_psum_ptrs: list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
-    cb_ofm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_ifm_ptrs:  list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_wgt_ptrs:  list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_psum_ptrs: list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_ofm_ptrs:  list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
 
     device.set_ptr_content(bf_ifm_ptr, tiled_ifm)
     device.set_ptr_content(bf_wgt_ptr, tiled_wgt)
@@ -257,7 +254,7 @@ if __name__ == "__main__":
     reference = torch.matmul(ifm.to(dtype=acc_dtype), wgt.to(dtype=acc_dtype)) + psum
     simulated = device.get_ptr_content(bf_ofm_ptr, shape=(m_tile_num, n_tile_num, m_tile, n_tile), dtype=acc_dtype).permute(0, 2, 1, 3).reshape(M, N)
 
-    # print(f"\n=== REFERENCE ===\n{reference}")
-    # print(f"\n=== SIMULATED ===\n{simulated}")
+    print(f"\n=== REFERENCE ===\n{reference}")
+    print(f"\n=== SIMULATED ===\n{simulated}")
     print(f"\nnumber of mismatched elements: {torch.sum(reference != simulated)} / {torch.numel(reference)}")
     print(f"simulation terminated with valid result: {torch.allclose(reference, simulated)}")

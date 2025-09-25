@@ -117,10 +117,10 @@ class TenstorrentConfig(dict):
 
         main_mem_config = MainMemoryConfig(
             # STATIC MEMORY CONFIG (used if pydramsim is not available)
-            transfer_speed=7000,      # MT/s (DDR6 typical speed)
-            ch_io_width=32,           # bits (DDR6 typical channel width)
-            ch_num=1,                 # channels (example for DDR6)
-            burst_len=32,             # bytes (typical burst length)
+            transfer_speed=7000,        # MT/s (DDR6 typical speed)
+            ch_io_width=32,             # bits (DDR6 typical channel width)
+            ch_num=n_main_mem_channels, # channels (example for DDR6)
+            burst_len=32,               # bytes (typical burst length)
             is_ddr=True,
             processor_clock_freq=processor_clock_freq,
             
@@ -166,7 +166,7 @@ class TenstorrentConfig(dict):
         )
 
 
-class TenstorrentDevice(MultiTileAccelerator):
+class TenstorrentDevice(MTA_DeviceBase):
     def __init__(self, processor_clock_freq, cmap_config, icnt_config, mem_config, mxu_config, vpu_config):
         super().__init__(cmap_config, icnt_config, mem_config, mxu_config, vpu_config)
         

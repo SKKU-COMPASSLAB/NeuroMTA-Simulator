@@ -106,16 +106,11 @@ class MXUContext:
         return regs
 
     def load_tile_pe_arr(self, tile: torch.Tensor):
-        if tile.shape != self.pe_arr_shape:
-            raise Exception(f"[ERROR] Tile shape {tile.shape} does not match PE array shape {(self.pe_arr_height, self.pe_arr_width)}.")
-        
         self._pe_arr_regs[:, :] = tile.to(dtype=self._acc_dtype)
         
     def load_tile_acc_regs(self, tile: torch.Tensor):
         if self._acc_regs is None:
             raise Exception("[ERROR] Accumulator registers are not available in this dataflow.")
-        if tile.shape != self.acc_regs_shape:
-            raise Exception(f"[ERROR] Tile shape {tile.shape} does not match accumulator registers shape {self.acc_regs_shape}.")
         self._acc_regs[:, :] = tile.to(dtype=self._acc_dtype)
 
     def execute_gemm(self, ifm_tile: torch.Tensor, wgt_tile: torch.Tensor=None, psum_tile: torch.Tensor=None) -> torch.Tensor:

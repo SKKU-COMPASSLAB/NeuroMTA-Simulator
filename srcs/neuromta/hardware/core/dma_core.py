@@ -24,8 +24,7 @@ class DMACore(Core):
         self.mem_context = mem_context
         self.cmap_context = cmap_context
     
-    @core_kernel_method
-    def mem_page_read(self, ptr: Pointer, container: DataContainer):
+    def mem_page_read(self, ptr: BufferPointer | Pointer, container: DataContainer):
         msg = RPCMessage(
             src_core_id=self.core_id,
             dst_core_id=self.cmap_context.main_mem_core_id,
@@ -38,8 +37,7 @@ class DMACore(Core):
         self.async_rpc_send_req_msg(msg)
         self.async_rpc_wait_rsp_msg(msg)
         
-    @core_kernel_method
-    def mem_page_write(self, ptr: Pointer, container: DataContainer):
+    def mem_page_write(self, ptr: BufferPointer | Pointer, container: DataContainer):
         msg = RPCMessage(
             src_core_id=self.core_id,
             dst_core_id=self.cmap_context.main_mem_core_id,

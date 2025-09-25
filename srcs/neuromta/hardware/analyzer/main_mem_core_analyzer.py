@@ -26,6 +26,9 @@ class MainMemCoreAnalyzerEntry:
     
 class MainMemCoreAnalyzer:
     def __init__(self, main_mem_core: MainMemoryCore=None):
+        if main_mem_core is not None and not isinstance(main_mem_core, MainMemoryCore):
+            raise TypeError("The provided core is not an instance of MainMemoryCore.")
+        
         self._main_mem_core = main_mem_core
         self._entries: list[MainMemCoreAnalyzerEntry] = []
         self._ongoing_transactions: dict[str, MainMemCoreAnalyzerEntry] = {}
@@ -34,18 +37,6 @@ class MainMemCoreAnalyzer:
             self._hook_id = self._main_mem_core.register_command_debug_hook(self._analyzer_debug_entry)
         else:
             self._hook_id = None
-        
-    def register_core(self, core: Core):
-        if not isinstance(core, MainMemoryCore):
-            raise TypeError("The provided core is not an instance of MainMemoryCore.")
-
-        if self._main_mem_core is not None and self._hook_id is not None:
-            self._main_mem_core.unregister_command_debug_hook(self._hook_id)
-
-        self._main_mem_core = core
-        self._entries.clear()
-        self._ongoing_transactions.clear()
-        self._hook_id = self._main_mem_core.register_command_debug_hook(self._analyzer_debug_entry)
         
     @property
     def entries(self) -> list[MainMemCoreAnalyzerEntry]:

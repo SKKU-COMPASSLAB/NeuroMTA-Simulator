@@ -11,24 +11,21 @@ from neuromta.ip.google_tpu.architecture import GoogleTPUConfig, GoogleTPUDevice
 
 TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces")
 PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".profiles")
-ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), ".analysis")
-
-os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 
-@core_kernel_method
+@jit_prototype
 def dma_kernel(
     core: NPUCore,
     
-    bf_ifm_ptr: Reference,
-    bf_wgt_ptr: Reference,
-    bf_psum_ptr: Reference,
-    bf_ofm_ptr: Reference,
+    bf_ifm_ptr: BufferPointer,
+    bf_wgt_ptr: BufferPointer,
+    bf_psum_ptr: BufferPointer,
+    bf_ofm_ptr: BufferPointer,
     
-    cb_ifm_ptr: Reference,
-    cb_wgt_ptr: Reference,
-    cb_psum_ptr: Reference,
-    cb_ofm_ptr: Reference,
+    cb_ifm_ptr: BufferPointer,
+    cb_wgt_ptr: BufferPointer,
+    cb_psum_ptr: BufferPointer,
+    cb_ofm_ptr: BufferPointer,
     
     m_tile_num: int,
     n_tile_num: int,
@@ -42,43 +39,44 @@ def dma_kernel(
                 m_it_ed = min(m_it_st + load_burst_len, m_tile_num)
                 m_it_n_pages = m_it_ed - m_it_st
                 
-                # load ifm, wgt and psum to the circular buffers
                 if k_it == 0:
                     psum_tile_bf_ptr = bf_psum_ptr[n_it * m_tile_num + m_it_st : n_it * m_tile_num + m_it_ed]
                 else:
                     psum_tile_bf_ptr = bf_ofm_ptr[n_it * m_tile_num + m_it_st : n_it * m_tile_num + m_it_ed]
-
+                
                 if m_it_st == 0:
                     with new_parallel_thread():
                         core.cb_reserve_back(cb_wgt_ptr, n_pages=1)
-                        core.mem_buffer_copy(cb_wgt_ptr[0], bf_wgt_ptr[n_it * k_tile_num + k_it])
+                        core.mem_buffer_copy(cb_wgt_ptr[0], bf_wgt_ptr[n_it * k_tile_num + k_it], 1)
                         core.cb_push_back(cb_wgt_ptr, n_pages=1)
-                        
+
                 with new_parallel_thread():
                     core.cb_reserve_back(cb_ifm_ptr, n_pages=m_it_n_pages)
-                    core.mem_buffer_copy(cb_ifm_ptr[:m_it_n_pages], bf_ifm_ptr[k_it * m_tile_num + m_it_st : k_it * m_tile_num + m_it_ed])
+                    core.mem_buffer_copy(cb_ifm_ptr[:m_it_n_pages], bf_ifm_ptr[k_it * m_tile_num + m_it_st : k_it * m_tile_num + m_it_ed], n_pages=m_it_n_pages)
                     core.cb_push_back(cb_ifm_ptr, n_pages=m_it_n_pages)
-                    
+                
                 with new_parallel_thread():
                     core.cb_reserve_back(cb_psum_ptr, n_pages=m_it_n_pages)
-                    core.mem_buffer_copy(cb_psum_ptr[:m_it_n_pages], psum_tile_bf_ptr[:m_it_n_pages])
+                    core.mem_buffer_copy(cb_psum_ptr[:m_it_n_pages], psum_tile_bf_ptr[:m_it_n_pages], n_pages=m_it_n_pages)
                     core.cb_push_back(cb_psum_ptr, n_pages=m_it_n_pages)
                     
                 core.parallel_merge()
                 
-                # store ofm from the circular buffer
                 core.cb_wait_front(cb_ofm_ptr, n_pages=m_it_n_pages)
-                core.mem_buffer_copy(bf_ofm_ptr[n_it * m_tile_num + m_it_st:n_it * m_tile_num + m_it_ed], cb_ofm_ptr[:m_it_n_pages])
+                core.mem_buffer_copy(bf_ofm_ptr[n_it * m_tile_num + m_it_st:n_it * m_tile_num + m_it_ed], cb_ofm_ptr[:m_it_n_pages], n_pages=m_it_n_pages)
                 core.cb_pop_front(cb_ofm_ptr, n_pages=m_it_n_pages)
                 
-@core_kernel_method
+                core.parallel_merge()
+
+                
+@jit_prototype
 def compute_kernel(
     core: NPUCore,    
     
-    cb_ifm_ptr:  Reference,
-    cb_wgt_ptr:  Reference,
-    cb_psum_ptr: Reference,
-    cb_ofm_ptr:  Reference,
+    cb_ifm_ptr:  BufferPointer,
+    cb_wgt_ptr:  BufferPointer,
+    cb_psum_ptr: BufferPointer,
+    cb_ofm_ptr:  BufferPointer,
     
     m_tile_num: int,
     n_tile_num: int,
@@ -131,9 +129,9 @@ if __name__ == "__main__":
     device.initialize()
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
-    M = 512
-    N = 512
-    K = 512
+    M = 128
+    N = 256
+    K = 128
     dtype = torch.int8
     acc_dtype = torch.int32
     
@@ -177,15 +175,15 @@ if __name__ == "__main__":
     psum_size = psum.numel() * psum.element_size()
     ofm_size  = ofm.numel()  * ofm.element_size()
     
-    bf_ifm_ptr:  Reference = device.create_sharded_main_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num)
-    bf_wgt_ptr:  Reference = device.create_sharded_main_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num)
-    bf_psum_ptr: Reference = device.create_sharded_main_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num)
-    bf_ofm_ptr:  Reference = device.create_sharded_main_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num)
+    bf_ifm_ptr:  BufferPointer = device.create_local_l1_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num, core_ids=npu_core_id)
+    bf_wgt_ptr:  BufferPointer = device.create_local_l1_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num, core_ids=npu_core_id)
+    bf_psum_ptr: BufferPointer = device.create_local_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=npu_core_id)
+    bf_ofm_ptr:  BufferPointer = device.create_local_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=npu_core_id)
 
-    cb_ifm_ptr:  Reference = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_id)
-    cb_wgt_ptr:  Reference = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=npu_core_id)
-    cb_psum_ptr: Reference = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_id)
-    cb_ofm_ptr:  Reference = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_id)
+    cb_ifm_ptr:  BufferPointer = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_id)
+    cb_wgt_ptr:  BufferPointer = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=npu_core_id)
+    cb_psum_ptr: BufferPointer = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_id)
+    cb_ofm_ptr:  BufferPointer = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=npu_core_id)
 
     device.set_ptr_content(bf_ifm_ptr, tiled_ifm)
     device.set_ptr_content(bf_wgt_ptr, tiled_wgt)
@@ -209,23 +207,19 @@ if __name__ == "__main__":
         if isinstance(core, NPUCore) and (not core.is_idle):
             profiler = CommandUtilizationProfiler(core)
             profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
-            
-    main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
 
-    with MonitoringWindow() as monitor:
-        for core_id, core in device.cores.items():
-            if isinstance(core, NPUCore) and (not core.is_idle):
-                pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=40)
-                pbar.bind_core(core)
+    # with MonitoringWindow() as monitor:
+    #     for core_id, core in device.cores.items():
+    #         if isinstance(core, NPUCore) and (not core.is_idle):
+    #             pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=40)
+    #             pbar.bind_core(core)
         
-        st = time.time()
-        device.run_kernels()
-        ed = time.time()
+    st = time.time()
+    device.run_kernels()
+    ed = time.time()
     
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
-    main_mem_core_tracer.save_traces(os.path.join(ANALYSIS_DIR, "main_mem_core_trace.csv"))
-    main_mem_core_tracer.save_bandwidth_analysis(os.path.join(ANALYSIS_DIR, "main_mem_core_bandwidth_analysis.csv"), bin_size=1)
 
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

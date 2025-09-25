@@ -19,9 +19,9 @@ ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), ".analysis")
 os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 
-@core_kernel_method
-def kernel_main(core: NPUCore, dst_ref: Reference, src_ref: Reference, n_pages: int):
-    core.mem_buffer_copy(dst_ref=src_ref, src_ref=dst_ref, page_offset=0, n_pages=n_pages)
+@jit_prototype
+def kernel_main(core: NPUCore, dst_ref: BufferPointer, src_ref: BufferPointer, n_pages: int):
+    core.mem_buffer_copy(dst_ref=src_ref, src_ref=dst_ref, n_pages=n_pages)
 
 
 if __name__ == "__main__":
@@ -65,15 +65,15 @@ if __name__ == "__main__":
     icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
     main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
 
-    with MonitoringWindow() as monitor:
-        for core_id, core in device.cores.items():
-            if isinstance(core, NPUCore) and (not core.is_idle):
-                pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=40)
-                pbar.bind_core(core)
+    # with MonitoringWindow() as monitor:
+    #     for core_id, core in device.cores.items():
+    #         if isinstance(core, NPUCore) and (not core.is_idle):
+    #             pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=40)
+    #             pbar.bind_core(core)
         
-        st = time.time()
-        device.run_kernels()
-        ed = time.time()
+    st = time.time()
+    device.run_kernels()
+    ed = time.time()
     
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)

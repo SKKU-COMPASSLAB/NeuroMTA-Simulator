@@ -36,16 +36,30 @@ class MainMemoryCore(Core):
     def is_dramsim3_enabled(self) -> bool:
         return PYDRAMSIM3_AVAILABLE and self.mem_context.main_config.dramsim3_enable
     
-    @core_kernel_method
-    def mem_load_page_to_container(self, ptr: Pointer, container: DataContainer):
+    def mem_load_page_to_container(self, ptr: BufferPointer | Pointer, container: DataContainer):
         if self.is_dramsim3_enabled:
+            if isinstance(ptr, Pointer):
+                addr = ptr.addr
+                size = ptr.size
+            elif isinstance(ptr, BufferPointer):
+                if ptr.is_circular:
+                    logger.warning("Allocating main memory space as a circular buffer pointer may cause unexpected behavior.")  # TODO: should we raise an error? or implement global main memory circular buffer?
+                
+                handle = ptr.resolve(is_read=True)
+                
+                if handle.n_pages != 1:
+                    raise ValueError("[ERROR] DRAMSim3 memory access supports only single page pointer.")
+                
+                addr = handle.page_ptrs[0].addr
+                size = handle.page_ptrs[0].size
+
             msg = RPCMessage(
                 src_core_id=self.core_id,
                 dst_core_id=COMPANION_CORE_ID,
                 cmd_id="send_companion_command",
             ).with_args(
                 self.cmap_context.config.dramsim_module_id,
-                addr=ptr.addr, size=ptr.size, is_write=False,
+                addr=addr, size=size, is_write=False,
             )
             
             self.async_rpc_send_req_msg(msg)
@@ -53,16 +67,30 @@ class MainMemoryCore(Core):
             
         self._static_load_page_to_container(ptr, container)
         
-    @core_kernel_method
-    def mem_store_page_from_container(self, ptr: Pointer, container: DataContainer):
+    def mem_store_page_from_container(self, ptr: BufferPointer | Pointer, container: DataContainer):
         if self.is_dramsim3_enabled:
+            if isinstance(ptr, Pointer):
+                addr = ptr.addr
+                size = ptr.size
+            elif isinstance(ptr, BufferPointer):
+                if ptr.is_circular:
+                    logger.warning("Allocating main memory space as a circular buffer pointer may cause unexpected behavior.")  # TODO: should we raise an error? or implement global main memory circular buffer?
+
+                handle = ptr.resolve(is_read=False)
+                
+                if handle.n_pages != 1:
+                    raise ValueError("[ERROR] DRAMSim3 memory access supports only single page pointer.")
+                
+                addr = handle.page_ptrs[0].addr
+                size = handle.page_ptrs[0].size
+            
             msg = RPCMessage(
                 src_core_id=self.core_id,
                 dst_core_id=COMPANION_CORE_ID,
                 cmd_id="send_companion_command",
             ).with_args(
                 self.cmap_context.config.dramsim_module_id,
-                addr=ptr.addr, size=ptr.size, is_write=True,
+                addr=addr, size=size, is_write=True,
             )
             
             self.async_rpc_send_req_msg(msg)
@@ -71,26 +99,18 @@ class MainMemoryCore(Core):
         self._static_store_page_to_container(ptr, container)
 
     @core_command_method
-    def _static_load_page_to_container(self, ptr: Pointer, container: DataContainer):
-        if ptr.ptr_type != PointerType.PAGE:
-            raise ValueError("[ERROR] Memory copy requires page pointer.")
-
+    def _static_load_page_to_container(self, ptr: BufferPointer | Pointer, container: DataContainer):
         if not isinstance(container, DataContainer):
             raise ValueError("[ERROR] The source container must be a DataContainer instance.")
-
-        page_elem: Page = self.mem_handle.get_data_element(ptr)
-        container.data = page_elem.content   # Copy the content of the page element to the container        
+    
+        container.data = self.mem_handle.get_content(ptr)  
 
     @core_command_method
-    def _static_store_page_to_container(self, ptr: Pointer, container: DataContainer):
-        if ptr.ptr_type != PointerType.PAGE:
-            raise ValueError("[ERROR] Memory copy requires page pointer.")
-
+    def _static_store_page_to_container(self, ptr: BufferPointer | Pointer, container: DataContainer):
         if not isinstance(container, DataContainer):
             raise ValueError("[ERROR] The target container must be a DataContainer instance.")
 
-        page_elem: Page = self.mem_handle.get_data_element(ptr)
-        page_elem.content = container.data
+        self.mem_handle.set_content(ptr, container.data)
         
 class MainMemoryCoreCycleModel(CoreCycleModel):
     def __init__(self, core: MainMemoryCore):
@@ -98,12 +118,12 @@ class MainMemoryCoreCycleModel(CoreCycleModel):
         
         self.core = core
         
-    def _static_load_page_to_container(self, ptr: Pointer, container: DataContainer):
+    def _static_load_page_to_container(self, ptr: BufferPointer | Pointer, container: DataContainer):
         if self.core.is_dramsim3_enabled:
             return 1    # if DRAMSim is enabled, simulation time will be reflected at the behavioral model
         return self.core.mem_context.main_config.get_cycles(size=ptr.size)
 
-    def _static_store_page_to_container(self, ptr: Pointer, container: DataContainer):
+    def _static_store_page_to_container(self, ptr: BufferPointer | Pointer, container: DataContainer):
         if self.core.is_dramsim3_enabled:
             return 1    # if DRAMSim is enabled, simulation time will be reflected at the behavioral model
         return self.core.mem_context.main_config.get_cycles(size=ptr.size)

@@ -19,12 +19,13 @@ from neuromta.hardware.companions.dramsim import DRAMSim3
 
 
 __all__ = [
-    "MultiCoreAccelerator",
-    "MultiTileAccelerator",
+    "MCA_DeviceBase",
+    "MTA_DeviceBase",
+    "MTA_CoreGrid",
 ]
 
 
-class MultiCoreAccelerator(Device):
+class MCA_DeviceBase(Device):
     def __init__(
         self, 
         
@@ -85,7 +86,7 @@ class MultiCoreAccelerator(Device):
     def get_main_mem_handle(self) -> MemoryHandle:
         return self.main_mem_core.mem_handle
 
-    def create_local_l1_circular_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> Reference | list[Reference]:
+    def create_local_l1_circular_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> BufferPointer | list[BufferPointer]:
         if core_ids is None:
             core_ids = self.npu_core_ids
         if not isinstance(core_ids, Sequence):
@@ -102,7 +103,7 @@ class MultiCoreAccelerator(Device):
             return ptrs[0]
         return ptrs
     
-    def create_local_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> Reference | list[Reference]:
+    def create_local_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> BufferPointer | list[BufferPointer]:
         if core_ids is None:
             core_ids = self.npu_core_ids
         if not isinstance(core_ids, Sequence):
@@ -119,7 +120,7 @@ class MultiCoreAccelerator(Device):
             return ptrs[0]
         return ptrs
 
-    def create_sharded_main_buffer(self, page_size: int, n_pages: int, channel_id: int | Sequence[int]=None) -> Reference:        
+    def create_sharded_main_buffer(self, page_size: int, n_pages: int, channel_id: int | Sequence[int]=None) -> BufferPointer:        
         if channel_id is None:
             channel_id = list(range(self.cmap_context.config.n_main_mem_channels))
         
@@ -128,8 +129,21 @@ class MultiCoreAccelerator(Device):
         ptr = create_uniform_buffer(mem_handle=mem_handle, page_size=page_size, n_pages=n_pages, is_circular=False, channel_id=channel_id)
         return ptr
     
-    def set_ptr_content(self, ptr: Reference | Pointer | BufferHandle, content: torch.Tensor):
-        if isinstance(ptr, Reference):
+    def remove_buffer(self, ptr: BufferPointer):
+        handle = ptr.raw_handle
+        
+        for page_ptr in handle.page_ptrs:
+            if self.cmap_context.config.check_main_mem_addr(page_ptr.addr):
+                mem_handle = self.get_main_mem_handle()
+            elif self.cmap_context.config.check_l1_mem_addr(page_ptr.addr):
+                mem_handle = self.get_l1_mem_handle(addr=page_ptr.addr)
+            else:
+                raise Exception(f"[ERROR] Unsupported address: {page_ptr.addr}")
+            
+            mem_handle.deallocate_ptr(page_ptr)
+    
+    def set_ptr_content(self, ptr: BufferPointer | Pointer | BufferHandle, content: torch.Tensor):
+        if isinstance(ptr, BufferPointer):
             ptr = ptr.resolve(is_read=False)
         
         if isinstance(ptr, Pointer):
@@ -149,7 +163,7 @@ class MultiCoreAccelerator(Device):
             for page_ptr, page_content in zip(ptr.page_ptrs, content):
                 self._set_page_var_ptr_content(page_ptr, page_content)
         else:
-            raise Exception(f"[ERROR] Unsupported pointer type: {type(ptr)}. Expected BufferPointer or Pointer.")
+            raise Exception(f"[ERROR] Unsupported pointer type: {type(ptr).__name__}. Expected BufferPointer or Pointer.")
 
     def _set_page_var_ptr_content(self, ptr: Pointer, content: Any):
         if ptr.ptr_type == PointerType.PAGE:
@@ -167,8 +181,8 @@ class MultiCoreAccelerator(Device):
 
         mem_handle.set_content(ptr, content)
 
-    def get_ptr_content(self, ptr: Reference | Pointer | BufferHandle, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> torch.Tensor:
-        if isinstance(ptr, Reference):
+    def get_ptr_content(self, ptr: BufferPointer | Pointer | BufferHandle, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> torch.Tensor:
+        if isinstance(ptr, BufferPointer):
             ptr = ptr.resolve(is_read=True)
             
         if isinstance(ptr, Pointer):
@@ -206,8 +220,20 @@ class MultiCoreAccelerator(Device):
 
         return content
     
-    
-class MultiTileAccelerator(MultiCoreAccelerator):
+
+class MTA_CoreGrid:
+    def __init__(self, offset: tuple[int, int], shape: tuple[int, int], core_ids: list[int]):
+        self.offset = offset
+        self.shape = shape
+        self.core_ids = core_ids
+        
+    def __getitem__(self, idx: int) -> int:
+        if isinstance(idx, tuple):
+            return self.core_ids[idx[0] * self.shape[1] + idx[1]]
+        return self.core_ids[idx]
+
+
+class MTA_DeviceBase(MCA_DeviceBase):
     def __init__(
         self, 
         
@@ -246,14 +272,14 @@ class MultiTileAccelerator(MultiCoreAccelerator):
                 self.npu_core_grid_enabled = False  # the accelerator does not have a full mesh of NPU cores
                 break
 
-    def get_npu_core_grid(self, offset: tuple[int, int], shape: tuple[int, int]) -> list[int]:
+    def get_npu_core_grid(self, offset: tuple[int, int], shape: tuple[int, int]) -> MTA_CoreGrid:
         if not self.npu_core_grid_enabled:
             raise Exception("[ERROR] Unable to get npu core grid since the accelerator does not have a full mesh of NPU cores.")
 
         grid = self.npu_core_grid[offset[0]:offset[0]+shape[0], offset[1]:offset[1]+shape[1]]
-        return grid.flatten().tolist()
+        return MTA_CoreGrid(offset=offset, shape=shape, core_ids=grid.flatten().tolist())
 
-    def create_sharded_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None, contiguous_n_pages: int=1) -> Reference:
+    def create_sharded_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None, contiguous_n_pages: int=1) -> BufferPointer:
         if core_ids is None:
             core_ids = self.cmap_context.config.get_core_ids(CmapCoreType.NPU)
         if not isinstance(core_ids, Sequence):

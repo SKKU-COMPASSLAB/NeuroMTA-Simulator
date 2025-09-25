@@ -17,8 +17,6 @@ __all__ = [
 class Device:
     def __init__(self):
         self._cores: dict[str, Core] = None
-        
-        # self._verbose:      bool = False
         self._verbose_hook_ids: dict[str, str] = {}
 
         self._rpc_req_send_inbox: dict[str, list[RPCMessage]] = {}
@@ -71,8 +69,11 @@ class Device:
         return self
     
     def _verbose_command_debug_hook(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
-        logger.debug(f"{issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {kernel.callstack:<80s} | command: {cmd.cmd_id}")
-        
+        callstack = kernel.callstack if kernel else "N/A"
+        if len(callstack) > 100:
+            callstack = callstack[:47] + " ... " + callstack[-47:]
+        logger.debug(f"{issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {callstack:<100s} | command: {cmd.cmd_id}")
+
     def run_single_step(self, cycle_resolution: int = 1):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
@@ -103,8 +104,9 @@ class Device:
 
     def run_kernels(
         self, 
-        cycle_resolution:   int  = 1,                   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
-        max_steps:          int  = -1,                  # the maximum number of steps to run
+        cycle_resolution:   int  = 1,   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
+        max_steps:          int  = -1,  # the maximum number of steps to run
+        max_timestamp:      int  = -1,  # the maximum timestamp to run
     ):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
@@ -115,6 +117,10 @@ class Device:
             step_cnt += 1
             if step_cnt >= max_steps > 0:
                 logger.info(f"Reached maximum steps: {max_steps}. Stopping simulation.")
+                break
+            
+            if self.timestamp >= max_timestamp > 0:
+                logger.info(f"Reached maximum timestamp: {max_timestamp}. Stopping simulation.")
                 break
             
             self.run_single_step(cycle_resolution=cycle_resolution)

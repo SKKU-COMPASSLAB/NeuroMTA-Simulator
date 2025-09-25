@@ -26,6 +26,9 @@ class IcntCoreAnalyzerEntry:
 
 class IcntCoreAnalyzer:
     def __init__(self, icnt_core: IcntCore=None):
+        if icnt_core is not None and not isinstance(icnt_core, IcntCore):
+            raise TypeError("The provided core is not an instance of IcntCore.")
+        
         self._icnt_core = icnt_core
         self._entries: list[IcntCoreAnalyzerEntry] = []
         self._ongoing_transactions: dict[str, IcntCoreAnalyzerEntry] = {}
@@ -33,19 +36,7 @@ class IcntCoreAnalyzer:
         if self._icnt_core is not None:
             self._hook_id = self._icnt_core.register_command_debug_hook(self._analyzer_debug_entry)
         else:
-            self._hook_id = None        
-    
-    def register_core(self, core: Core):
-        if not isinstance(core, IcntCore):
-            raise TypeError("The provided core is not an instance of IcntCore.")
-        
-        if self._icnt_core is not None and self._hook_id is not None:
-            self._icnt_core.unregister_command_debug_hook(self._hook_id)
-        
-        self._icnt_core = core
-        self._entries.clear()
-        self._ongoing_transactions.clear()
-        self._hook_id = self._icnt_core.register_command_debug_hook(self._analyzer_debug_entry)
+            self._hook_id = None
         
     @property
     def entries(self) -> list[IcntCoreAnalyzerEntry]:

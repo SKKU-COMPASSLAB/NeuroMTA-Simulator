@@ -3,6 +3,9 @@ import math
 import torch
 from typing import Any, Sequence, TypeVar, Generic
 
+from neuromta.framework.logger import logger
+from neuromta.framework.debug_utils import *
+
 
 __all__ = [
     "DataContainer",
@@ -10,7 +13,7 @@ __all__ = [
     "Page",
     "PointerType",
     "Pointer",
-    "Reference",
+    "BufferPointer",
     "BufferHandle",
     "CircularBufferHandle",
     "MemoryHandle",
@@ -38,6 +41,12 @@ class _DataElement:
     @property
     def addr(self) -> int:
         return self._addr
+    
+    @addr.setter
+    def addr(self, value: int):
+        if self._addr is not None:
+            raise Exception(f"[ERROR] Address is already set to {self._addr}, cannot be changed to {value}.")
+        self._addr = value
 
     @property
     def size(self) -> int:
@@ -146,12 +155,19 @@ class Pointer:
         return f"Pointer(addr={self._addr}, size={self._size}, type={self._ptr_type})"
     
     
-class Reference:
-    def __init__(self, handle: 'BufferHandle', item: int | slice | tuple[int, ...] | None=None):
+class BufferPointer:
+    def __init__(self, handle: 'BufferHandle'=None, item: int | slice | tuple[int, ...] | None=None):
         self._handle = handle
         self._item = item
         
-        if self._item is None:
+        if self._item is None and self._handle is not None:
+            self._item = slice(0, handle.n_pages, 1)
+            
+    def initialize(self, handle: 'BufferHandle'=None, item: int | slice | tuple[int, ...] | None=None):
+        self._handle = handle
+        self._item = item
+        
+        if self._item is None and self._handle is not None:
             self._item = slice(0, handle.n_pages, 1)
             
     @property
@@ -165,31 +181,39 @@ class Reference:
     @property
     def is_circular(self) -> bool:
         return isinstance(self._handle, CircularBufferHandle)
+    
+    @property
+    def n_pages(self) -> int:
+        return self.resolve(is_read=True).n_pages
+    
+    @property
+    def page_size(self) -> int:
+        return self._handle.page_size
         
-    def __getitem__(self, new_item) -> 'Reference':
+    def __getitem__(self, new_item) -> 'BufferPointer':
         if isinstance(new_item, (int, slice, tuple)):
             if self._item is None:
-                return Reference(handle=self._handle, item=new_item)
+                return BufferPointer(handle=self._handle, item=new_item)
             elif isinstance(self._item, int):
-                if new_item != 0:
-                    raise Exception(f"[ERROR] Cannot slice a Reference that points to a single page.")
-                return Reference(handle=self._handle, item=self._item)
+                if new_item != 0 and new_item != slice(0, 1, 1) and new_item != slice(0, 1, None):
+                    raise Exception(f"[ERROR] Cannot slice a BufferPointer that points to a single page.")
+                return BufferPointer(handle=self._handle, item=self._item)
             elif isinstance(self._item, slice):
                 if isinstance(new_item, int):
-                    return Reference(handle=self._handle, item=self._item.start + new_item)
+                    return BufferPointer(handle=self._handle, item=self._item.start + new_item)
                 elif isinstance(new_item, slice):
                     start = self._item.start + (new_item.start or 0)
                     stop = self._item.start + (new_item.stop or (self._handle.n_pages - self._item.start))
-                    return Reference(handle=self._handle, item=slice(start, stop, new_item.step))
+                    return BufferPointer(handle=self._handle, item=slice(start, stop, new_item.step))
                 elif isinstance(new_item, tuple):
-                    return Reference(handle=self._handle, item=tuple(self._item.start + i for i in new_item))
+                    return BufferPointer(handle=self._handle, item=tuple(self._item.start + i for i in new_item))
             elif isinstance(self._item, tuple):
                 if isinstance(new_item, int):
-                    return Reference(handle=self._handle, item=self._item[new_item])
+                    return BufferPointer(handle=self._handle, item=self._item[new_item])
                 elif isinstance(new_item, slice):
-                    return Reference(handle=self._handle, item=self._item[new_item])
+                    return BufferPointer(handle=self._handle, item=self._item[new_item])
                 elif isinstance(new_item, tuple):
-                    return Reference(handle=self._handle, item=tuple(self._item[i] for i in new_item))
+                    return BufferPointer(handle=self._handle, item=tuple(self._item[i] for i in new_item))
         return super().__getitem__(new_item)
 
     def resolve(self, is_read: bool=None) -> 'BufferHandle':
@@ -269,20 +293,34 @@ class CircularBufferHandle(BufferHandle):
         self._rd_ptr    = 0
         self._wr_ptr    = 0
         self._rsvd_ptr  = 0
-    
+        
+        self._rd_ptr_phase = False
+        self._wr_ptr_phase = False
+        self._rsvd_ptr_phase = False
+
     def __getitem__(self, item) -> BufferHandle:
         raise Exception(f"[ERROR] Cannot create reference for CircularBufferPointer with slicing. Use specialized reference methods 'rd_ref' or 'wr_ref' instead.")
 
     @property
     def _alloc_space(self) -> int:
-        if self._rsvd_ptr >= self._rd_ptr:
+        if self._rsvd_ptr == self._rd_ptr:
+            if self._rd_ptr_phase == self._rsvd_ptr_phase:
+                return 0
+            else:
+                return self._n_pages
+        elif self._rsvd_ptr > self._rd_ptr:
             return self._rsvd_ptr - self._rd_ptr
         else:
             return self._n_pages - (self._rd_ptr - self._rsvd_ptr)
         
     @property
     def _real_space(self) -> int:
-        if self._wr_ptr >= self._rd_ptr:
+        if self._wr_ptr == self._rd_ptr:
+            if self._rd_ptr_phase == self._wr_ptr_phase:
+                return 0
+            else:
+                return self._n_pages
+        elif self._wr_ptr > self._rd_ptr:
             return self._wr_ptr - self._rd_ptr
         else:
             return self._n_pages - (self._rd_ptr - self._wr_ptr)
@@ -294,14 +332,109 @@ class CircularBufferHandle(BufferHandle):
         return self._real_space >= n_pages
     
     def allocate_cb_space(self, n_pages: int):
+        if self._rsvd_ptr + n_pages >= self._n_pages:
+            self._rsvd_ptr_phase = not self._rsvd_ptr_phase
         self._rsvd_ptr = (self._rsvd_ptr + n_pages) % self._n_pages
         
     def occupy_cb_space(self, n_pages: int):
+        if self._wr_ptr + n_pages >= self._n_pages:
+            self._wr_ptr_phase = not self._wr_ptr_phase
         self._wr_ptr = (self._wr_ptr + n_pages) % self._n_pages
         
     def deallocate_cb_space(self, n_pages: int):
+        if self._rd_ptr + n_pages >= self._n_pages:
+            self._rd_ptr_phase = not self._rd_ptr_phase
         self._rd_ptr = (self._rd_ptr + n_pages) % self._n_pages
 
+
+class _MemoryHandleDataEntry:
+    def __init__(self, addr: int, elem: _DataElement):
+        self.addr = addr
+        self.elem = elem
+        self.is_expired = False
+        
+        self.nxt_entry: _MemoryHandleDataEntry = None
+        self.prv_entry: _MemoryHandleDataEntry = None
+        
+class _MemoryHandleChannelSpaceTracker:
+    def __init__(self, base_addr: int, size: int):
+        self._base_addr = base_addr
+        self._size = size
+        
+        self._head: _MemoryHandleDataEntry = None
+        self._tail: _MemoryHandleDataEntry = None
+        self._addr_map: dict[int, _MemoryHandleDataEntry] = {}
+        
+    def allocate_space(self, elem: _DataElement) -> int | None:
+        if self._tail is None:
+            if elem.size > self._size:
+                return None
+            
+            elem.addr = self._base_addr
+            
+            self._head = _MemoryHandleDataEntry(self._base_addr, elem)
+            self._tail = self._head
+            self._addr_map[self._base_addr] = self._head
+            
+            return self._base_addr
+        
+        else:
+            head_addr = self._head.addr
+            tail_addr = self._tail.addr + self._tail.elem.size
+            
+            if head_addr < tail_addr:
+                st, ed = tail_addr, self._base_addr + self._size
+                if ed - st < elem.size:
+                    st, ed = self._base_addr, head_addr
+            else:
+                st, ed = tail_addr, head_addr
+                
+            if (ed - st) > elem.size:
+                elem.addr = st
+                
+                new_entry = _MemoryHandleDataEntry(st, elem)
+                
+                new_entry.prv_entry = self._tail
+                self._tail.nxt_entry = new_entry
+                
+                self._tail = new_entry
+                self._addr_map[st] = new_entry
+                
+                return st
+        
+            return None
+        
+    def deallocate_space(self, addr: int) -> bool:
+        if self.search_elem(addr) is None:
+            return False
+        
+        if addr not in self._addr_map:
+            raise Exception(f"[ERROR] Cannot find the allocated address {addr} to deallocate.")
+        
+        entry = self._addr_map[addr]
+        entry.is_expired = True
+        
+        while self._head is not None and self._head.is_expired:
+            del self._addr_map[self._head.addr]
+            self._head = self._head.nxt_entry
+            if self._head is not None:
+                self._head.prv_entry = None
+        
+        while self._tail is not None and self._tail.is_expired:
+            del self._addr_map[self._tail.addr]
+            self._tail = self._tail.prv_entry
+            if self._tail is not None:
+                self._tail.nxt_entry = None
+            
+        if self._head is None:
+            self._tail = None
+        
+        return True
+            
+    def search_elem(self, addr: int) -> _DataElement | None:
+        if addr not in self._addr_map:
+            return None
+        return self._addr_map[addr].elem
 
 class MemoryHandle:
     def __init__(self, mem_id: str, base_addr: int, size: int, n_channels: int=1):
@@ -314,18 +447,27 @@ class MemoryHandle:
         if self._size % self._n_channels != 0:
             raise Exception(f"[ERROR] Memory size {self._size} is not divisible by number of channels {self._n_channels}.")
         
-        self._data_elements: dict[int, _DataElement] = {}
+        self._ch_trackers: list[_MemoryHandleChannelSpaceTracker] = [
+            _MemoryHandleChannelSpaceTracker(base_addr + i * self._channel_size, self._channel_size)
+            for i in range(self._n_channels)
+        ]
                 
     def get_data_element(self, key: Any) -> _DataElement:
         if isinstance(key, int):
-            return self._data_elements[key]
+            ch_id = (key - self._base_addr) // self._channel_size
+            if ch_id < 0 or ch_id >= self._n_channels:
+                raise Exception(f"[ERROR] Address {key} is out of range for memory handle {self}.")
+            elem = self._ch_trackers[ch_id].search_elem(key)
+            if elem is None:
+                raise Exception(f"[ERROR] Cannot find the data element at address {key} in memory handle {self}.")
+            return elem
         elif isinstance(key, Pointer):
-            return self._data_elements[key.addr]
+            return self.get_data_element(key.addr)
         else:
             raise TypeError(f"[ERROR] Key must be an int or Pointer, got {type(key)}.")
         
     def get_content(self, key: Any, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> Any:
-        if isinstance(key, Reference):
+        if isinstance(key, BufferPointer):
             key = key.resolve(is_read=True)
 
         if isinstance(key, int):
@@ -350,7 +492,7 @@ class MemoryHandle:
         return content
     
     def set_content(self, key: Any, value: Any, page_offset: int=0):
-        if isinstance(key, Reference):
+        if isinstance(key, BufferPointer):
             key = key.resolve(is_read=False)
         
         if isinstance(key, int):
@@ -369,74 +511,34 @@ class MemoryHandle:
                 page.set_content(value=paged_value[page_idx, :], offset=page_offset)
         else:
             raise TypeError(f"[ERROR] Key must be an int or Pointer, got {type(key)}.")
-
-    def get_overlapping_data_addr(self, addr: int, size: int=1) -> int: # returns False if the address space is not overlapping with any memory handles
-        keys = sorted(self._data_elements.keys())
-        left, right = 0, len(keys) - 1
-
-        while left <= right:
-            mid = (left + right) // 2
-            mid_addr = keys[mid]
-            page = self._data_elements[mid_addr]
-
-            if not (addr + size <= page.addr or addr >= page.addr + page.size):
-                return mid_addr
-            if addr < page.addr:
-                right = mid - 1
-            else:
-                left = mid + 1
-                
-        return -1
-
+        
     def allocate_var_ptr(self, var_size: int, initial_value: Any, channel_id: int=0, dst_ptr: Pointer=None) -> Pointer | None:
-        ch_st_addr = self.base_addr + channel_id * self._channel_size
-        ch_ed_addr = self.base_addr + (channel_id + 1) * self._channel_size
+        if channel_id >= self._n_channels:
+            raise Exception(f"[ERROR] Invalid channel id {channel_id} which exceeds the number of channels {self._n_channels}")
         
-        addr = ch_st_addr
+        elem = Variable(addr=None, size=var_size, content=initial_value)
         
-        # for addr in range(ch_st_addr, ch_ed_addr - var_size + 1, var_size):
-        while addr <= ch_ed_addr - var_size:
-            overlap = self.get_overlapping_data_addr(addr, size=var_size)
-            
-            if overlap < 0:
-                var = Variable(addr=addr, size=var_size, content=initial_value)
-                self._data_elements[addr] = var
-                
-                if dst_ptr is not None:
-                    dst_ptr.initialize(var)
-                    return dst_ptr
-                else:
-                    return Pointer(data_element=var)
-            else:
-                # continue
-                while addr < overlap + self._data_elements[overlap].size:
-                    addr += var_size
-        return None
+        if self._ch_trackers[channel_id].allocate_space(elem) is None:
+            return None
+        
+        if dst_ptr is not None:
+            dst_ptr.initialize(elem)
+            return dst_ptr
+        return Pointer(data_element=elem)
     
     def allocate_page_ptr(self, page_size: int, channel_id: int=0, dst_ptr: Pointer=None) -> Pointer | None:
-        ch_st_addr = self.base_addr + channel_id * self._channel_size
-        ch_ed_addr = self.base_addr + (channel_id + 1) * self._channel_size
+        if channel_id >= self._n_channels:
+            raise Exception(f"[ERROR] Invalid channel id {channel_id} which exceeds the number of channels {self._n_channels}")
         
-        addr = ch_st_addr
+        elem = Page(addr=None, size=page_size, content=None)
         
-        # for addr in range(ch_st_addr, ch_ed_addr - page_size + 1, page_size):
-        while addr <= ch_ed_addr - page_size:
-            overlap = self.get_overlapping_data_addr(addr, size=page_size)
-            
-            if overlap < 0:
-                page = Page(addr=addr, size=page_size)
-                self._data_elements[addr] = page
-                
-                if dst_ptr is not None:
-                    dst_ptr.initialize(page)
-                    return dst_ptr
-                else:
-                    return Pointer(data_element=page)
-            else:
-                # continue
-                while addr < overlap + self._data_elements[overlap].size:
-                    addr += page_size
-        return None
+        if self._ch_trackers[channel_id].allocate_space(elem) is None:
+            return None
+        
+        if dst_ptr is not None:
+            dst_ptr.initialize(elem)
+            return dst_ptr
+        return Pointer(data_element=elem)
 
     def allocate_buffer_ptr(self, page_size: int, n_pages: int, is_circular: bool, channel_id: int | tuple[int]=0) -> CircularBufferHandle | BufferHandle | None:
         is_channel_sharded = isinstance(channel_id, Sequence)
@@ -467,18 +569,18 @@ class MemoryHandle:
         for ptr in ptrs:
             if isinstance(ptr, Pointer):
                 addr = ptr.addr
-                if addr in self._data_elements:
-                    del self._data_elements[addr]
-                else:
+                ch_id = (addr - self._base_addr) // self._channel_size
+                
+                if ch_id < 0 or ch_id >= self._n_channels:
+                    raise Exception(f"[ERROR] Address {addr} is out of range for memory handle {self}.")
+                
+                if not self._ch_trackers[ch_id].deallocate_space(addr):
                     raise KeyError(f"[ERROR] No data element found at address {addr} in memory handle with base address {self._base_addr}.")
             elif isinstance(ptr, BufferHandle):
                 for page_ptr in ptr.page_ptrs:
                     self.deallocate_ptr(page_ptr)
             else:
                 raise TypeError(f"[ERROR] Expected Pointer or BufferPointer, got {type(ptr)}.")
-    
-    def clear(self):
-        self._data_elements.clear()
 
     @property
     def mem_id(self) -> str:
@@ -502,14 +604,13 @@ def create_var_ptr(mem_handle: MemoryHandle, var_size: int, initial_value: Any) 
 def create_page_ptr(mem_handle: MemoryHandle, page_size: int) -> Pointer | None:
     return mem_handle.allocate_page_ptr(page_size)
 
-def create_uniform_buffer(mem_handle: MemoryHandle, page_size: int, n_pages: int, is_circular: bool, channel_id: int | Sequence[int]=0) -> Reference | None:
+def create_uniform_buffer(mem_handle: MemoryHandle, page_size: int, n_pages: int, is_circular: bool, channel_id: int | Sequence[int]=0) -> BufferPointer | None:
     bf_handle = mem_handle.allocate_buffer_ptr(page_size, n_pages, is_circular=is_circular, channel_id=channel_id)
     if bf_handle is None:
         return None
-    return Reference(handle=bf_handle, item=None)
+    return BufferPointer(handle=bf_handle, item=None)
 
-def create_distributed_buffer(mem_handles: list[MemoryHandle], page_size: int, n_pages: int, channel_id: int=0, contiguous_n_pages: int=1) -> Reference | None:
-    # n_page_per_handle = math.ceil(n_pages / len(mem_handles))
+def create_distributed_buffer(mem_handles: list[MemoryHandle], page_size: int, n_pages: int, channel_id: int=0, contiguous_n_pages: int=1) -> BufferPointer | None:
     if n_pages % (len(mem_handles) * contiguous_n_pages) != 0:
         n_pages += (len(mem_handles) * contiguous_n_pages - (n_pages % (len(mem_handles) * contiguous_n_pages)))
     n_page_group_per_handle = n_pages // len(mem_handles) // contiguous_n_pages
@@ -536,4 +637,4 @@ def create_distributed_buffer(mem_handles: list[MemoryHandle], page_size: int, n
     bf_handle = BufferHandle(page_size=page_size, n_pages=n_pages, page_ptrs=page_ptrs)
     if bf_handle is None:
         return None
-    return Reference(handle=bf_handle, item=None)
+    return BufferPointer(handle=bf_handle, item=None)

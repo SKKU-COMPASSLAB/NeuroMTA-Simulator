@@ -135,7 +135,7 @@ class GoogleTPUConfig(dict):
             vpu_config=vpu_config,
         )
 
-class GoogleTPUDevice(MultiCoreAccelerator):
+class GoogleTPUDevice(MCA_DeviceBase):
     def __init__(self, processor_clock_freq, cmap_config, mem_config, mxu_config, vpu_config):
         super().__init__(cmap_config, mem_config, mxu_config, vpu_config)
         

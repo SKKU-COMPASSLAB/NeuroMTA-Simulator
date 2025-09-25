@@ -17,8 +17,8 @@ os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 
 
-@core_kernel_method
-def read_kernel(core: NPUCore, pipe_in_ptr: Reference, pipe_out_ptr: Reference | None, core_rd_ptr: Reference, n_pages: int):
+@jit_prototype
+def read_kernel(core: NPUCore, pipe_in_ptr: BufferPointer, pipe_out_ptr: BufferPointer | None, core_rd_ptr: BufferPointer, n_pages: int):
     for page_idx in range(n_pages):
         if pipe_in_ptr.is_circular:
             core.cb_wait_front(pipe_in_ptr, 1)
@@ -29,13 +29,13 @@ def read_kernel(core: NPUCore, pipe_in_ptr: Reference, pipe_out_ptr: Reference |
         if pipe_out_ptr is not None:
             with new_parallel_thread():
                 core.cb_reserve_back(pipe_out_ptr, 1)
-                core.mem_buffer_copy(pipe_out_ptr[0], pipe_in_ptr[pipe_in_page_idx])
+                core.mem_buffer_copy(pipe_out_ptr[0], pipe_in_ptr[pipe_in_page_idx], n_pages=1)
                 core.cb_push_back(pipe_out_ptr, 1)
         
         if core_rd_ptr.is_circular:
             with new_parallel_thread():
                 core.cb_reserve_back(core_rd_ptr, 1)
-                core.mem_buffer_copy(core_rd_ptr[0], pipe_in_ptr[pipe_in_page_idx])
+                core.mem_buffer_copy(core_rd_ptr[0], pipe_in_ptr[pipe_in_page_idx], n_pages=1)
                 core.cb_push_back(core_rd_ptr, 1)
                 
         core.parallel_merge()
@@ -43,8 +43,8 @@ def read_kernel(core: NPUCore, pipe_in_ptr: Reference, pipe_out_ptr: Reference |
         if pipe_in_ptr.is_circular:
             core.cb_pop_front(pipe_in_ptr, 1)
             
-@core_kernel_method
-def compute_kernel(core: NPUCore, core_rd_ptr: Reference, core_wr_ptr: Reference, n_pages: int):
+@jit_prototype
+def compute_kernel(core: NPUCore, core_rd_ptr: BufferPointer, core_wr_ptr: BufferPointer, n_pages: int):
     for page_idx in range(n_pages):
         core.cb_wait_front(core_rd_ptr, 1)
         core.cb_reserve_back(core_wr_ptr, 1)
@@ -73,13 +73,13 @@ if __name__ == "__main__":
     
     tensor = torch.arange(n_pages * page_numel, dtype=dtype).reshape(n_pages, page_numel)
     
-    core_ids = device.get_npu_core_grid(offset=(0, 0), shape=(1, 4))
+    core_ids = device.get_npu_core_grid(offset=(0, 0), shape=(1, 4)).core_ids
     n_cores = len(core_ids)
     
-    bf_main:        Reference       = device.create_sharded_main_buffer(page_size=page_size, n_pages=n_pages, channel_id=list(range(device.mem_context.main_config.ch_num)))
-    cb_pipe:        list[Reference] = device.create_local_l1_circular_buffer(page_size=page_size, n_pages=2, core_ids=core_ids)
-    cb_core_rd_ptr: list[Reference] = device.create_local_l1_circular_buffer(page_size=page_size, n_pages=2, core_ids=core_ids)
-    cb_core_wr_ptr: list[Reference] = device.create_local_l1_circular_buffer(page_size=page_size, n_pages=n_pages, core_ids=core_ids)
+    bf_main:        BufferPointer       = device.create_sharded_main_buffer(page_size=page_size, n_pages=n_pages, channel_id=list(range(device.mem_context.main_config.ch_num)))
+    cb_pipe:        list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=page_size, n_pages=2, core_ids=core_ids)
+    cb_core_rd_ptr: list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=page_size, n_pages=2, core_ids=core_ids)
+    cb_core_wr_ptr: list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=page_size, n_pages=n_pages, core_ids=core_ids)
 
     device.set_ptr_content(bf_main, tensor)
     

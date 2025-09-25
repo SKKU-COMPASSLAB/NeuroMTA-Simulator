@@ -118,7 +118,6 @@ class CompanionCore(Core):
 
         return cmod.check_command_executed(cmd)
     
-    @core_kernel_method
     def send_companion_command(self, module_id: str, *args, **kwargs) -> Any:
         cmod = self.get_companion_module(module_id)
         if cmod is None:

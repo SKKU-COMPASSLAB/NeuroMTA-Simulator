@@ -16,19 +16,19 @@ ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), ".analysis")
 os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 
-class RT_TT_SHARDED_L1_GEMM(RuntimeOperator):
+class RT_TT_SHARDED_L1_GEMM(MCA_RuntimeKernel):
     def __init__(
         self,
     
-        bf_ifm_ptr:  Reference,
-        bf_wgt_ptr:  Reference,
-        bf_psum_ptr: Reference,
-        bf_ofm_ptr:  Reference,
+        bf_ifm_ptr:  BufferPointer,
+        bf_wgt_ptr:  BufferPointer,
+        bf_psum_ptr: BufferPointer,
+        bf_ofm_ptr:  BufferPointer,
 
-        cb_ifm_ptr:  Reference,
-        cb_wgt_ptr:  Reference,
-        cb_psum_ptr: Reference,
-        cb_ofm_ptr:  Reference,
+        cb_ifm_ptr:  BufferPointer,
+        cb_wgt_ptr:  BufferPointer,
+        cb_psum_ptr: BufferPointer,
+        cb_ofm_ptr:  BufferPointer,
         
         k_tile_num: int,
         load_burst_len: int, 
@@ -54,8 +54,7 @@ class RT_TT_SHARDED_L1_GEMM(RuntimeOperator):
         self.dtype = dtype
         self.acc_dtype = acc_dtype
     
-    @runtime_kernel_method
-    def read_kernel(self, core: NPUCore):
+    def RD_KERNEL(self, core: NPUCore):
         for i in range(0, self.k_tile_num, self.load_burst_len):
             ed = min(i + self.load_burst_len, self.k_tile_num)
             n_pages = ed - i
@@ -66,14 +65,14 @@ class RT_TT_SHARDED_L1_GEMM(RuntimeOperator):
             core.cb_reserve_back(self.cb_wgt_ptr, n_pages)
             
             if i == 0:
-                with new_parallel_thread():
-                    core.mem_buffer_copy(self.cb_psum_ptr[0], self.bf_psum_ptr[0])
+                with new_parallel_thread("LD_PSUM"):
+                    core.mem_buffer_copy(self.cb_psum_ptr[0], self.bf_psum_ptr[0], 1)
             
-            with new_parallel_thread():
-                core.mem_buffer_copy(self.cb_ifm_ptr[0:n_pages], self.bf_ifm_ptr[i:ed])
+            with new_parallel_thread("LD_IFM"):
+                core.mem_buffer_copy(self.cb_ifm_ptr[0:n_pages], self.bf_ifm_ptr[i:ed], n_pages)
             
-            with new_parallel_thread():
-                core.mem_buffer_copy(self.cb_wgt_ptr[0:n_pages], self.bf_wgt_ptr[i:ed])
+            with new_parallel_thread("LD_WGT"):
+                core.mem_buffer_copy(self.cb_wgt_ptr[0:n_pages], self.bf_wgt_ptr[i:ed], n_pages)
                 
             core.parallel_merge()
             
@@ -81,9 +80,8 @@ class RT_TT_SHARDED_L1_GEMM(RuntimeOperator):
                 core.cb_push_back(self.cb_psum_ptr, 1)
             core.cb_push_back(self.cb_ifm_ptr, n_pages)
             core.cb_push_back(self.cb_wgt_ptr, n_pages)
-            
-    @runtime_kernel_method
-    def compute_kernel(self, core: NPUCore):  
+    
+    def EX_KERNEL(self, core: NPUCore):  
         core.mxu_reconfigure(dtype=self.dtype, acc_dtype=self.acc_dtype)
         
         containers = [DataContainer() for _ in range(4)]
@@ -93,9 +91,9 @@ class RT_TT_SHARDED_L1_GEMM(RuntimeOperator):
         
         core.mem_read_with_container(self.cb_psum_ptr[0], containers[2])
         
-        for k_it in range(k_tile_num):
+        for k_it in range(self.k_tile_num):
             preload_psum = True if (k_it == 0) else False
-            flush_ofm    = True if (k_it == (k_tile_num - 1)) else False
+            flush_ofm    = True if (k_it == (self.k_tile_num - 1)) else False
 
             core.cb_wait_front(self.cb_ifm_ptr, 1)
             core.cb_wait_front(self.cb_wgt_ptr, 1)
@@ -108,6 +106,8 @@ class RT_TT_SHARDED_L1_GEMM(RuntimeOperator):
                 preload_wgt=False,
                 preload_psum=preload_psum,
                 flush_ofm=flush_ofm,
+                wgt_transposed=True,
+                psum_vectored=True,
             )
             
             core.cb_pop_front(self.cb_ifm_ptr, 1)
@@ -117,11 +117,10 @@ class RT_TT_SHARDED_L1_GEMM(RuntimeOperator):
         
         core.cb_pop_front(self.cb_psum_ptr, 1)
         core.cb_push_back(self.cb_ofm_ptr, 1)
-        
-    @runtime_kernel_method
-    def write_kernel(self, core: NPUCore):
+    
+    def WR_KERNEL(self, core: NPUCore):
         core.cb_wait_front(self.cb_ofm_ptr, 1)
-        core.mem_buffer_copy(self.bf_ofm_ptr[0], self.cb_ofm_ptr[0])
+        core.mem_buffer_copy(self.bf_ofm_ptr[0], self.cb_ofm_ptr[0], 1)
         core.cb_pop_front(self.cb_ofm_ptr, 1)
 
 
@@ -153,19 +152,18 @@ if __name__ == "__main__":
     wgt_tile_shape = (k_tile, n_tile)
     ofm_tile_shape = (m_tile, n_tile)
     
-    ifm_tile_num = m_tile_num * k_tile_num
-    wgt_tile_num = k_tile_num * n_tile_num
-    ofm_tile_num = m_tile_num * n_tile_num
+    ifm_tile_num  = m_tile_num * k_tile_num
+    wgt_tile_num  = k_tile_num * n_tile_num
+    psum_tile_num = n_tile_num
+    ofm_tile_num  = m_tile_num * n_tile_num
     
-    ifm_tile_size = m_tile * k_tile * dtype.itemsize
-    wgt_tile_size = k_tile * n_tile * dtype.itemsize
-    ofm_tile_size = m_tile * n_tile * acc_dtype.itemsize
+    ifm_tile_size  = m_tile * k_tile * dtype.itemsize
+    wgt_tile_size  = k_tile * n_tile * dtype.itemsize
+    psum_tile_size = n_tile * acc_dtype.itemsize
+    ofm_tile_size  = m_tile * n_tile * acc_dtype.itemsize
 
     core_grid_shape = (4, 4)
-    # core_grid = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape)
-    
-    core_ids = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape)
-    # core_ids = device.npu_core_ids[:16]
+    core_ids = device.get_npu_core_grid(offset=(0, 0), shape=core_grid_shape).core_ids
     n_cores = len(core_ids)
     
     cb_n_pages = 4
@@ -173,16 +171,12 @@ if __name__ == "__main__":
     
     ifm:  torch.Tensor = torch.arange(0, M * K, dtype=dtype).reshape(M, K)
     wgt:  torch.Tensor = torch.arange(0, K * N, dtype=dtype).reshape(K, N)
-    psum: torch.Tensor = torch.arange(0, M * N, dtype=acc_dtype).reshape(M, N)
+    psum: torch.Tensor = torch.arange(0, N, dtype=acc_dtype).flatten()
     ofm:  torch.Tensor = torch.zeros((M, N), dtype=acc_dtype)
-    
-    # print(f"\nIFM\n{ifm}")
-    # print(f"\nWGT\n{wgt}")
-    # print(f"\nPSUM\n{psum}")
 
     tiled_ifm  = ifm.reshape(m_tile_num, m_tile, k_tile_num, k_tile).permute(0, 2, 1, 3)
-    tiled_wgt  = wgt.reshape(k_tile_num, k_tile, n_tile_num, n_tile).permute(2, 0, 1, 3)
-    tiled_psum = psum.reshape(m_tile_num, m_tile, n_tile_num, n_tile).permute(0, 2, 1, 3)
+    tiled_wgt  = wgt.T.reshape(n_tile_num, n_tile, k_tile_num, k_tile).permute(0, 2, 1, 3)
+    tiled_psum = psum.reshape(n_tile_num, n_tile)
     tiled_ofm  = ofm.reshape(m_tile_num, m_tile, n_tile_num, n_tile).permute(0, 2, 1, 3)
 
     ifm_size  = ifm.numel()  * ifm.element_size()
@@ -190,15 +184,15 @@ if __name__ == "__main__":
     psum_size = psum.numel() * psum.element_size()
     ofm_size  = ofm.numel()  * ofm.element_size()
     
-    bf_ifm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ifm_tile_size, n_pages=ifm_tile_num, core_ids=core_ids)
-    bf_wgt_ptr:  Reference = device.create_sharded_l1_buffer(page_size=wgt_tile_size, n_pages=wgt_tile_num, core_ids=core_ids)
-    bf_psum_ptr: Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_ids)
-    bf_ofm_ptr:  Reference = device.create_sharded_l1_buffer(page_size=ofm_tile_size, n_pages=ofm_tile_num, core_ids=core_ids)
+    bf_ifm_ptr:  BufferPointer = device.create_sharded_l1_buffer(page_size=ifm_tile_size,  n_pages=ifm_tile_num,  core_ids=core_ids)
+    bf_wgt_ptr:  BufferPointer = device.create_sharded_l1_buffer(page_size=wgt_tile_size,  n_pages=wgt_tile_num,  core_ids=core_ids)
+    bf_psum_ptr: BufferPointer = device.create_sharded_l1_buffer(page_size=psum_tile_size, n_pages=psum_tile_num, core_ids=core_ids)
+    bf_ofm_ptr:  BufferPointer = device.create_sharded_l1_buffer(page_size=ofm_tile_size,  n_pages=ofm_tile_num,  core_ids=core_ids)
 
-    cb_ifm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ifm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
-    cb_wgt_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=wgt_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
-    cb_psum_ptrs: list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
-    cb_ofm_ptrs:  list[Reference] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_ifm_ptrs:  list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=ifm_tile_size,  n_pages=cb_n_pages, core_ids=core_ids)
+    cb_wgt_ptrs:  list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=wgt_tile_size,  n_pages=cb_n_pages, core_ids=core_ids)
+    cb_psum_ptrs: list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=psum_tile_size, n_pages=cb_n_pages, core_ids=core_ids)
+    cb_ofm_ptrs:  list[BufferPointer] = device.create_local_l1_circular_buffer(page_size=ofm_tile_size,  n_pages=cb_n_pages, core_ids=core_ids)
 
     device.set_ptr_content(bf_ifm_ptr, tiled_ifm)
     device.set_ptr_content(bf_wgt_ptr, tiled_wgt)
@@ -214,7 +208,7 @@ if __name__ == "__main__":
             
             core_bf_ifm_ptr  = bf_ifm_ptr[m_it * k_tile_num:(m_it + 1) * k_tile_num]
             core_bf_wgt_ptr  = bf_wgt_ptr[n_it * k_tile_num:(n_it + 1) * k_tile_num]
-            core_bf_psum_ptr = bf_psum_ptr[m_it * n_tile_num + n_it]
+            core_bf_psum_ptr = bf_psum_ptr[n_it]
             core_bf_ofm_ptr  = bf_ofm_ptr[m_it * n_tile_num + n_it]
 
             core_cb_ifm_ptr  = cb_ifm_ptrs[core_idx]  if n_cores > 1 else cb_ifm_ptrs
@@ -240,15 +234,7 @@ if __name__ == "__main__":
                 acc_dtype=acc_dtype,
             )
             
-            rt_kernel.dispatch_runtime_to_core(core=core)
-            
-            # kernel1 = read_kernel(core, core_bf_ifm_ptr, core_bf_wgt_ptr, core_bf_psum_ptr, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, n_seq_pages=k_tile_num, load_burst_len=load_burst_len)
-            # kernel2 = compute_kernel(core, core_cb_ifm_ptr, core_cb_wgt_ptr, core_cb_psum_ptr, core_cb_ofm_ptr, k_tile_num=k_tile_num, dtype=dtype, acc_dtype=acc_dtype)
-            # kernel3 = write_kernel(core, core_bf_ofm_ptr, core_cb_ofm_ptr)
-            
-            # core.dispatch_main_kernel("read",  kernel=kernel1)
-            # core.dispatch_main_kernel("compute", kernel=kernel2)
-            # core.dispatch_main_kernel("write", kernel=kernel3)
+            rt_kernel.dispatch(core=core)
 
     tracer_hub = TracerHub()
     for core_id, core in device.cores.items():

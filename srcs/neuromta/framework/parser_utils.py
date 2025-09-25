@@ -59,14 +59,17 @@ def parse_mem_cap_str(expr: str) -> int:
     return expr
 
 
-def parse_arguments(args: list[Any], kwargs: dict[str, Any], param_names: list[str]) -> dict[str, Any]:
+def parse_arguments(args: list[Any], kwargs: dict[str, Any], param_names: list[str] | str) -> dict[str, Any]:
+    if isinstance(param_names, str):
+        param_names = [param_names]
+    
     parsed_args = {}
     
     for i, arg in enumerate(args):
         if i < len(param_names):
             parsed_args[param_names[i]] = arg
         else:
-            raise Exception(f"[ERROR] Too many positional arguments: expected {len(param_names)}, got {len(args)}")
+            break
     
     for k, v in kwargs.items():
         if k in param_names:
@@ -76,6 +79,6 @@ def parse_arguments(args: list[Any], kwargs: dict[str, Any], param_names: list[s
             
     for pname in param_names:
         if pname not in parsed_args:
-            raise Exception(f"[ERROR] Cannot obtain argument '{pname}'")
+            parsed_args[pname] = None
     
     return parsed_args

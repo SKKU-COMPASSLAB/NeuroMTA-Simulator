@@ -1,9 +1,12 @@
 import enum
+import functools
 import itertools
 from typing import Callable, Sequence, Any
 
 from neuromta.framework.logger import logger
+from neuromta.framework.debug_utils import *
 from neuromta.framework.memory_handle import *
+from neuromta.framework.parser_utils import parse_arguments
 
 
 __all__ = [
@@ -11,10 +14,8 @@ __all__ = [
     "get_global_core_context",
     "get_global_kernel_context",
     "get_global_pid",
-    
     "get_global_context_mode",
     "GlobalContextMode",
-    
     "new_global_context",
 
     "RPCMessage",
@@ -26,12 +27,11 @@ __all__ = [
     "CoreCycleModel",
     "Core",
     
-    "core_kernel_method",
+    "jit_prototype",
     "core_command_method",
     "core_conditional_command_method",
     "new_parallel_thread",
-    "start_parallel_thread",
-    "end_parallel_thread",
+    "new_process_kernel",
 ]
 
 
@@ -107,9 +107,6 @@ def store_global_parent_kernel_callstack():
     context_mode = get_global_context_mode()
     core_context = get_global_core_context()
     kernel_context = get_global_kernel_context()
-    
-    if context_mode != GlobalContextMode.COMPILE:
-        raise Exception(f"[ERROR] Cannot add to parent kernel callstack since the global context mode is not COMPILE, but {context_mode.name}")
 
     history = (context_mode, core_context, kernel_context)
     _parent_kernel_callstack.append(history)
@@ -136,38 +133,14 @@ def get_global_current_parent_kernel_callstack() -> tuple[GlobalContextMode, 'Co
 # Decorators for Command and Kernel Methods
 #################################################
 
-def core_kernel_method(_func: Callable):
-    def __core_kernel_method_wrapper(_core: 'Core', *_args, **_kwargs) -> Kernel:
-        if not isinstance(_core, Core):
-            raise Exception(f"[ERROR] Command method '{_func.__name__}' can only be called on an instance of Core")
-        
-        kernel = Kernel(
-            _func.__name__,     # the kernel ID is the name of the function
-            _func,              # the behavioral model is the function itself
-            *_args,             # the arguments of the kernel
-            **_kwargs           # the keyword arguments of the kernel
-        )
-
-        if get_global_context_mode() == GlobalContextMode.IDLE:
-            pass  # do not automatically dispatch kernel
-        elif get_global_context_mode() == GlobalContextMode.COMPILE:
-            kernel_context = get_global_kernel_context()
-            
-            if kernel_context is None:
-                raise Exception(f"[ERROR] Cannot register kernel '{kernel.kernel_id}' to the compiled kernel since it is called outside of a low-level kernel function")
-            
-            kernel_context.add_execution_step(kernel)
-        else:
-            logger.warning(f"Kernel method '{_func.__name__}' is called outside of the compile or idle context. It implies that the kernel is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
-            raise Exception(f"[ERROR] Kernel method '{_func.__name__}' is called outside of the compile or idle context.")
-        
-        return kernel
-
-    __core_kernel_method_wrapper._is_kernel_method = True  # mark this function as a kernel method (for debugging and profiling purposes)
-
-    return __core_kernel_method_wrapper
+def jit_prototype(_func: Callable):
+    @functools.wraps(_func)
+    def __jit_prototype_wrapper(*_args, **_kwargs) -> KernelPrototype:
+        return KernelPrototype(func=_func, args=_args, kwargs=_kwargs)
+    return __jit_prototype_wrapper
 
 def core_command_method(_func: Callable):
+    @functools.wraps(_func)
     def __core_command_method_wrapper(_core: 'Core', *_args, **_kwargs) -> Command:
         if get_global_context_mode() in (GlobalContextMode.IDLE, GlobalContextMode.EXECUTE):
             return _func(_core, *_args, **_kwargs)
@@ -196,8 +169,7 @@ def core_command_method(_func: Callable):
         
         return cmd
     
-    __core_command_method_wrapper._is_command_method = True  # mark this function as a command method (for debugging and profiling purposes)
-    
+    __core_command_method_wrapper._is_command_method = True  # mark this function as a command method
     return __core_command_method_wrapper
 
 def core_conditional_command_method(_func: Callable):
@@ -229,32 +201,54 @@ def core_conditional_command_method(_func: Callable):
         
         return cmd
     
-    __core_command_method_wrapper._is_command_method = True  # mark this function as a command method (for debugging and profiling purposes)
+    __core_command_method_wrapper._is_command_method = True  # mark this function as a command method
     
     return __core_command_method_wrapper
 
 class new_parallel_thread:
+    def __init__(self, p_kernel_id: str=None):
+        self.p_kernel_id = p_kernel_id
+    
     def __enter__(self):
-        start_parallel_thread()
+        if get_global_context_mode() != GlobalContextMode.COMPILE:
+            raise Exception("[ERROR] Cannot create a parallel kernel since the global context mode is not COMPILE")
+        
+        kernel_context = get_global_kernel_context()
+        parallel_kernel = kernel_context.add_parallel_kernel_step(p_kernel_id=self.p_kernel_id)
+        
+        store_global_parent_kernel_callstack()
+        set_global_context(GlobalContextMode.COMPILE, get_global_core_context(), parallel_kernel)
     
     def __exit__(self, exc_type, exc_value, traceback):
-        end_parallel_thread()
+        if get_global_context_mode() != GlobalContextMode.COMPILE:
+            raise Exception("[ERROR] Cannot end parallel kernel since the global context mode is not COMPILE")
 
-def start_parallel_thread():
-    if get_global_context_mode() != GlobalContextMode.COMPILE:
-        raise Exception("[ERROR] Cannot create a parallel kernel since the global context mode is not COMPILE")
+        restore_global_parent_kernel_callstack()
     
-    kernel_context = get_global_kernel_context()
-    parallel_kernel = kernel_context.add_parallel_kernel_step()
+class new_process_kernel:
+    def __init__(self, p_kernel_id: str=None):
+        self.p_kernel_id = p_kernel_id
     
-    store_global_parent_kernel_callstack()
-    set_global_context(GlobalContextMode.COMPILE, get_global_core_context(), parallel_kernel)
-    
-def end_parallel_thread():
-    if get_global_context_mode() != GlobalContextMode.COMPILE:
-        raise Exception("[ERROR] Cannot end parallel kernel since the global context mode is not COMPILE")
+    def __enter__(self):
+        if get_global_context_mode() != GlobalContextMode.COMPILE:
+            raise Exception("[ERROR] Cannot create a process kernel since the global context mode is not COMPILE")
+        
+        process_kernel = Kernel(kernel_id=self.p_kernel_id, func=None)
+        
+        store_global_parent_kernel_callstack()
+        set_global_context(GlobalContextMode.COMPILE, get_global_core_context(), process_kernel)
+        
+    def __exit__(self, exc_type, exc_value, traceback):
+        if get_global_context_mode() != GlobalContextMode.COMPILE:
+            raise Exception("[ERROR] Cannot end process kernel since the global context mode is not COMPILE")
+        
+        process_kernel = get_global_kernel_context()
+        # process_kernel._is_compiled = True  # mark the process kernel as compiled
 
-    restore_global_parent_kernel_callstack()
+        restore_global_parent_kernel_callstack()
+        
+        core = get_global_core_context()
+        core.dispatch_process_kernel(self.p_kernel_id, process_kernel)
 
 
 #################################################
@@ -292,8 +286,8 @@ class RPCMessage:
             dst_core_id=self.dst_core_id,
             cmd_id=self.cmd_id,
         ).with_args(
-            *rpc_kernel.args,
-            **rpc_kernel.kwargs
+            *self.args,
+            **self.kwargs
         )
         
         msg.msg_id = self.msg_id
@@ -322,6 +316,7 @@ class Command:
         self._cached_cycle: int = None
         self._cached_cycle_slack: int = 0
         self._cached_issue_time: int = None
+        self._is_behavioral_model_called: bool = False
         
     def get_remaining_cycles(self, core: 'Core', kernel: 'Kernel') -> int:
         if self._cached_cycle is None:
@@ -343,7 +338,7 @@ class Command:
 
         self._cached_cycle_slack += cycle_time
         
-        if self.is_finished(core, kernel):
+        if self.get_remaining_cycles(core, kernel) <= 0 and not self._is_behavioral_model_called:
             flag = self.run_behavioral_model(core, kernel)
             
             if flag is not None:
@@ -355,7 +350,13 @@ class Command:
     def run_behavioral_model(self, core: 'Core', kernel: 'Kernel'):
         with new_global_context(GlobalContextMode.EXECUTE, core, kernel):
             model = core.get_behavioral_model(self.cmd_id)
-            return model(*self.args, **self.kwargs)
+            try:
+                self._is_behavioral_model_called = True
+                return model(*self.args, **self.kwargs)
+            except Exception as e:
+                logger.error(f"Exception occurred while executing behavioral model for command '{self.cmd_id}': {e}")
+                logger.error(f"  - Core: {core.core_id} | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
+                raise e
         
     def run_cycle_model(self, core: 'Core', kernel: 'Kernel') -> int:
         with new_global_context(GlobalContextMode.EXECUTE, core, kernel):
@@ -366,15 +367,17 @@ class Command:
             elif isinstance(model, int):
                 return model
             elif callable(model):
-                return model(*self.args, **self.kwargs)
+                try:
+                    return model(*self.args, **self.kwargs)
+                except Exception as e:
+                    logger.error(f"Exception occurred while executing behavioral model for command '{self.cmd_id}': {e}")
+                    logger.error(f"  - Core: {core.core_id} | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
+                    raise e
             
             return None
         
     def is_finished(self, core: 'Core', kernel: 'Kernel') -> bool:
-        remaining_cycles = self.get_remaining_cycles(core, kernel)
-        if remaining_cycles is None:
-            return False
-        return remaining_cycles <= 0
+        return self.get_remaining_cycles(core, kernel) <= 0 and self._is_behavioral_model_called
 
     def __str__(self):
         return f"Command[cmd_id={self.cmd_id}](args=({', '.join(map(str, self.args))}), kwargs={{{', '.join(f'{k}={v}' for k, v in self.kwargs.items())}}})"
@@ -401,13 +404,8 @@ class ConditionalCommand(Command):
         if self.is_finished(core, kernel):
             core.run_command_debug_hook(kernel=kernel, cmd=self, issue_time=self._cached_issue_time, commit_time=core.timestamp+cycle_time)
 
-    def run_behavioral_model(self, core: 'Core', kernel: 'Kernel'):
-        with new_global_context(GlobalContextMode.EXECUTE, core, kernel):
-            model = core.get_behavioral_model(self.cmd_id)
-            return model(*self.args, **self.kwargs)
-        
     def is_finished(self, core: 'Core', kernel: 'Kernel') -> bool:
-        return self._is_async_finished
+        return self._is_async_finished and self._is_behavioral_model_called
 
 
 class ThreadGroup(list['Kernel']):
@@ -434,50 +432,59 @@ class ThreadGroup(list['Kernel']):
             kernel.update_cycle_time(core, cycle_time)
     
     def is_finished(self, core: 'Core') -> bool:
-        return all(kernel.is_finished(core) for kernel in self)    
+        return all(kernel.is_finished(core) for kernel in self)
     
-    def compile(self, core: 'Core', main: bool=False):
-        for kernel in self:
-            if not kernel.is_compiled:
-                kernel.compile(core, main=main)
-
-    @property
-    def n_commands(self) -> int:
-        return sum(kernel.n_commands for kernel in self)
-
-class Kernel:
-    def __init__(self, kernel_id: str, func: Callable, *args, **kwargs):
-        self.kernel_id = kernel_id
+    
+class KernelPrototype:
+    def __init__(self, func: Callable, args: Sequence[Any], kwargs: dict[str, Any]):
         self.func = func
         self.args = args
         self.kwargs = kwargs
         
+    def compile(self) -> 'Kernel':
+        with Kernel(kernel_id=self.func.__name__) as kernel:
+            try:
+                self.func(*self.args, **self.kwargs)
+            except Exception as e:
+                logger.error(f"Exception occurred while compiling kernel '{kernel.kernel_id}': {e}")
+                logger.error(f"  - args: {self.args} | kwargs: {self.kwargs}")
+                raise e
+
+        return kernel
+
+
+class Kernel:
+    def __init__(self, kernel_id: str):
+        self.kernel_id = kernel_id
         self.root_kernel: Kernel = None
         
-        self._is_compiled = False
-        self._is_parallel = False
-        self._is_main = False
-        
-        self._execution_steps: list[Command | Kernel | ThreadGroup] = []
+        self._execution_steps: list[Command | ThreadGroup] = []
         self._execution_cursor: int = 0
         
-    def set_parallel(self):
-        self._is_compiled = True
-        self._is_parallel = True
+    def __enter__(self):
+        if get_global_context_mode() == GlobalContextMode.COMPILE:
+            raise Exception(f"[ERROR] Cannot enter kernel '{self.kernel_id}' since the global context mode is already COMPILE")
+        
+        store_global_parent_kernel_callstack()
+        set_global_context(GlobalContextMode.COMPILE, get_global_core_context(), self)
+        
         return self
         
-    def add_execution_step(self, step: 'Command | Kernel'):
+    def __exit__(self, exc_type, exc_value, traceback):
+        if get_global_context_mode() != GlobalContextMode.COMPILE:
+            raise Exception(f"[ERROR] Cannot exit kernel '{self.kernel_id}' since the global context mode is not COMPILE")
+        
+        restore_global_parent_kernel_callstack()
+        
+    def add_execution_step(self, step: Command):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception(f"[ERROR] Cannot add execution step '{step}' to the kernel '{self.kernel_id}' since it is not in compile mode")
-        if not isinstance(step, (Command, Kernel)):
-            raise TypeError(f"[ERROR] Execution step must be an instance of Command or Kernel, but got {type(step).__name__}")
+        if isinstance(step, Kernel):
+            raise Exception(f"[ERROR] Cannot add a kernel '{step.kernel_id}' as an execution step to the kernel '{self.kernel_id}'. Use 'add_parallel_kernel_step()' instead to add a parallel kernel step.")
         
         self._execution_steps.append(step)
-        
-        if isinstance(step, Kernel):
-            step.root_kernel = self
             
-    def add_parallel_kernel_step(self) -> 'Kernel':
+    def add_parallel_kernel_step(self, p_kernel_id: str=None) -> 'Kernel':
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception(f"[ERROR] Cannot add parallel kernel step to the kernel '{self.kernel_id}' since it is not in compile mode")
         
@@ -487,37 +494,17 @@ class Kernel:
             self._execution_steps.append(ThreadGroup())
 
         parallel_kernel_idx = len(self._execution_steps[-1])
+        if p_kernel_id is None:
+            p_kernel_id = parallel_kernel_idx
 
-        parallel_kernel = Kernel(kernel_id=f"{self.kernel_id}.{parallel_kernel_idx}", func=None, core=None).set_parallel()
-        parallel_kernel.root_kernel = self.root_kernel
-        
-        parallel_kernel.mark_kernel_type(self.is_main)
+        parallel_kernel = Kernel(kernel_id=f"{p_kernel_id}")
+        parallel_kernel.root_kernel = self
 
         self._execution_steps[-1].append(parallel_kernel)
 
         return parallel_kernel
-
-    def compile(self, core: 'Core', main: bool=False):
-        if self.is_compiled:
-            return
-        
-        with new_global_context(GlobalContextMode.COMPILE, core, self):
-            self.func(core, *self.args, **self.kwargs)
-            
-            for step in self._execution_steps:
-                if isinstance(step, Kernel) and not step.is_compiled:
-                    step.mark_kernel_type(main)
-                elif isinstance(step, ThreadGroup):
-                    for thread in step:
-                        thread.mark_kernel_type(main)
-
-        self._is_compiled = True
-        self.mark_kernel_type(main)
         
     def get_remaining_cycles(self, core: 'Core') -> int:
-        if not self.is_compiled:
-            self.compile(core)
-            
         if self.is_finished(core):
             return None
         
@@ -531,9 +518,6 @@ class Kernel:
             return step.get_remaining_cycles(core=core)
 
     def update_cycle_time(self, core: 'Core', cycle_time: int):
-        if not self.is_compiled:
-            self.compile(core)
-            
         if self.is_finished(core):
             return
         
@@ -548,32 +532,30 @@ class Kernel:
             if step.is_finished(core):
                 self._execution_cursor += 1
             
-    def current_step(self, core: 'Core') -> 'Command | Kernel | ThreadGroup':
-        if not self.is_compiled:
-            self.compile(core)
+    def current_step(self, core: 'Core') -> 'Command | ThreadGroup':
         if self.is_finished(core):
             return None
         
         return self._execution_steps[self._execution_cursor]
     
-    def mark_kernel_type(self, is_main: bool):
-        self._is_main = is_main
-    
-    @property
-    def is_main(self) -> bool:
-        return self._is_main
-    
-    @property
-    def is_rpc(self) -> bool:
-        return not self._is_main
+    def recursive_current_commands(self, core: 'Core') -> list[Command]:
+        if self.is_finished(core):
+            return []
         
-    @property
-    def is_compiled(self) -> bool:
-        return self._is_compiled
+        commands = []
+        step = self._execution_steps[self._execution_cursor]
+        
+        if isinstance(step, Command):
+            commands.append(step)
+        elif isinstance(step, Kernel):
+            commands = step.recursive_current_commands(core)
+        elif isinstance(step, ThreadGroup):
+            for k in step:
+                commands.extend(k.recursive_current_commands(core))
+                
+        return commands
     
     def is_finished(self, core: 'Core') -> bool:
-        if not self.is_compiled:
-            self.compile(core)
         return self._execution_cursor >= len(self._execution_steps)
     
     @property
@@ -593,7 +575,7 @@ class Kernel:
     @root_kernel_id.setter
     def root_kernel_id(self, value):
         if isinstance(value, str):
-            self.root_kernel = Kernel(kernel_id=value, func=None)
+            self.root_kernel = Kernel(kernel_id=value)
         else:
             self.root_kernel = None
             
@@ -602,21 +584,6 @@ class Kernel:
         if self.root_callstack is None:
             return self.kernel_id
         return f"{self.root_callstack}::{self.kernel_id}"
-    
-    @property
-    def n_commands(self) -> int:
-        if not self.is_compiled:
-            return 0
-        
-        n = 0
-        
-        for step in self._execution_steps:
-            if isinstance(step, Command):
-                n += 1
-            elif isinstance(step, (Kernel, ThreadGroup)):
-                n += step.n_commands
-        
-        return n
     
 
 class CoreCycleModel:
@@ -633,7 +600,7 @@ class Core:
         self._dispatched_rpc_kernels:       dict[str, Kernel] = {}
         self._dispatched_rpc_msg_mappings:  dict[str, RPCMessage] = {}  # RPC kernel -> RPC request message (given from the source core)
 
-        self._suspended_main_kernels: dict[str, list[Kernel]] = {}
+        self._suspended_main_kernels: dict[str, list[Kernel | KernelPrototype]] = {}
         self._suspended_rpc_req_msg: dict[str, RPCMessage] = {}
         self._suspended_rpc_rsp_msg: dict[str, RPCMessage] = {}
         self._suspended_rpc_to_main_kernels_mapping: dict[str, str] = {}  # RPC request message ID -> main kernel slot ID (to resume the main kernel when the RPC response is received)
@@ -680,12 +647,9 @@ class Core:
     # Kernel Dispatch / Execute / Update Timestamp
     ###########################################################################
     
-    def dispatch_main_kernel(self, slot_id: Any, kernel: Kernel):
-        if not isinstance(kernel, Kernel):
-            raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of CompiledKernel")
-        
-        if not kernel.is_compiled:
-            kernel.compile(self, main=True)
+    def dispatch_main_kernel(self, slot_id: Any, kernel: Kernel | KernelPrototype):
+        if not isinstance(kernel, (Kernel, KernelPrototype)):
+            raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
 
         kernel.root_kernel_id = f"MAIN<{slot_id}>"  # set the root kernel ID to the slot ID
         
@@ -694,13 +658,15 @@ class Core:
                 self._suspended_main_kernels[slot_id] = []
             self._suspended_main_kernels[slot_id].append(kernel)
         else:
+            if isinstance(kernel, KernelPrototype):
+                kernel = kernel.compile()
             self._dispatched_main_kernels[slot_id] = kernel
 
     def dispatch_rpc_kernel(self, kernel: Kernel, msg: RPCMessage):
         if not isinstance(kernel, Kernel):
-            raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of CompiledKernel")
+            raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
         
-        kernel_name = f"{kernel.kernel_id}"
+        kernel_name = f"{kernel.kernel_id}.0"
         i = 0
         
         while kernel_name in self._dispatched_rpc_kernels.keys():
@@ -710,6 +676,10 @@ class Core:
         kernel.kernel_id = kernel_name  # rename the kernel ID to avoid name collision
         self._dispatched_rpc_kernels[kernel_name] = kernel
         self._dispatched_rpc_msg_mappings[kernel_name] = msg
+    
+    @core_command_method
+    def dispatch_process_kernel(self, slot_id: str, kernel: Kernel):
+        self.dispatch_main_kernel(slot_id, kernel)
         
     def get_remaining_cycles(self) -> int:        
         remaining_cycles = None
@@ -742,6 +712,8 @@ class Core:
                 if slot_id in self._suspended_main_kernels:
                     if len(self._suspended_main_kernels[slot_id]) > 0:
                         suspended_kernel = self._suspended_main_kernels[slot_id].pop(0)
+                        if isinstance(suspended_kernel, KernelPrototype):
+                            suspended_kernel = suspended_kernel.compile()
                         self._dispatched_main_kernels[slot_id] = suspended_kernel  # TODO: directly dispatch the suspended kernel without going through the dispatch_main_kernel() method
 
         for slot_id in rpc_kernel_slot_ids:
@@ -867,18 +839,17 @@ class Core:
             
             if func is None:
                 raise Exception(f"[ERROR] Command '{msg.cmd_id}' is not registered in the core '{type(self).__name__}(core_id={self.core_id})' for RPC processing")
-            elif func.__name__ == "__core_command_method_wrapper":
-                kernel = Kernel(kernel_id="__auto_remote", func=func, *msg.args, **msg.kwargs)
+            elif hasattr(func, "_is_command_method") and func._is_command_method:
+                kernel = Kernel(f"AUTO_REMOTE")
                 with new_global_context(GlobalContextMode.COMPILE, self, kernel):
                     cmd = Command(cmd_id=msg.cmd_id, *msg.args, **msg.kwargs)
                     kernel.add_execution_step(cmd)  # Add the command as an execution step
-                kernel._is_compiled = True      # Mark the kernel as compiled
-                kernel.root_kernel_id = f"RPC<{msg.src_core_id}>::{msg.cmd_id}"
-            elif func.__name__ == "__core_kernel_method_wrapper":
-                kernel: Kernel = func(*msg.args, **msg.kwargs)
-                kernel.root_kernel_id = f"RPC<{msg.src_core_id}>::{msg.kernel_id}"
+                kernel.root_kernel_id = f"RPC<{msg.src_core_id}>"
             else:
-                raise Exception(f"[ERROR] Command '{msg.cmd_id}' is not a valid command for RPC processing. It must be a core command or a kernel method.")
+                kernel = Kernel(func.__name__)
+                with new_global_context(GlobalContextMode.COMPILE, self, kernel):
+                    func(*msg.args, **msg.kwargs)
+                kernel.root_kernel_id = f"RPC<{msg.src_core_id}>::{msg.kernel_id}"
             
             self.dispatch_rpc_kernel(kernel=kernel, msg=msg)
         
@@ -943,16 +914,3 @@ class Core:
     @property
     def timestamp(self) -> int:
         return self._timestamp
-    
-    @property
-    def n_dispatched_main_commands(self) -> int:
-        n = 0
-        
-        for kernel in self._dispatched_main_kernels.values():
-            n += kernel.n_commands
-        
-        for kernel_list in self._suspended_main_kernels.values():
-            for kernel in kernel_list:
-                n += kernel.n_commands
-                
-        return n
