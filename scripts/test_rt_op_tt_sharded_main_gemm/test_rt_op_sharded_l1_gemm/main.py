@@ -7,8 +7,7 @@ from neuromta.framework import *
 from neuromta.hardware import *
 from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
 from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
-from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentDevice
-from neuromta.ip.tenstorrent.software.rt_operator import *
+from neuromta.ip.tenstorrent import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -55,17 +54,16 @@ if __name__ == "__main__":
     bias: torch.Tensor = torch.arange(0, N, dtype=acc_dtype).flatten()
     ofm:  torch.Tensor = torch.zeros((M, N), dtype=acc_dtype)
     
-    main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, grid_shape=core_grid.shape, page_shape=(32, 32))
-    l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, grid_shape=core_grid.shape, page_shape=(32, 32))
+    layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, grid_shape=core_grid.shape, page_shape=(32, 32))
     core_ids = core_grid.core_ids
 
-    main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device)
-    main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device)
-    main_buf_psum = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device)
+    buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=layout, device=device, core_ids=core_ids)
+    buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=layout, device=device, core_ids=core_ids)
+    buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
 
-    main_buf_ifm.update(ifm)
-    main_buf_wgt.update(wgt)
-    main_buf_psum.update(bias)
+    buf_ifm.update(ifm)
+    buf_wgt.update(wgt)
+    buf_bias.update(bias)
     
     
     tracer_hub = TracerHub()
@@ -83,32 +81,25 @@ if __name__ == "__main__":
             
     icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
     main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
-    
-    
+
+
     with MonitoringWindow() as monitor:
         for core_id in core_grid.core_ids:
             core = device.get_npu_core(core_id=core_id)
-            pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=40)
+            pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
             pbar.bind_core(core)
         
         st = time.time()
-        
-        l1_buf_ifm  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_ifm,  l1_layout=l1_layout)
-        l1_buf_wgt  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_wgt,  l1_layout=l1_layout)
-        l1_buf_psum = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_psum, l1_layout=l1_layout.overrides(page_shape=(1, 32)))
-
-        l1_buf_ofm = TT_RT_LINEAR(
+                
+        buf_ofm = TT_RT_LINEAR(
             device=device, core_grid=core_grid,
-            buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum,
+            buf_ifm=buf_ifm, buf_wgt=buf_wgt, buf_bias=buf_bias,
             dtype=dtype, acc_dtype=acc_dtype,
             cb_n_pages=8,
         )
         
-        main_buf_ofm = TT_RT_DMA_STORE(device, core_grid, l1_buf=l1_buf_ofm, main_layout=main_layout)
-        
         ed = time.time()
-        
-        
+    
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
     icnt_core_tracer.save_traces(ICNT_CORE_TRACE_FNAME)
@@ -124,12 +115,11 @@ if __name__ == "__main__":
             IMG_SAVE_FNAME
         )
 
-
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
     
     reference = torch.matmul(ifm.to(dtype=acc_dtype), wgt.T.to(dtype=acc_dtype)) + bias
-    simulated = main_buf_ofm.restore()
+    simulated = buf_ofm.restore()
 
     print(f"\n=== REFERENCE ===\n{reference}")
     print(f"\n=== SIMULATED ===\n{simulated}")

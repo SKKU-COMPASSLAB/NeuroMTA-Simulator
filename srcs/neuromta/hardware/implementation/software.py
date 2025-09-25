@@ -87,6 +87,8 @@ class MCA_TensorBuffer:
         if self.layout.mem_type == MCA_TensorMemoryType.L1:
             if isinstance(self.core_ids, int):
                 self.core_ids = [self.core_ids]
+            if not isinstance(self.core_ids, list):
+                raise Exception(f"[ERROR] In case of L1 memory, core_ids must be a list of integers or a single integer, but got {type(self.core_ids)}.")
             if self.layout.y_grid * self.layout.x_grid != len(self.core_ids):
                 raise Exception(f"[ERROR] The number of core_ids ({len(self.core_ids)}) must match the grid shape ({self.layout.y_grid} * {self.layout.x_grid} = {self.layout.y_grid * self.layout.x_grid}).")
         
@@ -353,6 +355,10 @@ class MCA_TensorBuffer:
     @property
     def reference(self) -> BufferPointer:
         return self._reference
+    
+    @property
+    def n_pages(self) -> int:
+        return self._reference.resolve(is_read=True).n_pages
 
 
 _global_mca_rt_op_id: str = None
@@ -424,7 +430,7 @@ class MCA_RuntimeKernel:
             register_global_mca_rt_kernel(self)
     
     @jit_prototype
-    def get_rt_main_kernel(self) -> Kernel:
+    def __call__(self):
         threads = self._get_instance_kernel_threads()
             
         if len(threads) == 0:
@@ -442,7 +448,7 @@ class MCA_RuntimeKernel:
         kernel_threads = {}
         
         for attr_name in dir(self):
-            if attr_name in ("_get_instance_kernel_threads", "dispatch", "get_rt_main_kernel"):
+            if attr_name in ("_get_instance_kernel_threads", "dispatch"):
                 continue
             if attr_name.startswith("__") and attr_name.endswith("__"):
                 continue
@@ -455,11 +461,8 @@ class MCA_RuntimeKernel:
         return kernel_threads
     
     def dispatch(self, slot_id: str="MAIN"):
-        # rt_kernel_main = Kernel(kernel_id=type(self).__name__, func=self._RT_KERNEL_MAIN)
-        # self.core.dispatch_main_kernel(slot_id, rt_kernel_main)
-        
         try:
-            rt_main_kernel = self.get_rt_main_kernel()
+            rt_main_kernel = self()
         except Exception as e:
             logger.error(f"Failed to compile the MCA runtime kernel '{type(self).__name__}': {e}")
             raise e

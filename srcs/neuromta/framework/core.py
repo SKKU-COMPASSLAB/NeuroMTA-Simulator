@@ -610,7 +610,8 @@ class Core:
         self._rpc_req_send_inbox: dict[str, list[RPCMessage]] = None    # inbox to send RPC request messages (will be initialized by initialize() method)
         self._rpc_rsp_send_inbox: dict[str, list[RPCMessage]] = None    # inbox to send RPC response messages (will be initialized by initialize() method)
 
-        self._registered_command_debug_hooks: dict[str, Callable[[Command], None]] = {}
+        self._registered_command_debug_hooks: dict[str, Callable] = {}
+        self._registered_kernel_debug_hooks: dict[str, Callable] = {}
         
         self._use_cycle_model = True
         self._use_functional_model = True
@@ -650,8 +651,6 @@ class Core:
     def dispatch_main_kernel(self, slot_id: Any, kernel: Kernel | KernelPrototype):
         if not isinstance(kernel, (Kernel, KernelPrototype)):
             raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
-
-        kernel.root_kernel_id = f"MAIN<{slot_id}>"  # set the root kernel ID to the slot ID
         
         if slot_id in self._dispatched_main_kernels:
             if slot_id not in self._suspended_main_kernels:
@@ -660,7 +659,10 @@ class Core:
         else:
             if isinstance(kernel, KernelPrototype):
                 kernel = kernel.compile()
+            kernel.root_kernel_id = f"MAIN<{slot_id}>"
             self._dispatched_main_kernels[slot_id] = kernel
+        
+        self.run_kernel_debug_hook(kernel=kernel, issue_time=self._timestamp)
 
     def dispatch_rpc_kernel(self, kernel: Kernel, msg: RPCMessage):
         if not isinstance(kernel, Kernel):
@@ -708,12 +710,14 @@ class Core:
 
             if kernel.is_finished(self):
                 self._dispatched_main_kernels.pop(slot_id) # if the kernel is main kernel, simply remove the kernel from the "dispatched_kernels" dictionary
+                self.run_kernel_debug_hook(kernel=kernel, commit_time=self._timestamp + cycle_time)
                 
                 if slot_id in self._suspended_main_kernels:
                     if len(self._suspended_main_kernels[slot_id]) > 0:
                         suspended_kernel = self._suspended_main_kernels[slot_id].pop(0)
                         if isinstance(suspended_kernel, KernelPrototype):
                             suspended_kernel = suspended_kernel.compile()
+                        suspended_kernel.root_kernel_id = f"MAIN<{slot_id}>"
                         self._dispatched_main_kernels[slot_id] = suspended_kernel  # TODO: directly dispatch the suspended kernel without going through the dispatch_main_kernel() method
 
         for slot_id in rpc_kernel_slot_ids:
@@ -755,6 +759,34 @@ class Core:
                 hook(self, kernel, cmd, issue_time, commit_time)
             except Exception as e:
                 logger.error(f"Command debug hook '{hook_id}' failed with error: {e}")
+                raise e
+            
+    def register_kernel_debug_hook(self, hook: Callable[[Kernel], None]) -> str:
+        def create_hook_id(i: int) -> str:
+            return f"hook_{i}"
+        
+        MAX_HOOK_NUM = 1000
+        
+        for i in range(MAX_HOOK_NUM):
+            hook_id = create_hook_id(i)
+            if hook_id not in self._registered_kernel_debug_hooks:
+                self._registered_kernel_debug_hooks[hook_id] = hook
+                return hook_id
+        
+        raise Exception(f"[ERROR] Cannot register kernel debug hook since the maximum number of hooks ({MAX_HOOK_NUM}) is reached. Please remove some hooks before adding new ones.")
+    
+    def unregister_kernel_debug_hook(self, hook_id: str):
+        if hook_id in self._registered_kernel_debug_hooks:
+            del self._registered_kernel_debug_hooks[hook_id]
+        else:
+            raise Exception(f"[ERROR] Hook ID '{hook_id}' is not registered")
+        
+    def run_kernel_debug_hook(self, kernel: Kernel, issue_time: int=None, commit_time: int=None):
+        for hook_id, hook in self._registered_kernel_debug_hooks.items():
+            try:
+                hook(self, kernel, issue_time, commit_time)
+            except Exception as e:
+                logger.error(f"Kernel debug hook '{hook_id}' failed with error: {e}")
                 raise e
                 
     @core_command_method
@@ -914,3 +946,7 @@ class Core:
     @property
     def timestamp(self) -> int:
         return self._timestamp
+
+    @property
+    def n_dispatched_main_kernels(self) -> int:
+        return len(self._dispatched_main_kernels) + sum(len(v) for v in self._suspended_main_kernels.values())

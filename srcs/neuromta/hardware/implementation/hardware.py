@@ -170,7 +170,7 @@ class MCA_DeviceBase(Device):
             if not isinstance(content, torch.Tensor):
                 raise ValueError(f"[ERROR] Content must be a torch.Tensor for PAGE pointer, got {type(content)}.")
             
-            content = content.view(dtype=torch.uint8)
+            content = content.flatten().view(dtype=torch.uint8)
             
         if self.cmap_context.config.check_main_mem_addr(ptr.addr):
             mem_handle = self.get_main_mem_handle()

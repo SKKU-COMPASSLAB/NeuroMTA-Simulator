@@ -16,7 +16,6 @@ class IcntConfig:
         
         shape: tuple[int, int], 
         flit_size: int                  = parse_mem_cap_str("16B"),
-        control_packet_size: int        = parse_mem_cap_str("32B"),
         booksim2_enable: bool           = False,
         booksim2_config: BookSim2Config = None,
     ):  
@@ -34,7 +33,6 @@ class IcntConfig:
             
         self.shape = shape
         self.flit_size = flit_size
-        self.control_packet_size = control_packet_size
         
         self.booksim2_config = booksim2_config
         self.booksim2_enable = booksim2_enable
@@ -62,12 +60,6 @@ class IcntContext:
 
     def compute_hop_cnt(self, src_coord: tuple[int, int], dst_coord: tuple[int, int]) -> int:
         return abs(src_coord[0] - dst_coord[0]) + abs(src_coord[1] - dst_coord[1])
-    
-    def get_control_packet_latency(self, src_id: int, dst_id: int) -> int:
-        src_coord = self.core_id_to_coord(src_id)
-        dst_coord = self.core_id_to_coord(dst_id)
-        hop_cnt = self.compute_hop_cnt(src_coord, dst_coord)
-        return hop_cnt + (self.config.control_packet_size // self.config.flit_size)
 
     def get_data_packet_latency(self, src_id: int, dst_id: int, data_size: int) -> int:
         src_coord = self.core_id_to_coord(src_id)
@@ -78,10 +70,6 @@ class IcntContext:
     @property
     def flit_size(self) -> int:
         return self.config.flit_size
-    
-    @property
-    def control_packet_size(self) -> int:
-        return self.config.control_packet_size
     
     @property
     def booksim2_enable(self) -> bool:

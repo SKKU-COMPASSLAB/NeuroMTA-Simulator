@@ -1,10 +1,10 @@
-import math
 import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
 from neuromta.ip.tenstorrent.architecture import *
-from neuromta.ip.tenstorrent.software.rt_kernel import *
+from neuromta.ip.common.rt_kernel import *
+from neuromta.ip.tenstorrent.rt_kernel import *
 
 
 __all__ = [
@@ -26,7 +26,7 @@ def TT_RT_DMA_LOAD(device: TenstorrentDevice, core_grid: MTA_CoreGrid, main_buf:
         buf_src = main_buf.get_multiple_pages_reference(*page_coords)
         buf_dst = l1_buf.get_multiple_pages_reference(*page_coords)
         
-        TT_RT_KERNEL_MEM_BUFFER_COPY(core, src=buf_src, dst=buf_dst, n_pages=len(page_coords))
+        MCA_RT_KERNEL_MEM_BUFFER_COPY(core, src=buf_src, dst=buf_dst, n_pages=len(page_coords))
     
     return l1_buf
     
@@ -43,7 +43,7 @@ def TT_RT_DMA_STORE(device: TenstorrentDevice, core_grid: MTA_CoreGrid, l1_buf: 
         buf_src = l1_buf.get_multiple_pages_reference(*page_coords)
         buf_dst = main_buf.get_multiple_pages_reference(*page_coords)
 
-        TT_RT_KERNEL_MEM_BUFFER_COPY(core, src=buf_src, dst=buf_dst, n_pages=len(page_coords))
+        MCA_RT_KERNEL_MEM_BUFFER_COPY(core, src=buf_src, dst=buf_dst, n_pages=len(page_coords))
         
     return main_buf
 
@@ -76,22 +76,13 @@ def TT_RT_LINEAR(
     if buf_bias is not None and buf_bias.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"[ERROR] Bias buffer must be allocated in L1 memory.")
     
-    buf_ifm = buf_ifm
-    buf_wgt = buf_wgt
-    buf_bias = buf_bias
-    
-    dtype = dtype
-    acc_dtype = acc_dtype
-    
-    cb_n_pages = cb_n_pages
-    
     k_tile_num = buf_ifm.x_shard_grid * buf_ifm.x_page_num_per_shard
     load_burst_len = cb_n_pages // 2
     
     ofm_layout = MCA_TensorMemoryLayout(
         mem_type=MCA_TensorMemoryType.L1,
         grid_shape=core_grid.shape,
-        page_shape=(32, 32),
+        page_shape=(buf_ifm.layout.y_page_size, buf_ifm.layout.x_page_size),
     )
     
     buf_ofm = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=ofm_layout, device=device, core_ids=core_grid.core_ids)
@@ -104,11 +95,11 @@ def TT_RT_LINEAR(
     for core_id in core_grid.core_ids:
         core = device.get_npu_core(core_id=core_id)
         
-        TT_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_ifm_ptrs[core_id], buf_ifm.reference.resolve(is_read=True).page_size, cb_n_pages)
-        TT_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_wgt_ptrs[core_id], buf_wgt.reference.resolve(is_read=True).page_size, cb_n_pages)
-        TT_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_ofm_ptrs[core_id], buf_ofm.reference.resolve(is_read=True).page_size, cb_n_pages)
+        MCA_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_ifm_ptrs[core_id], buf_ifm.reference.resolve(is_read=True).page_size, cb_n_pages)
+        MCA_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_wgt_ptrs[core_id], buf_wgt.reference.resolve(is_read=True).page_size, cb_n_pages)
+        MCA_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_ofm_ptrs[core_id], buf_ofm.reference.resolve(is_read=True).page_size, cb_n_pages)
         if buf_bias is not None:
-            TT_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_bias_ptrs[core_id], buf_bias.reference.resolve(is_read=True).page_size, cb_n_pages)
+            MCA_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_bias_ptrs[core_id], buf_bias.reference.resolve(is_read=True).page_size, cb_n_pages)
 
     for y_pi in range(buf_ofm.y_page_num_per_shard):
         for x_pi in range(buf_ofm.x_page_num_per_shard):
@@ -142,10 +133,10 @@ def TT_RT_LINEAR(
     for core_id in core_grid.core_ids:
         core = device.get_npu_core(core_id=core_id)
         
-        TT_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_ifm_ptrs[core_id])
-        TT_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_wgt_ptrs[core_id])
-        TT_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_ofm_ptrs[core_id])
+        MCA_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_ifm_ptrs[core_id])
+        MCA_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_wgt_ptrs[core_id])
+        MCA_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_ofm_ptrs[core_id])
         if buf_bias is not None:
-            TT_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_bias_ptrs[core_id])
+            MCA_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_bias_ptrs[core_id])
             
     return buf_ofm

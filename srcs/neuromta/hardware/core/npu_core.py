@@ -149,6 +149,10 @@ class NPUCore(Core):
     #############################################################
     
     @core_command_method
+    def init_container(self, container: DataContainer, shape: tuple[int, ...], dtype: torch.dtype):
+        container.data = torch.zeros(shape, dtype=dtype)
+    
+    @core_command_method
     def mem_read_with_container(self, handle: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, shape: tuple[int, ...]=(-1,), dtype: torch.dtype=torch.uint8):
         if isinstance(handle, BufferPointer):
             handle = handle.resolve(is_read=True)
@@ -169,7 +173,7 @@ class NPUCore(Core):
             wr_handle = handle
             
         raw_data: torch.Tensor = self.mem_handle.get_content(rd_handle, shape=(-1,), dtype=torch.uint8)
-        wr_data:  torch.Tensor = container.data.view(torch.uint8).reshape(-1)
+        wr_data:  torch.Tensor = container.data.reshape(-1).view(torch.uint8)
         
         raw_data[offset:offset+wr_data.numel()] = wr_data
         self.mem_handle.set_content(wr_handle, raw_data)
@@ -285,15 +289,18 @@ class NPUCore(Core):
         
         if preload_psum:
             if self.mxu_context.dataflow == MXUDataflow.OS:
-                psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype)
-                
-                if psum_vectored:
-                    psum_tile = psum_tile.flatten()
+                if psum_cont.data is None:
+                    psum_tile = torch.zeros(self.mxu_context.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
                 else:
-                    psum_tile = psum_tile.reshape(self.mxu_context.ofm_tile_shape)
+                    psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype)
                     
-                if ifm_transposed: 
-                    psum_tile = psum_tile.T
+                    if psum_vectored:
+                        psum_tile = psum_tile.flatten().unsqueeze(0)  # (1, N)
+                    else:
+                        psum_tile = psum_tile.reshape(self.mxu_context.ofm_tile_shape)
+                        
+                    if ifm_transposed: 
+                        psum_tile = psum_tile.T
                     
                 self.mxu_context.load_tile_pe_arr(psum_tile)
             elif self.mxu_context.dataflow == MXUDataflow.WS:
@@ -318,16 +325,22 @@ class NPUCore(Core):
 
         elif self.mxu_context.dataflow == MXUDataflow.WS:
             ifm_tile = ifm_cont.data.view(self.mxu_context.dtype).reshape(self.mxu_context.ifm_tile_shape)
-            psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype)
-            
-            if psum_vectored:
-                psum_tile = psum_tile.flatten()
-            else:
-                psum_tile = psum_tile.reshape(self.mxu_context.ofm_tile_shape)
             
             if ifm_transposed: 
                 ifm_tile = ifm_tile.T
-                psum_tile = psum_tile.T
+            
+            if psum_cont.data is None:
+                psum_tile = torch.zeros(self.mxu_context.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
+            else:
+                psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype)
+                
+                if psum_vectored:
+                    psum_tile = psum_tile.flatten().unsqueeze(1)  # (N, 1)
+                else:
+                    psum_tile = psum_tile.reshape(self.mxu_context.ofm_tile_shape)
+                    
+                if ifm_transposed: 
+                    psum_tile = psum_tile.T
 
             self.mxu_context.execute_gemm(ifm_tile=ifm_tile, psum_tile=psum_tile)
             
@@ -337,7 +350,8 @@ class NPUCore(Core):
             elif self.mxu_context.dataflow == MXUDataflow.WS:
                 ofm_tile = self.mxu_context.get_acc_regs() 
                 
-            if ifm_transposed: ofm_tile = ofm_tile.T
+            if ifm_transposed: 
+                ofm_tile = ofm_tile.T
             
             ofm_cont.data = ofm_tile
 

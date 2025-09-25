@@ -7,8 +7,7 @@ from neuromta.framework import *
 from neuromta.hardware import *
 from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
 from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
-from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentDevice
-from neuromta.ip.tenstorrent.software.rt_operator import *
+from neuromta.ip.tenstorrent import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -87,7 +86,7 @@ if __name__ == "__main__":
     with MonitoringWindow() as monitor:
         for core_id in core_grid.core_ids:
             core = device.get_npu_core(core_id=core_id)
-            pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=40)
+            pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
             pbar.bind_core(core)
         
         st = time.time()

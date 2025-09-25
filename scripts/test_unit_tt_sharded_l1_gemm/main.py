@@ -236,7 +236,7 @@ if __name__ == "__main__":
     with MonitoringWindow() as monitor:
         for core_id, core in device.cores.items():
             if isinstance(core, NPUCore) and (not core.is_idle):
-                pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=40)
+                pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
                 pbar.bind_core(core)
         
         st = time.time()

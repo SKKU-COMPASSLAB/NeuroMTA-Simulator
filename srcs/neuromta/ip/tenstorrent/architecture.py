@@ -49,13 +49,12 @@ class TenstorrentConfig(dict):
         icnt_shape = (12, 16)
         n_npu_core = 12 * 14
         n_dma_core = 12 * 2
-        n_dma_core_per_channel    = 3
+        n_dma_core_per_channel = 3
         n_main_mem_channels = math.ceil(n_dma_core / n_dma_core_per_channel)
         
         icnt_config = IcntConfig(
             shape=icnt_shape,
-            flit_size=parse_mem_cap_str("16B"),  # TODO: (flit size) * (processor clock) * (full-duplex) * (node per router) = 16B * 1GHz * 2 * 6 = 192GB/s (???)
-            control_packet_size=parse_mem_cap_str("32B"),
+            flit_size=parse_mem_cap_str("16B") * 6,  # TODO: (flit size) * (processor clock) * (full-duplex) * (node per router) = 16B * 1GHz * 2 * 6 = 192GB/s (assume that each core has 1 router port and single TX/RX interface)
             booksim2_enable=PYBOOKSIM2_AVAILABLE,
         )
         

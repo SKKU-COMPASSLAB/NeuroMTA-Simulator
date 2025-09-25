@@ -45,7 +45,7 @@ class Device:
                 raise Exception(f"[ERROR] Core with ID '{core.core_id}' already exists. Please use a unique core ID.")
             self._cores[core.core_id] = core
 
-    def initialize(self):
+    def initialize(self, print_command_debug_msg: bool=True):
         self._cores = {}
         
         for name, core in self.__dict__.items():
@@ -61,10 +61,11 @@ class Device:
         for core in self._cores.values():
             core.initialize_kernel_dispatch_queue()
             core.initialize_mp_queue_inbox(rpc_req_send_inbox=self._rpc_req_send_inbox, rpc_rsp_send_inbox=self._rpc_rsp_send_inbox)
-            
-        for core in self._cores.values():
-            hook_id = core.register_command_debug_hook(self._verbose_command_debug_hook)
-            self._verbose_hook_ids[core.core_id] = hook_id
+        
+        if print_command_debug_msg:
+            for core in self._cores.values():
+                hook_id = core.register_command_debug_hook(self._verbose_command_debug_hook)
+                self._verbose_hook_ids[core.core_id] = hook_id
         
         return self
     

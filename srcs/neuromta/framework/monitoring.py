@@ -14,23 +14,25 @@ __all__ = [
 
 
 class ProgressBarHandle:
-    def __init__(self, desc: str="", ncols: int=80, percentage: float=0.0):
+    def __init__(self, desc: str="", ncols: int=80):
         self.desc = desc
         self.ncols = ncols
-        self.percentage = percentage
+        # self.percentage = percentage
         
         self._hook_id = None
         self._binded_core = None
         
-        self._cached_total = None
-        self._cached_progress = None
+        self._cached_total_kernel_num = 0
+        self._cached_progress_kernel_num = 0
 
     def draw(self):
-        header = f"{self.desc} {self.percentage:6.2f}% |"
+        percentage = min(((self._cached_progress_kernel_num) / self._cached_total_kernel_num * 100) if self._cached_total_kernel_num and self._cached_total_kernel_num > 0 else 100.0, 100.0)
+
+        header = f"{self.desc} [{self._cached_progress_kernel_num:<3d}/{self._cached_total_kernel_num:<3d}] {percentage:6.2f}% |"
         tail   = "|  "
         
-        bar_width = max(0, self.ncols - len(header) - len(tail) - 1)
-        filled_len = int(round(bar_width * self.percentage / 100))
+        bar_width = max(10, self.ncols - len(header) - len(tail) - 1)
+        filled_len = int(round(bar_width * percentage / 100))
         bar = '█' * filled_len + ' ' * (bar_width - filled_len)
         
         sys.stdout.write(f"{header}{bar}{tail}")
@@ -39,41 +41,39 @@ class ProgressBarHandle:
         return {
             'desc': self.desc,
             'ncols': self.ncols,
-            'percentage': self.percentage,
+            "_cached_total": self._cached_total_kernel_num,
+            "_cached_progress": self._cached_progress_kernel_num,
         }
         
     def __setstate__(self, state):
         self.desc = state['desc']
         self.ncols = state['ncols']
-        self.percentage = state['percentage']
+        self._cached_total_kernel_num = state["_cached_total"]
+        self._cached_progress_kernel_num = state["_cached_progress"]
         
     def bind_core(self, core: Core):
         self._binded_core = core
-        self._hook_id = core.register_command_debug_hook(self._update_pbar_debug_hook)
+        self._hook_id = core.register_kernel_debug_hook(self._update_pbar_kernel_status)
         
     def unbind_core(self):
         if self._hook_id is not None and self._binded_core is not None:
-            self._binded_core.unregister_command_debug_hook(self._hook_id)
+            self._binded_core.unregister_kernel_debug_hook(self._hook_id)
             
             self._hook_id = None
             self._binded_core = None
-            self._cached_total = None
+            self._cached_total_kernel_num = None
     
-    def _update_pbar_debug_hook(self, core: Core, kernel: Kernel, command: Command, *args, **kwargs):
+    def _update_pbar_kernel_status(self, core: Core, kernel: Kernel, issue_time: int=None, commit_time: int=None):
         if core.is_idle:
-            self.percentage = 100.0
-            self._cached_total = None
+            self._cached_total_kernel_num = 0
+            self._cached_progress_kernel_num = 0
             return
         
-        self.percentage = 100 # TODO: fixme please...
-        
-        # if self._cached_total is None or self._cached_progress is None and kernel.is_compiled:
-        #     self._cached_total = core.n_dispatched_main_commands
-        #     self._cached_progress = 0
+        if issue_time is not None:
+            self._cached_total_kernel_num += 1
             
-        # if kernel.is_main:
-        #     self._cached_progress += 1
-        #     self.percentage = ((self._cached_progress) / self._cached_total * 100) if self._cached_total > 0 else 100.0
+        if commit_time is not None:
+            self._cached_progress_kernel_num += 1
         
         
 class LogEntryHandle:
