@@ -440,9 +440,10 @@ class KernelPrototype:
         self.func = func
         self.args = args
         self.kwargs = kwargs
+        self.compiled_kernel_id = func.__name__
         
     def compile(self) -> 'Kernel':
-        with Kernel(kernel_id=self.func.__name__) as kernel:
+        with Kernel(kernel_id=self.compiled_kernel_id) as kernel:
             try:
                 self.func(*self.args, **self.kwargs)
             except Exception as e:

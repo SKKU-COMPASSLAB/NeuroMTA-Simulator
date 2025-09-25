@@ -466,5 +466,6 @@ class MCA_RuntimeKernel:
         except Exception as e:
             logger.error(f"Failed to compile the MCA runtime kernel '{type(self).__name__}': {e}")
             raise e
-            
+        
+        rt_main_kernel.compiled_kernel_id = type(self).__name__
         self.core.dispatch_main_kernel(slot_id, rt_main_kernel)

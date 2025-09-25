@@ -91,8 +91,6 @@ if __name__ == "__main__":
             dtype=dtype, acc_dtype=acc_dtype,
         )
         
-        main_buf_ofm = TPU_RT_DMA_STORE(device, core_id, l1_buf=l1_buf_ofm, main_layout=main_layout)
-        
         ed = time.time()
         
         
@@ -114,7 +112,7 @@ if __name__ == "__main__":
     print(f"simulation terminated with {device.timestamp}")
     
     reference = torch.matmul(ifm.to(dtype=acc_dtype).T, wgt.to(dtype=acc_dtype)) + bias.T
-    simulated = main_buf_ofm.restore().T
+    simulated = l1_buf_ofm.restore().T
 
     print(f"\n=== REFERENCE ===\n{reference}")
     print(f"\n=== SIMULATED ===\n{simulated}")

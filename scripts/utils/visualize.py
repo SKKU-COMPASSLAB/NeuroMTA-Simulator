@@ -63,6 +63,9 @@ def visualize_bandwidth_utilization_graph(
     fig_cursor = 0
     fig, axs = plt.subplots(n_fig, 1, figsize=(12, 8))
     
+    if n_fig == 1:
+        axs = [axs]
+    
     if main_mem_analysis_available:
         main_mem_core_analyzer = MainMemCoreAnalyzer()
         main_mem_core_analyzer.load_traces(MAIN_MEM_CORE_TRACE_FNAME)
