@@ -3,7 +3,6 @@ import torch
 from neuromta.framework import *
 from neuromta.hardware import *
 from neuromta.ip.tenstorrent.architecture import *
-from neuromta.ip.common.rt_kernel import *
 from neuromta.ip.tenstorrent.rt_kernel import *
 
 

@@ -4,7 +4,6 @@ from neuromta.framework import *
 from neuromta.hardware import *
 from neuromta.ip.google_tpu.architecture import *
 from neuromta.ip.google_tpu.rt_kernel import *
-from neuromta.ip.common.rt_kernel import *
 
 
 @MCA_RT_OPERATOR
