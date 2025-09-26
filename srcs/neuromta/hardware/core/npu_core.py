@@ -39,6 +39,66 @@ class NPUCore(Core):
             base_addr=self.cmap_context.get_base_addr_from_core_id(self.core_id), 
             size=self.cmap_context.config.l1_spm_bank_size
         )
+        
+        # synchronization variables
+        self.ongoing_core_sync_msg: list[int] = []
+        # self.received_core_sync_msg: list[int] = []
+        
+    #############################################################
+    # Inter-Core Synchronization
+    #############################################################
+    
+    @core_command_method
+    def _static_inter_core_sync_send_msg(self, dst_core_id: int):
+        pass
+    
+    def inter_core_sync_send_msg(self, dst_core_id: int):
+        if self.check_rpc_inbox(self.cmap_context.icnt_core_id):  # check if it is possible to send NOC transaction request (if not, the )
+            noc_write_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_write_transaction").with_args(src_id=self.core_id, dst_id=dst_core_id, data_size=2)
+            self.async_rpc_send_req_msg(noc_write_msg)
+            self.async_rpc_wait_rsp_msg(noc_write_msg)
+        else:
+            self._static_inter_core_sync_send_msg(dst_core_id)
+        
+        sync_send_msg = RPCMessage(self.core_id, dst_core_id, cmd_id="inter_core_sync_recv_msg").with_args(src_core_id=self.core_id)
+        self.async_rpc_send_req_msg(sync_send_msg)
+        self.async_rpc_wait_rsp_msg(sync_send_msg)
+        
+    @core_conditional_command_method
+    def inter_core_sync_recv_msg(self, src_core_id: int):
+        if src_core_id not in self.ongoing_core_sync_msg:
+            return False
+        self.ongoing_core_sync_msg.remove(src_core_id)
+        return True
+    
+    @core_conditional_command_method
+    def inter_core_sync_trigger(self, slave_core_ids: list[int]):
+        for slave_core_id in slave_core_ids:
+            if slave_core_id in self.ongoing_core_sync_msg:
+                return False
+            
+        self.ongoing_core_sync_msg = slave_core_ids.copy()
+        return True
+    
+    @core_conditional_command_method
+    def inter_core_sync_wait(self):
+        return len(self.ongoing_core_sync_msg) == 0
+    
+    def inter_core_sync_barrier(self, core_ids: list[int]):
+        master_core_id = core_ids[0]
+        slave_core_ids = core_ids[1:]
+        
+        if self.core_id == master_core_id:
+            self.inter_core_sync_trigger(slave_core_ids)
+            for slave_core_id in slave_core_ids:
+                with new_parallel_thread():
+                    self.inter_core_sync_send_msg(slave_core_id)
+            self.parallel_merge()
+            self.inter_core_sync_wait()
+        else:
+            self.inter_core_sync_trigger([master_core_id,])
+            self.inter_core_sync_wait()
+            self.inter_core_sync_send_msg(master_core_id)
 
     #############################################################
     # Variable Management
@@ -76,6 +136,14 @@ class NPUCore(Core):
 
         var: Variable = self.mem_handle.get_data_element(ptr)
         var.content += value
+        
+    @core_conditional_command_method
+    def var_wait_value(self, ptr: Pointer, value: int | Pointer):
+        if isinstance(value, Pointer):
+            value = self.mem_handle.get_data_element(value).content
+
+        var: Variable = self.mem_handle.get_data_element(ptr)
+        return var.content == value
         
     #############################################################
     # Buffer Management
@@ -187,8 +255,12 @@ class NPUCore(Core):
         src_ptr = src_handle.page_ptrs[page_offset]
         
         if self.cmap_context.get_mem_owner_core_id(self.core_id, dst_ptr.addr) != self.core_id:
+            if dst_ref.is_circular:
+                logger.warning(f"The destination circular buffer address '{dst_ptr.addr}' does not belong to local core ID '{self.core_id}'.")
             raise Exception(f"[ERROR] Invalid destination memory address {dst_ptr.addr} in core {self.core_id}")
         if self.cmap_context.get_mem_owner_core_id(self.core_id, src_ptr.addr) != self.core_id:
+            if src_ref.is_circular:
+                logger.warning(f"The source circular buffer address '{src_ptr.addr}' does not belong to local core ID '{self.core_id}'.")
             raise Exception(f"[ERROR] Invalid source memory address {src_ptr.addr} in core {self.core_id}")
         
         content = self.mem_handle.get_content(src_ptr)
@@ -405,6 +477,16 @@ class NPUCoreCycleModel(CoreCycleModel):
         super().__init__()
         
         self.core = core
+        
+    def _static_inter_core_sync_send_msg(self, dst_core_id: int):
+        if not self.core.check_rpc_inbox(self.core.cmap_context.icnt_core_id):
+            return 10  # TODO: Assume that sending a message takes 10 cycles
+        return 1
+    
+    def _static_inter_core_sync_send_rsp_msg(self, dst_core_id: int):
+        if not self.core.check_rpc_inbox(self.core.cmap_context.icnt_core_id):
+            return 10  # TODO: Assume that sending a message takes 10 cycles
+        return 1
 
     def local_memcopy_page(self, dst_ref: BufferPointer, src_ref: BufferPointer, page_offset: int=0):
         return self.core.mem_context.l1_config.get_cycles(size=src_ref.page_size)

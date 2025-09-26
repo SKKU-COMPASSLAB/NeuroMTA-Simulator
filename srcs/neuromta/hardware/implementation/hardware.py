@@ -85,6 +85,23 @@ class MCA_DeviceBase(Device):
     
     def get_main_mem_handle(self) -> MemoryHandle:
         return self.main_mem_core.mem_handle
+    
+    def create_local_variable(self, size: int, initial_value: int, core_ids: int | list[int]=None) -> Pointer | list[Pointer]:
+        if core_ids is None:
+            core_ids = self.npu_core_ids
+        if not isinstance(core_ids, Sequence):
+            core_ids = [core_ids]
+        
+        ptrs: list[Pointer] = []
+        
+        for core_id in core_ids:
+            mem_handle = self.get_l1_mem_handle(core_id=core_id)
+            ptr = create_var_ptr(mem_handle=mem_handle, var_size=size, initial_value=initial_value)
+            ptrs.append(ptr)
+        
+        if len(core_ids) == 1:
+            return ptrs[0]
+        return ptrs
 
     def create_local_l1_circular_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> BufferPointer | list[BufferPointer]:
         if core_ids is None:

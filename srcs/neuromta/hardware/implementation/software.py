@@ -16,9 +16,9 @@ __all__ = [
     "MCA_TensorMemoryLayout",
     "MCA_TensorBuffer",
     
-    "MCA_RT_KERNEL_THREAD",
+    "MCA_RT_JIT_COMPILE_REGION",
+    "MCA_RT_KERNEL",
     "MCA_RT_OPERATOR",
-    "MCA_RuntimeKernel",
 ]
     
     
@@ -358,55 +358,91 @@ class MCA_TensorBuffer:
     
     @property
     def n_pages(self) -> int:
-        return self._reference.resolve(is_read=True).n_pages
+        return self._reference.raw_handle.n_pages
 
 
 _global_mca_rt_op_id: str = None
-# _global_mca_rt_kernel_queue: list['MCA_RuntimeKernel'] = []
 
 def activate_global_mca_rt_op(rt_op_id: str):
     global _global_mca_rt_op_id
     if _global_mca_rt_op_id is not None:
-        raise Exception("[ERROR] The global MCA runtime operator has already been activated. This exception is mainly caused by the recursive call of MCA_RuntimeOperator. Note that MCA_RuntimeOperator cannot be used inside another MCA_RuntimeOperator.")
+        raise Exception("[ERROR] The global MCA runtime operator has already been activated. This exception is mainly caused by the recursive call of MCA_RT_OPERATOR. Note that MCA_RT_OPERATOR cannot be called inside another MCA_RT_OPERATOR.")
     _global_mca_rt_op_id = rt_op_id
-    reset_global_mca_rt_kernel_queue()
     
 def deactivate_global_mca_rt_op():
     global _global_mca_rt_op_id
-    for rt_kernel in get_global_mca_rt_kernel_queue():
-        rt_kernel.dispatch(_global_mca_rt_op_id)
     _global_mca_rt_op_id = None
-    reset_global_mca_rt_kernel_queue()
     
 def check_global_mca_rt_op_active() -> bool:
     global _global_mca_rt_op_id
     return _global_mca_rt_op_id is not None
 
-def get_global_mca_rt_kernel_queue() -> list['MCA_RuntimeKernel']:
-    global _global_mca_rt_kernel_queue
-    return _global_mca_rt_kernel_queue
+def get_global_mca_rt_op_id() -> str:
+    global _global_mca_rt_op_id
+    return _global_mca_rt_op_id
 
-def reset_global_mca_rt_kernel_queue():
-    global _global_mca_rt_kernel_queue
-    _global_mca_rt_kernel_queue = []
-    
-def register_global_mca_rt_kernel(kernel: 'MCA_RuntimeKernel'):
-    global _global_mca_rt_kernel_queue
-    _global_mca_rt_kernel_queue.append(kernel)
+class MCA_RT_JIT_COMPILE_REGION:
+    def __init__(self, core: NPUCore, kernel_id: str=None):
+        self._core = core
+        self._kernel = Kernel(kernel_id=kernel_id)
+        
+        self._history_context_mode   = None
+        self._history_core_context   = None
+        self._history_kernel_context = None
+        
+        if not isinstance(core, NPUCore):
+            raise Exception(f"[ERROR] The argument of MCA_RT_JIT_REGION_AUTO_DISPATCH must be a NPUCore instance, but got {type(core)}.")
 
+    def __enter__(self):
+        self._history_context_mode   = get_global_context_mode()
+        self._history_core_context   = get_global_core_context()
+        self._history_kernel_context = get_global_kernel_context()
+        
+        if self._history_context_mode == GlobalContextMode.COMPILE:
+            logger.warning(f"Calling MCA_RT_JIT_REGION_AUTO_DISPATCH with COMPILE context may cause unexpected behavior.")
+            if self._history_core_context.core_id != self._core.core_id:
+                raise Exception(f"[ERROR] Nested MCA_RT_JIT_REGION_AUTO_DISPATCH with different core context is not allowed. (current core: {self._core.core_id}, history core: {self._history_core_context.core_id})")
+        
+        set_global_context(GlobalContextMode.COMPILE, self._core, kernel=self._kernel)
+        
+    def __exit__(self, exc_type, exc_value, traceback):
+        set_global_context(self._history_context_mode, self._history_core_context, kernel=self._history_kernel_context)
 
-def MCA_RT_KERNEL_THREAD(func: Callable):
+        if self._history_context_mode == GlobalContextMode.IDLE and check_global_mca_rt_op_active():
+            self._kernel.kernel_id = f"{get_global_mca_rt_op_id()}::{self._kernel.kernel_id}"
+            self._core.dispatch_main_kernel(slot_id="RT", kernel=self._kernel)
+        elif self._history_context_mode == GlobalContextMode.COMPILE:
+            for step in self._kernel._execution_steps:
+                self._history_kernel_context.add_execution_step(step)
+                
+        return False  # Do not suppress exceptions
+
+def MCA_RT_KERNEL(func: Callable):
     @functools.wraps(func)
-    def __wrapper(self):
-        return func(self)
-    __wrapper._is_mca_rt_kernel_thread = True
+    def __wrapper(*args, **kwargs):
+        pargs = parse_arguments(args, kwargs, ["core"])
+        core: NPUCore = pargs["core"]
+        
+        if not isinstance(core, NPUCore):
+            raise Exception(f"[ERROR] The first argument of the MCA_RT_KERNEL-decorated function or the keyword argument 'core' must be a NPUCore instance, but got {type(core)}.")
+        
+        rt_kernel = KernelPrototype(func=func, args=args, kwargs=kwargs)
+        rt_kernel.compiled_kernel_id = func.__name__
+
+        if check_global_mca_rt_op_active():
+            rt_kernel.compiled_kernel_id = f"{get_global_mca_rt_op_id()}::{rt_kernel.compiled_kernel_id}"
+        
+        core.dispatch_main_kernel(slot_id="RT", kernel=rt_kernel)  # TODO: currently, all runtime kernels are dispatched to the "RT" slot (inter-dependency between consecutive runtime kernels are determined by the order of the kernel calls)
+        
+        return rt_kernel
     return __wrapper
 
 def MCA_RT_OPERATOR(func: Callable):
     @functools.wraps(func)
     def __wrapper(*args, **kwargs):
-        activate_global_mca_rt_op(rt_op_id=func.__name__)
         try:
+            activate_global_mca_rt_op(rt_op_id=func.__name__)
+            
             pargs = parse_arguments(args, kwargs, ["device"])
             device: MCA_DeviceBase = pargs["device"]
             
@@ -417,55 +453,5 @@ def MCA_RT_OPERATOR(func: Callable):
         finally:
             deactivate_global_mca_rt_op()
             
-        device.run_kernels()
         return ret
     return __wrapper
-
-    
-class MCA_RuntimeKernel:
-    def __init__(self, core: NPUCore):
-        self.core = core
-        
-        if check_global_mca_rt_op_active():
-            register_global_mca_rt_kernel(self)
-    
-    @jit_prototype
-    def __call__(self):
-        threads = self._get_instance_kernel_threads()
-            
-        if len(threads) == 0:
-            raise Exception("[ERROR] No threads defined in the MCA_RuntimeKernel instance. Please define at least one method decorated with @MCA_RT_KERNEL_THREAD.")
-        elif len(threads) == 1:
-            for name, thread in threads.items():
-                thread()
-        else:
-            for name, thread in threads.items():
-                with new_parallel_thread(name):
-                    thread()
-            self.core.parallel_merge()
-    
-    def _get_instance_kernel_threads(self):
-        kernel_threads = {}
-        
-        for attr_name in dir(self):
-            if attr_name in ("_get_instance_kernel_threads", "dispatch"):
-                continue
-            if attr_name.startswith("__") and attr_name.endswith("__"):
-                continue
-            
-            attr = getattr(self, attr_name)
-            
-            if callable(attr) and hasattr(attr, '_is_mca_rt_kernel_thread'):
-                kernel_threads[attr_name] = attr
-
-        return kernel_threads
-    
-    def dispatch(self, slot_id: str="MAIN"):
-        try:
-            rt_main_kernel = self()
-        except Exception as e:
-            logger.error(f"Failed to compile the MCA runtime kernel '{type(self).__name__}': {e}")
-            raise e
-        
-        rt_main_kernel.compiled_kernel_id = type(self).__name__
-        self.core.dispatch_main_kernel(slot_id, rt_main_kernel)

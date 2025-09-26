@@ -176,6 +176,10 @@ class BufferPointer:
         
     @property
     def raw_handle(self) -> 'BufferHandle':
+        if self._item != slice(0, self._handle.n_pages, 1) and self._item != slice(0, self._handle.n_pages, None):
+            if self.is_circular:
+                raise Exception(f"[ERROR] Cannot access raw_handle of a CircularBufferPointer that is not pointing to the entire buffer. The current item is {self._item}. Use 'resolve' method instead.")
+            return self.resolve(is_read=True)
         return self._handle
     
     @property

@@ -22,15 +22,15 @@ def TT_RT_DMA_LOAD(device: TenstorrentDevice, core_grid: MTA_CoreGrid, main_buf:
     for core_id in l1_buf.core_ids:
         core = device.get_npu_core(core_id=core_id)
 
-        page_coords = core_id_to_page_idx_map[core_id]
-        buf_src = main_buf.get_multiple_pages_reference(*page_coords)
-        buf_dst = l1_buf.get_multiple_pages_reference(*page_coords)
-        
-        MCA_RT_KERNEL_MEM_BUFFER_COPY(core, src=buf_src, dst=buf_dst, n_pages=len(page_coords))
-    
+        with MCA_RT_JIT_COMPILE_REGION(core, "MEM_COPY"):
+            page_coords = core_id_to_page_idx_map[core_id]
+            buf_src = main_buf.get_multiple_pages_reference(*page_coords)
+            buf_dst = l1_buf.get_multiple_pages_reference(*page_coords)
+
+            core.mem_buffer_copy(buf_dst, buf_src, n_pages=len(page_coords))
+
     return l1_buf
-    
-        
+      
 @MCA_RT_OPERATOR
 def TT_RT_DMA_STORE(device: TenstorrentDevice, core_grid: MTA_CoreGrid, l1_buf: MCA_TensorBuffer, main_layout: MCA_TensorMemoryLayout) -> MCA_TensorBuffer:
     main_buf = MCA_TensorBuffer(shape=l1_buf.tensor_shape, dtype=l1_buf.tensor_dtype, layout=main_layout, device=device, core_ids=core_grid.core_ids)
@@ -38,15 +38,15 @@ def TT_RT_DMA_STORE(device: TenstorrentDevice, core_grid: MTA_CoreGrid, l1_buf: 
     
     for core_id in l1_buf.core_ids:
         core = device.get_npu_core(core_id=core_id)
+        
+        with MCA_RT_JIT_COMPILE_REGION(core, "MEM_COPY"):
+            page_coords = core_id_to_page_idx_map[core_id]
+            buf_src = l1_buf.get_multiple_pages_reference(*page_coords)
+            buf_dst = main_buf.get_multiple_pages_reference(*page_coords)
 
-        page_coords = core_id_to_page_idx_map[core_id]
-        buf_src = l1_buf.get_multiple_pages_reference(*page_coords)
-        buf_dst = main_buf.get_multiple_pages_reference(*page_coords)
-
-        MCA_RT_KERNEL_MEM_BUFFER_COPY(core, src=buf_src, dst=buf_dst, n_pages=len(page_coords))
+            core.mem_buffer_copy(buf_dst, buf_src, n_pages=len(page_coords))
         
     return main_buf
-
 
 @MCA_RT_OPERATOR
 def TT_RT_LINEAR(
@@ -95,11 +95,12 @@ def TT_RT_LINEAR(
     for core_id in core_grid.core_ids:
         core = device.get_npu_core(core_id=core_id)
         
-        MCA_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_ifm_ptrs[core_id], buf_ifm.reference.resolve(is_read=True).page_size, cb_n_pages)
-        MCA_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_wgt_ptrs[core_id], buf_wgt.reference.resolve(is_read=True).page_size, cb_n_pages)
-        MCA_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_ofm_ptrs[core_id], buf_ofm.reference.resolve(is_read=True).page_size, cb_n_pages)
-        if buf_bias is not None:
-            MCA_RT_KERNEL_LOCAL_CB_ALLOCATE(core, cb_bias_ptrs[core_id], buf_bias.reference.resolve(is_read=True).page_size, cb_n_pages)
+        with MCA_RT_JIT_COMPILE_REGION(core, "CB_ALLOC"):
+            core.cb_allocate(cb_ifm_ptrs[core_id], buf_ifm.reference.raw_handle.page_size, cb_n_pages)
+            core.cb_allocate(cb_wgt_ptrs[core_id], buf_wgt.reference.raw_handle.page_size, cb_n_pages)
+            core.cb_allocate(cb_ofm_ptrs[core_id], buf_ofm.reference.raw_handle.page_size, cb_n_pages)
+            if buf_bias is not None:
+                core.cb_allocate(cb_bias_ptrs[core_id], buf_bias.reference.raw_handle.page_size, cb_n_pages)
 
     for y_pi in range(buf_ofm.y_page_num_per_shard):
         for x_pi in range(buf_ofm.x_page_num_per_shard):
@@ -133,10 +134,11 @@ def TT_RT_LINEAR(
     for core_id in core_grid.core_ids:
         core = device.get_npu_core(core_id=core_id)
         
-        MCA_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_ifm_ptrs[core_id])
-        MCA_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_wgt_ptrs[core_id])
-        MCA_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_ofm_ptrs[core_id])
-        if buf_bias is not None:
-            MCA_RT_KERNEL_LOCAL_CB_DEALLOCATE(core, cb_bias_ptrs[core_id])
+        with MCA_RT_JIT_COMPILE_REGION(core, "CB_DEALLOC"):
+            core.cb_deallocate(cb_ifm_ptrs[core_id])
+            core.cb_deallocate(cb_wgt_ptrs[core_id])
+            core.cb_deallocate(cb_ofm_ptrs[core_id])
+            if buf_bias is not None:
+                core.cb_deallocate(cb_bias_ptrs[core_id])
             
     return buf_ofm

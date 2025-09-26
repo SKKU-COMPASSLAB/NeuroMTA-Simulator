@@ -66,6 +66,23 @@ if __name__ == "__main__":
     main_buf_wgt.update(wgt)
     main_buf_psum.update(bias)
     
+    l1_buf_ifm  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_ifm,  l1_layout=l1_layout)
+    l1_buf_wgt  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_wgt,  l1_layout=l1_layout)
+    l1_buf_psum = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_psum, l1_layout=l1_layout.overrides(page_shape=(1, 32)))
+    
+    MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
+
+    l1_buf_ofm = TT_RT_LINEAR(
+        device=device, core_grid=core_grid,
+        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum,
+        dtype=dtype, acc_dtype=acc_dtype,
+        cb_n_pages=8,
+    )
+    
+    MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
+    
+    main_buf_ofm = TT_RT_DMA_STORE(device, core_grid, l1_buf=l1_buf_ofm, main_layout=main_layout)
+    
     
     tracer_hub = TracerHub()
     profiler_hub = ProfilerHub()
@@ -83,7 +100,6 @@ if __name__ == "__main__":
     icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
     main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
     
-    
     with MonitoringWindow() as monitor:
         for core_id in core_grid.core_ids:
             core = device.get_npu_core(core_id=core_id)
@@ -91,22 +107,8 @@ if __name__ == "__main__":
             pbar.bind_core(core)
         
         st = time.time()
-        
-        l1_buf_ifm  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_ifm,  l1_layout=l1_layout)
-        l1_buf_wgt  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_wgt,  l1_layout=l1_layout)
-        l1_buf_psum = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_psum, l1_layout=l1_layout.overrides(page_shape=(1, 32)))
-
-        l1_buf_ofm = TT_RT_LINEAR(
-            device=device, core_grid=core_grid,
-            buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum,
-            dtype=dtype, acc_dtype=acc_dtype,
-            cb_n_pages=8,
-        )
-        
-        main_buf_ofm = TT_RT_DMA_STORE(device, core_grid, l1_buf=l1_buf_ofm, main_layout=main_layout)
-        
+        device.run_kernels()
         ed = time.time()
-        
         
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
@@ -139,6 +141,10 @@ if __name__ == "__main__":
         if isinstance(core, NPUCore) and (not core.is_idle):
             print(f"\n=== NPUCore {core_id} RUNNING CONTEXT (EXCEPTION CAUSED BY PRETERMINATION)")
             for slot_id, kernel in core._dispatched_main_kernels.items():
+                print(f"Slot {slot_id}: {kernel.callstack}")
+                for cmd in kernel.recursive_current_commands(core):
+                    print(f"  - {cmd}")
+            for slot_id, kernel in core._dispatched_rpc_kernels.items():
                 print(f"Slot {slot_id}: {kernel.callstack}")
                 for cmd in kernel.recursive_current_commands(core):
                     print(f"  - {cmd}")

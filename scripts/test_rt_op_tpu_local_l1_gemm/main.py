@@ -63,6 +63,12 @@ if __name__ == "__main__":
     l1_buf_wgt.update(wgt)
     l1_buf_bias.update(bias)
     
+    l1_buf_ofm = TPU_RT_LINEAR(
+        device=device, core_id=core_id,
+        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_bias,
+        dtype=dtype, acc_dtype=acc_dtype,
+    )
+    
     tracer_hub = TracerHub()
     profiler_hub = ProfilerHub()
     
@@ -77,22 +83,14 @@ if __name__ == "__main__":
             
     main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
     
-    
     with MonitoringWindow() as monitor:
         core = device.get_npu_core(core_id=core_id)
         pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
         pbar.bind_core(core)
         
         st = time.time()
-
-        l1_buf_ofm = TPU_RT_LINEAR(
-            device=device, core_id=core_id,
-            buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_bias,
-            dtype=dtype, acc_dtype=acc_dtype,
-        )
-        
+        device.run_kernels()
         ed = time.time()
-        
         
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)

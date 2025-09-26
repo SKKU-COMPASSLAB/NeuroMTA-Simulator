@@ -12,20 +12,18 @@ def TPU_RT_DMA_LOAD(device: GoogleTPUDevice, core_id: int, main_buf: MCA_TensorB
     l1_buf = MCA_TensorBuffer(shape=main_buf.tensor_shape, dtype=main_buf.tensor_dtype, layout=l1_layout, device=device, core_ids=[core_id,])
     
     core = device.get_npu_core(core_id=core_id)
-    MCA_RT_KERNEL_MEM_BUFFER_COPY(core, src=main_buf.reference, dst=l1_buf.reference, n_pages=main_buf.n_pages)
-    
+    with MCA_RT_JIT_COMPILE_REGION(core, "MEM_COPY"):
+        core.mem_buffer_copy(l1_buf.reference, main_buf.reference, n_pages=main_buf.n_pages)
     return l1_buf
-    
-        
+     
 @MCA_RT_OPERATOR
 def TPU_RT_DMA_STORE(device: GoogleTPUDevice, core_id: int, l1_buf: MCA_TensorBuffer, main_layout: MCA_TensorMemoryLayout) -> MCA_TensorBuffer:
     main_buf = MCA_TensorBuffer(shape=l1_buf.tensor_shape, dtype=l1_buf.tensor_dtype, layout=main_layout, device=device)
     
     core = device.get_npu_core(core_id=core_id)
-    MCA_RT_KERNEL_MEM_BUFFER_COPY(core, src=l1_buf.reference, dst=main_buf.reference, n_pages=l1_buf.n_pages)
-        
+    with MCA_RT_JIT_COMPILE_REGION(core, "MEM_COPY"):
+        core.mem_buffer_copy(main_buf.reference, l1_buf.reference, n_pages=l1_buf.n_pages)        
     return main_buf
-
 
 @MCA_RT_OPERATOR
 def TPU_RT_LINEAR(

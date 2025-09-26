@@ -22,6 +22,7 @@ __all__ = [
     "Command",
     "ConditionalCommand",
     
+    "KernelPrototype",
     "Kernel",
 
     "CoreCycleModel",
@@ -31,7 +32,6 @@ __all__ = [
     "core_command_method",
     "core_conditional_command_method",
     "new_parallel_thread",
-    "new_process_kernel",
 ]
 
 
@@ -142,7 +142,9 @@ def jit_prototype(_func: Callable):
 def core_command_method(_func: Callable):
     @functools.wraps(_func)
     def __core_command_method_wrapper(_core: 'Core', *_args, **_kwargs) -> Command:
-        if get_global_context_mode() in (GlobalContextMode.IDLE, GlobalContextMode.EXECUTE):
+        if get_global_context_mode() == GlobalContextMode.IDLE:
+            raise Exception(f"[ERROR] Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
+        if get_global_context_mode() == GlobalContextMode.EXECUTE:
             return _func(_core, *_args, **_kwargs)
 
         if not isinstance(_core, Core):
@@ -170,11 +172,14 @@ def core_command_method(_func: Callable):
         return cmd
     
     __core_command_method_wrapper._is_command_method = True  # mark this function as a command method
+    __core_command_method_wrapper._is_conditional = False  # mark this function as a non-conditional command method
     return __core_command_method_wrapper
 
 def core_conditional_command_method(_func: Callable):
     def __core_command_method_wrapper(_core: 'Core', *_args, **_kwargs) -> Command:
-        if get_global_context_mode() in (GlobalContextMode.IDLE, GlobalContextMode.EXECUTE):
+        if get_global_context_mode() == GlobalContextMode.IDLE:
+            raise Exception(f"[ERROR] Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
+        if get_global_context_mode() == GlobalContextMode.EXECUTE:
             return _func(_core, *_args, **_kwargs)
 
         if not isinstance(_core, Core):
@@ -202,7 +207,7 @@ def core_conditional_command_method(_func: Callable):
         return cmd
     
     __core_command_method_wrapper._is_command_method = True  # mark this function as a command method
-    
+    __core_command_method_wrapper._is_conditional = True  # mark this function as a conditional command method
     return __core_command_method_wrapper
 
 class new_parallel_thread:
@@ -224,31 +229,6 @@ class new_parallel_thread:
             raise Exception("[ERROR] Cannot end parallel kernel since the global context mode is not COMPILE")
 
         restore_global_parent_kernel_callstack()
-    
-class new_process_kernel:
-    def __init__(self, p_kernel_id: str=None):
-        self.p_kernel_id = p_kernel_id
-    
-    def __enter__(self):
-        if get_global_context_mode() != GlobalContextMode.COMPILE:
-            raise Exception("[ERROR] Cannot create a process kernel since the global context mode is not COMPILE")
-        
-        process_kernel = Kernel(kernel_id=self.p_kernel_id, func=None)
-        
-        store_global_parent_kernel_callstack()
-        set_global_context(GlobalContextMode.COMPILE, get_global_core_context(), process_kernel)
-        
-    def __exit__(self, exc_type, exc_value, traceback):
-        if get_global_context_mode() != GlobalContextMode.COMPILE:
-            raise Exception("[ERROR] Cannot end process kernel since the global context mode is not COMPILE")
-        
-        process_kernel = get_global_kernel_context()
-        # process_kernel._is_compiled = True  # mark the process kernel as compiled
-
-        restore_global_parent_kernel_callstack()
-        
-        core = get_global_core_context()
-        core.dispatch_process_kernel(self.p_kernel_id, process_kernel)
 
 
 #################################################
@@ -355,7 +335,7 @@ class Command:
                 return model(*self.args, **self.kwargs)
             except Exception as e:
                 logger.error(f"Exception occurred while executing behavioral model for command '{self.cmd_id}': {e}")
-                logger.error(f"  - Core: {core.core_id} | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
+                logger.error(f"  - Core: {type(core).__name__}(id={core.core_id}) | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
                 raise e
         
     def run_cycle_model(self, core: 'Core', kernel: 'Kernel') -> int:
@@ -370,8 +350,8 @@ class Command:
                 try:
                     return model(*self.args, **self.kwargs)
                 except Exception as e:
-                    logger.error(f"Exception occurred while executing behavioral model for command '{self.cmd_id}': {e}")
-                    logger.error(f"  - Core: {core.core_id} | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
+                    logger.error(f"Exception occurred while executing cycle model for command '{self.cmd_id}': {e}")
+                    logger.error(f"  - Core: {type(core).__name__}(id={core.core_id}) | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
                     raise e
             
             return None
@@ -477,7 +457,7 @@ class Kernel:
         
         restore_global_parent_kernel_callstack()
         
-    def add_execution_step(self, step: Command):
+    def add_execution_step(self, step: Command | ThreadGroup):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception(f"[ERROR] Cannot add execution step '{step}' to the kernel '{self.kernel_id}' since it is not in compile mode")
         if isinstance(step, Kernel):
@@ -592,7 +572,7 @@ class CoreCycleModel:
         pass
 
 class Core:
-    def __init__(self, core_id: str, cycle_model: CoreCycleModel=None):
+    def __init__(self, core_id: int, cycle_model: CoreCycleModel=None):
         self.core_id = core_id
 
         self._cycle_model: CoreCycleModel = cycle_model
@@ -875,7 +855,10 @@ class Core:
             elif hasattr(func, "_is_command_method") and func._is_command_method:
                 kernel = Kernel(f"AUTO_REMOTE")
                 with new_global_context(GlobalContextMode.COMPILE, self, kernel):
-                    cmd = Command(cmd_id=msg.cmd_id, *msg.args, **msg.kwargs)
+                    if func._is_conditional:
+                        cmd = ConditionalCommand(cmd_id=msg.cmd_id, *msg.args, **msg.kwargs)
+                    else:
+                        cmd = Command(cmd_id=msg.cmd_id, *msg.args, **msg.kwargs)
                     kernel.add_execution_step(cmd)  # Add the command as an execution step
                 kernel.root_kernel_id = f"RPC<{msg.src_core_id}>"
             else:

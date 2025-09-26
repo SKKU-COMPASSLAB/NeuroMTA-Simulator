@@ -63,6 +63,18 @@ if __name__ == "__main__":
     main_buf_wgt.update(wgt)
     main_buf_bias.update(bias)
     
+    l1_buf_ifm  = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_ifm,  l1_layout=l1_layout)
+    l1_buf_wgt  = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_wgt,  l1_layout=l1_layout)
+    l1_buf_bias = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_bias, l1_layout=l1_layout.overrides(page_shape=(128, 1)))
+    
+    l1_buf_ofm = TPU_RT_LINEAR(
+        device=device, core_id=core_id,
+        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_bias,
+        dtype=dtype, acc_dtype=acc_dtype,
+    )
+    
+    main_buf_ofm = TPU_RT_DMA_STORE(device, core_id, l1_buf=l1_buf_ofm, main_layout=main_layout)
+    
     tracer_hub = TracerHub()
     profiler_hub = ProfilerHub()
     
@@ -84,19 +96,7 @@ if __name__ == "__main__":
         pbar.bind_core(core)
         
         st = time.time()
-        
-        l1_buf_ifm  = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_ifm,  l1_layout=l1_layout)
-        l1_buf_wgt  = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_wgt,  l1_layout=l1_layout)
-        l1_buf_bias = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_bias, l1_layout=l1_layout.overrides(page_shape=(128, 1)))
-
-        l1_buf_ofm = TPU_RT_LINEAR(
-            device=device, core_id=core_id,
-            buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_bias,
-            dtype=dtype, acc_dtype=acc_dtype,
-        )
-        
-        main_buf_ofm = TPU_RT_DMA_STORE(device, core_id, l1_buf=l1_buf_ofm, main_layout=main_layout)
-        
+        device.run_kernels()
         ed = time.time()
         
         

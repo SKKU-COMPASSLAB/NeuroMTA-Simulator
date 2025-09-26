@@ -26,7 +26,7 @@ class ProgressBarHandle:
         self._cached_progress_kernel_num = 0
 
     def draw(self):
-        percentage = min(((self._cached_progress_kernel_num) / self._cached_total_kernel_num * 100) if self._cached_total_kernel_num and self._cached_total_kernel_num > 0 else 100.0, 100.0)
+        percentage = min(((self._cached_progress_kernel_num) / self._cached_total_kernel_num * 100) if self._cached_total_kernel_num and self._cached_total_kernel_num > 0 else 0.0, 100.0)
 
         header = f"{self.desc} [{self._cached_progress_kernel_num:<3d}/{self._cached_total_kernel_num:<3d}] {percentage:6.2f}% |"
         tail   = "|  "
@@ -71,9 +71,11 @@ class ProgressBarHandle:
         
         if issue_time is not None:
             self._cached_total_kernel_num += 1
-            
         if commit_time is not None:
             self._cached_progress_kernel_num += 1
+            
+        if self._cached_total_kernel_num < core.n_dispatched_main_kernels:
+            self._cached_total_kernel_num = core.n_dispatched_main_kernels
         
         
 class LogEntryHandle:
