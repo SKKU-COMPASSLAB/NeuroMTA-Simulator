@@ -2,7 +2,6 @@ import enum
 from typing import Sequence
 
 from neuromta.framework import *
-from neuromta.hardware.companions.booksim import BookSim2Config, PYBOOKSIM2_AVAILABLE
 
 
 __all__ = [
@@ -214,6 +213,22 @@ class CmapContext:
                 return dst_core_id
             
         raise ValueError(f"Address {addr} is out of range of the next-level memory of core ID {src_core_id}.")
+    
+    def get_buffer_owner_core_ids(self, src_core_id: int, buffer: BufferPointer) -> list[int]:
+        if isinstance(buffer, Pointer):
+            addrs = [buffer.addr]
+        elif isinstance(buffer, BufferPointer):
+            handle = buffer.resolve(is_read=True)
+            addrs = [page_ptr.addr for page_ptr in handle.page_ptrs]
+        else:
+            raise TypeError(f"Buffer must be a Pointer or BufferPointer, but got {type(buffer).__name__}.")
+        
+        core_ids = set()
+        for addr in addrs:
+            core_id = self.get_mem_owner_core_id(src_core_id, addr)
+            core_ids.add(core_id)
+
+        return list(core_ids)
 
     def get_base_addr_from_core_id(self, core_id: int) -> int:
         return self.config.core_map[core_id].base_addr

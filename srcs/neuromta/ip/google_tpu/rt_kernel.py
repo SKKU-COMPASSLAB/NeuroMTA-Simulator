@@ -33,7 +33,7 @@ def  TPU_RT_KERNEL_TILED_LINEAR_BURST_NKM(
                     if buf_bias is not None:
                         core.mem_read_with_container(buf_bias[n_it], containers[2])
                     else:
-                        core.init_container(containers[2], shape=(1, 128), dtype=acc_dtype)
+                        core.mem_container_init(containers[2], shape=(1, 128), dtype=acc_dtype)
                 else:
                     core.mem_read_with_container(buf_ofm[n_it * m_tile_num + m_it], containers[2])
                 

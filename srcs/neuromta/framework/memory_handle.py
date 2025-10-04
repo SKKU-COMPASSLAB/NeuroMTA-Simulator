@@ -88,8 +88,12 @@ class Page(_DataElement):
             self._content = torch.zeros(self.size, dtype=torch.uint8)
         
         value = value.view(dtype=torch.uint8).flatten()
-        self._content[offset:offset + value.numel()] = value
-        
+        try:
+            self._content[offset:offset + value.numel()] = value
+        except Exception as e:
+            logger.error(f"Failed to set content to page at address {self.addr} with size {self.size}. The provided value has size {value.numel()} and offset {offset}.")
+            raise Exception(f"[ERROR] Failed to set content: {e}")
+
     @property
     def content(self) -> torch.Tensor:
         if self._content is None:
@@ -423,15 +427,19 @@ class _MemoryHandleChannelSpaceTracker:
             self._head = self._head.nxt_entry
             if self._head is not None:
                 self._head.prv_entry = None
+            else:
+                self._tail = None
         
         while self._tail is not None and self._tail.is_expired:
             del self._addr_map[self._tail.addr]
             self._tail = self._tail.prv_entry
             if self._tail is not None:
                 self._tail.nxt_entry = None
+            else:
+                self._head = None
             
-        if self._head is None:
-            self._tail = None
+        # if self._head is None: self._tail = None
+        # if self._tail is None: self._head = None
         
         return True
             

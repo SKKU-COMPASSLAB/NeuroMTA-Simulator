@@ -42,9 +42,6 @@ class MainMemoryCore(Core):
                 addr = ptr.addr
                 size = ptr.size
             elif isinstance(ptr, BufferPointer):
-                if ptr.is_circular:
-                    logger.warning("Allocating main memory space as a circular buffer pointer may cause unexpected behavior.")  # TODO: should we raise an error? or implement global main memory circular buffer?
-                
                 handle = ptr.resolve(is_read=True)
                 
                 if handle.n_pages != 1:
@@ -73,9 +70,6 @@ class MainMemoryCore(Core):
                 addr = ptr.addr
                 size = ptr.size
             elif isinstance(ptr, BufferPointer):
-                if ptr.is_circular:
-                    logger.warning("Allocating main memory space as a circular buffer pointer may cause unexpected behavior.")  # TODO: should we raise an error? or implement global main memory circular buffer?
-
                 handle = ptr.resolve(is_read=False)
                 
                 if handle.n_pages != 1:

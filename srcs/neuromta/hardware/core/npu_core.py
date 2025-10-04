@@ -42,7 +42,6 @@ class NPUCore(Core):
         
         # synchronization variables
         self.ongoing_core_sync_msg: list[int] = []
-        # self.received_core_sync_msg: list[int] = []
         
     #############################################################
     # Inter-Core Synchronization
@@ -90,15 +89,15 @@ class NPUCore(Core):
         
         if self.core_id == master_core_id:
             self.inter_core_sync_trigger(slave_core_ids)
+            self.inter_core_sync_wait()
             for slave_core_id in slave_core_ids:
                 with new_parallel_thread():
                     self.inter_core_sync_send_msg(slave_core_id)
             self.parallel_merge()
-            self.inter_core_sync_wait()
         else:
             self.inter_core_sync_trigger([master_core_id,])
-            self.inter_core_sync_wait()
             self.inter_core_sync_send_msg(master_core_id)
+            self.inter_core_sync_wait()
 
     #############################################################
     # Variable Management
@@ -217,37 +216,138 @@ class NPUCore(Core):
     #############################################################
     
     @core_command_method
-    def init_container(self, container: DataContainer, shape: tuple[int, ...], dtype: torch.dtype):
-        container.data = torch.zeros(shape, dtype=dtype)
-    
-    @core_command_method
-    def mem_read_with_container(self, handle: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, shape: tuple[int, ...]=(-1,), dtype: torch.dtype=torch.uint8):
-        if isinstance(handle, BufferPointer):
-            handle = handle.resolve(is_read=True)
+    def mem_container_init(self, container: DataContainer, tensor: torch.Tensor=None, shape: tuple[int,...]=None, dtype: torch.dtype=torch.uint8):
+        if isinstance(shape, int):
+            shape = (shape,)
         
-        if size is None:
-            size = handle.size
-            
-        data: torch.Tensor = self.mem_handle.get_content(handle, shape=(-1,), dtype=torch.uint8)[offset:offset+size]
-        container.data = data.view(dtype=dtype).reshape(shape)
+        if tensor is not None:
+            container.data = tensor
+        else:
+            container.data = torch.zeros(shape, dtype=dtype)
 
     @core_command_method
-    def mem_write_with_container(self, handle: BufferPointer | Pointer, container: DataContainer, offset: int=0):
-        if isinstance(handle, BufferPointer):
-            rd_handle = handle.resolve(is_read=True)
-            wr_handle = handle.resolve(is_read=False)
-        else:
-            rd_handle = handle
-            wr_handle = handle
+    def local_mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int]]=None):
+        if isinstance(ptr, BufferPointer):
+            handle = ptr.resolve(is_read=True)
+
+        if size is None:
+            size = handle.size - offset
+        if container.data is None:
+            self.mem_container_init(container, shape=size, dtype=torch.uint8)
+        
+        cont_data: torch.Tensor = container.data.reshape(-1).view(torch.uint8)
+        mem_data: torch.Tensor = self.mem_handle.get_content(handle, shape=(-1,), dtype=torch.uint8)[offset:offset+size].flatten()
+        
+        if copy_layout_pattern is not None:
+            if copy_layout_width is None:
+                raise Exception(f"[ERROR] 'copy_layout_width' must be specified when 'copy_layout_pattern' is given in core {self.core_id}")
             
+            dst_data = cont_data.reshape(-1, copy_layout_width)
+            src_data = mem_data.reshape(-1, copy_layout_width)
+            
+            for dst_idx, src_idx in copy_layout_pattern:
+                dst_data[dst_idx] = src_data[src_idx]
+                        
+            cont_data = dst_data
+        else:
+            cont_data = mem_data
+
+        container.data = cont_data
+        
+    @core_command_method
+    def local_mem_write_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None):
+        if isinstance(ptr, BufferPointer):
+            rd_handle = ptr.resolve(is_read=True)
+            wr_handle = ptr.resolve(is_read=False)
+        else:
+            rd_handle = ptr
+            wr_handle = ptr
+        
         raw_data: torch.Tensor = self.mem_handle.get_content(rd_handle, shape=(-1,), dtype=torch.uint8)
         wr_data:  torch.Tensor = container.data.reshape(-1).view(torch.uint8)
         
+        if size is None:
+            size = rd_handle.size
+        
+        wr_data = wr_data[:size]
+    
         raw_data[offset:offset+wr_data.numel()] = wr_data
         self.mem_handle.set_content(wr_handle, raw_data)
+    
+    @jit_prototype
+    def mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int]]=None):
+        if isinstance(ptr, BufferPointer):
+            handle = ptr.resolve(is_read=True)
+
+        if size is None:
+            size = handle.size - offset
+        
+        buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
+        if not len(buffer_owners) == 1:
+            raise Exception(f"[ERROR] The memory read address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
+        
+        owner_id = buffer_owners[0]
+        
+        if owner_id != self.core_id:
+            mem_read_msg = RPCMessage(
+                src_core_id=self.core_id,
+                dst_core_id=owner_id,
+                cmd_id="local_mem_read_with_container"
+            ).with_args(ptr=ptr, container=container, offset=offset, size=size, copy_layout_width=copy_layout_width, copy_layout_pattern=copy_layout_pattern)
+            
+            noc_read_msg = RPCMessage(
+                self.core_id, 
+                self.cmap_context.icnt_core_id, 
+                cmd_id="noc_create_data_read_transaction"
+            ).with_args(src_id=owner_id, dst_id=self.core_id, data_size=size)
+            
+            self.async_rpc_send_req_msg(mem_read_msg)
+            self.async_rpc_wait_rsp_msg(mem_read_msg)
+            
+            self.async_rpc_send_req_msg(noc_read_msg)
+            self.async_rpc_wait_rsp_msg(noc_read_msg)
+        else:
+            self.local_mem_read_with_container(ptr, container, offset=offset, size=size, copy_layout_width=copy_layout_width, copy_layout_pattern=copy_layout_pattern)
+
+    @jit_prototype
+    def mem_write_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None):            
+        buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
+        if not len(buffer_owners) == 1:
+            raise Exception(f"[ERROR] The memory read address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
+        
+        if size is None:
+            size = ptr.resolve(is_read=False).size - offset
+
+        owner_id = buffer_owners[0]
+        
+        if owner_id != self.core_id:
+            noc_write_msg = RPCMessage(
+                self.core_id, 
+                self.cmap_context.icnt_core_id, 
+                cmd_id="noc_create_data_write_transaction"
+            ).with_args(src_id=self.core_id, dst_id=owner_id, data_size=size)
+            
+            mem_write_msg = RPCMessage(
+                src_core_id=self.core_id,
+                dst_core_id=owner_id,
+                cmd_id="local_mem_write_with_container"
+            ).with_args(ptr=ptr, container=container, offset=offset, size=size)
+            
+            self.async_rpc_send_req_msg(noc_write_msg)
+            self.async_rpc_wait_rsp_msg(noc_write_msg)
+            
+            self.async_rpc_send_req_msg(mem_write_msg)
+            self.async_rpc_wait_rsp_msg(mem_write_msg)
+        else:
+            self.local_mem_write_with_container(ptr, container, offset=offset, size=size)
         
     @core_command_method
-    def local_memcopy_page(self, dst_ref: BufferPointer, src_ref: BufferPointer, page_offset: int=0):
+    def mem_concat_containers(self, dst_cont: DataContainer[torch.Tensor], src_conts: list[DataContainer[torch.Tensor]]):
+        data_list = [cont.data.reshape(-1).view(torch.uint8) for cont in src_conts]
+        dst_cont.data = torch.cat(data_list, dim=0)
+        
+    @core_command_method
+    def local_mem_page_copy(self, dst_ref: BufferPointer, src_ref: BufferPointer, page_offset: int=0):
         dst_handle = dst_ref.resolve(is_read=False)
         src_handle = src_ref.resolve(is_read=True)
         
@@ -266,52 +366,37 @@ class NPUCore(Core):
         content = self.mem_handle.get_content(src_ptr)
         self.mem_handle.set_content(dst_ptr, content)
 
-    def mem_page_copy(self, dst_ref: BufferPointer, src_ref: BufferPointer, page_offset: int=0):
+    @jit_prototype
+    def mem_page_copy(self, dst_ptr: BufferPointer, src_ptr: BufferPointer, page_offset: int=0):
         container = DataContainer()
         
-        if dst_ref.is_circular:
-            dst_owner_id = self.core_id
-            dst_mem_type = "L1"
-        else:
-            dst_ptr = dst_ref.resolve(is_read=False).page_ptrs[page_offset]
-            dst_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, dst_ptr.addr)
-            
-            if   self.cmap_context.config.check_l1_mem_addr(dst_ptr.addr):   dst_mem_type = "L1"
-            elif self.cmap_context.config.check_main_mem_addr(dst_ptr.addr): dst_mem_type = "MAIN"
-            else: raise Exception(f"[ERROR] Invalid destination memory address {dst_ptr.addr} in core {self.core_id}")
-            
-        if src_ref.is_circular:
-            src_owner_id = self.core_id
-            src_mem_type = "L1"
-        else:
-            src_ptr = src_ref.resolve(is_read=True).page_ptrs[page_offset]
-            src_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, src_ptr.addr)
-            
-            if   self.cmap_context.config.check_l1_mem_addr(src_ptr.addr):   src_mem_type = "L1"
-            elif self.cmap_context.config.check_main_mem_addr(src_ptr.addr): src_mem_type = "MAIN"
-            else: raise Exception(f"[ERROR] Invalid source memory address {src_ptr.addr} in core {self.core_id}")
+        dst_page_ptr = dst_ptr.resolve(is_read=False).page_ptrs[page_offset]
+        dst_page_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, dst_page_ptr.addr)
         
-        if src_owner_id == dst_owner_id == self.core_id:
-            self.local_memcopy_page(dst_ref, src_ref, page_offset=page_offset)
-        else:
-            if dst_mem_type == "L1":
-                dst_write_msg = RPCMessage(self.core_id, dst_owner_id, cmd_id="mem_write_with_container").with_args(handle=dst_ref[page_offset], container=container, offset=0)
-            elif dst_mem_type == "MAIN":
-                dst_write_msg = RPCMessage(self.core_id, dst_owner_id, cmd_id="mem_page_write").with_args(ptr=dst_ref[page_offset], container=container)
+        src_page_ptr = src_ptr.resolve(is_read=True).page_ptrs[page_offset]
+        src_page_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, src_page_ptr.addr)
         
-            if src_mem_type == "L1":
-                src_read_msg = RPCMessage(self.core_id, src_owner_id, cmd_id="mem_read_with_container").with_args(handle=src_ref[page_offset], container=container, offset=0, size=src_ref.size)
-            elif src_mem_type == "MAIN":
-                src_read_msg = RPCMessage(self.core_id, src_owner_id, cmd_id="mem_page_read").with_args(ptr=src_ref[page_offset], container=container)
+        if src_page_owner_id == dst_page_owner_id == self.core_id:
+            self.local_mem_page_copy(dst_ptr, src_ptr, page_offset=page_offset)
+        else:
+            if self.cmap_context.config.check_l1_mem_addr(dst_page_ptr.addr):
+                dst_write_msg = RPCMessage(self.core_id, dst_page_owner_id, cmd_id="local_mem_write_with_container").with_args(ptr=dst_ptr[page_offset], container=container, offset=0)
+            elif self.cmap_context.config.check_main_mem_addr(dst_page_ptr.addr):
+                dst_write_msg = RPCMessage(self.core_id, dst_page_owner_id, cmd_id="mem_page_write").with_args(ptr=dst_ptr[page_offset], container=container)
+        
+            if self.cmap_context.config.check_l1_mem_addr(src_page_ptr.addr):
+                src_read_msg = RPCMessage(self.core_id, src_page_owner_id, cmd_id="local_mem_read_with_container").with_args(ptr=src_ptr[page_offset], container=container, offset=0, size=src_ptr.size)
+            elif self.cmap_context.config.check_main_mem_addr(src_page_ptr.addr):
+                src_read_msg = RPCMessage(self.core_id, src_page_owner_id, cmd_id="mem_page_read").with_args(ptr=src_ptr[page_offset], container=container)
                 
             noc_transaction_msgs = []
         
-            if self.check_rpc_inbox(self.cmap_context.icnt_core_id):  # check if it is possible to send NOC transaction request (if not, the )
-                if src_owner_id != self.core_id:
-                    noc_read_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_read_transaction").with_args(src_id=src_owner_id, dst_id=self.core_id, data_size=src_ref[page_offset].page_size)
+            if self.check_rpc_inbox(self.cmap_context.icnt_core_id):
+                if src_page_owner_id != self.core_id:
+                    noc_read_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_read_transaction").with_args(src_id=src_page_owner_id, dst_id=self.core_id, data_size=src_ptr[page_offset].page_size)
                     noc_transaction_msgs.append(noc_read_msg)
-                if dst_owner_id != self.core_id:
-                    noc_write_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_write_transaction").with_args(src_id=self.core_id, dst_id=dst_owner_id, data_size=dst_ref[page_offset].page_size)
+                if dst_page_owner_id != self.core_id:
+                    noc_write_msg = RPCMessage(self.core_id, self.cmap_context.icnt_core_id, cmd_id="noc_create_data_write_transaction").with_args(src_id=self.core_id, dst_id=dst_page_owner_id, data_size=dst_ptr[page_offset].page_size)
                     noc_transaction_msgs.append(noc_write_msg)
             
             self.async_rpc_send_req_msg(src_read_msg)
@@ -436,20 +521,20 @@ class NPUCore(Core):
         self.vpu_context.reconfigure_vector_reg_file(vlen=vlen, vdtype=vdtype)
         
     @core_command_method
-    def vpu_load_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1):
+    def vpu_load_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1, offset: int=0):
         if not self.use_functional_model:
             return  # Terminate the command to reduce the simulation time without actual VPU functional unit (do not return anything to make sure that the command is executed only once)
         
         data = data_cont.data.view(self.vpu_context.vdtype).reshape(-1)
         
         for i in range(burst_len):
-            st = i * self.vpu_context.vlen
-            ed = (i + 1) * self.vpu_context.vlen
+            st = offset + i * self.vpu_context.vlen
+            ed = offset + (i + 1) * self.vpu_context.vlen
             vreg_data = data[st:ed]
             self.vpu_context.set_vector_reg(vreg_idx + i, vreg_data)
         
     @core_command_method
-    def vpu_store_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1):
+    def vpu_store_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1, offset: int=0):
         if not self.use_functional_model:
             return  # Terminate the command to reduce the simulation time without actual VPU functional unit (do not return anything to make sure that the command is executed only once)
 
@@ -459,7 +544,11 @@ class NPUCore(Core):
             vreg_data = self.vpu_context.get_vector_reg(vreg_idx + i)
             data.append(vreg_data)
             
-        data_cont.data = torch.cat(data, dim=0)
+        wr_data = torch.cat(data, dim=0).flatten().view(torch.uint8)
+        raw_data: torch.Tensor = data_cont.data.reshape(-1).view(torch.uint8).clone()
+        raw_data[offset:offset + wr_data.numel()] = wr_data
+        
+        data_cont.data = raw_data
 
     @core_command_method
     def vpu_execute(self, opcode: VPUOperator, vreg_a: int, vreg_b: int=None, vreg_dest: int=None, inplace: bool=False, burst_len: int=1):
@@ -488,7 +577,7 @@ class NPUCoreCycleModel(CoreCycleModel):
             return 10  # TODO: Assume that sending a message takes 10 cycles
         return 1
 
-    def local_memcopy_page(self, dst_ref: BufferPointer, src_ref: BufferPointer, page_offset: int=0):
+    def local_mem_page_copy(self, dst_ref: BufferPointer, src_ref: BufferPointer, page_offset: int=0):
         return self.core.mem_context.l1_config.get_cycles(size=src_ref.page_size)
     
     def mxu_tiled_gemm(
@@ -531,10 +620,10 @@ class NPUCoreCycleModel(CoreCycleModel):
                     
         return total_cycles
     
-    def vpu_load_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1):
+    def vpu_load_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1, offset: int=0):
         return burst_len  # TODO: Assume that loading one vector register takes 1 cycle
         
-    def vpu_store_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1):
+    def vpu_store_reg(self, data_cont: DataContainer[torch.Tensor], vreg_idx: int, burst_len: int=1, offset: int=0):
         return burst_len  # TODO: Assume that storing one vector register takes 1 cycle
     
     def vpu_execute(self, opcode: VPUOperator, vreg_a: int, vreg_b: int=None, vreg_dest: int=None, inplace: bool=False, burst_len: int=1):

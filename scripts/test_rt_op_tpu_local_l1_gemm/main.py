@@ -51,8 +51,8 @@ if __name__ == "__main__":
     wgt:  torch.Tensor = torch.arange(0, K * N, dtype=dtype).reshape(K, N)
     bias: torch.Tensor = torch.arange(0, N, dtype=acc_dtype).reshape(1, N).T
     
-    main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, grid_shape=(1, 1), page_shape=(128, 128))
-    l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, grid_shape=(1, 1), page_shape=(128, 128))
+    main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, page_shape=(128, 128))
+    l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(128, 128))
     core_id = device.npu_core_ids[0]
 
     l1_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=[core_id])

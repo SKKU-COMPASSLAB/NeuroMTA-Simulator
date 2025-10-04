@@ -50,13 +50,12 @@ def TPU_RT_LINEAR(
     if buf_bias is not None and buf_bias.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"[ERROR] Bias buffer must be allocated in L1 memory.")
     
-    k_tile_num = buf_ifm.y_shard_grid * buf_ifm.y_page_num_per_shard
-    m_tile_num = buf_ifm.x_shard_grid * buf_ifm.x_page_num_per_shard
-    n_tile_num = buf_wgt.x_shard_grid * buf_wgt.x_page_num_per_shard
+    k_tile_num = buf_ifm.y_n_pages
+    m_tile_num = buf_ifm.x_n_pages
+    n_tile_num = buf_wgt.x_n_pages
     
     ofm_layout = MCA_TensorMemoryLayout(
         mem_type=MCA_TensorMemoryType.L1,
-        grid_shape=(1, 1),
         page_shape=(buf_ifm.layout.y_page_size, buf_ifm.layout.x_page_size),
     )
     

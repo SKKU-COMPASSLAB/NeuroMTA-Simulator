@@ -49,11 +49,14 @@ if __name__ == "__main__":
 
     core_grid = device.get_npu_core_grid(offset=(0, 0), shape=(4, 4))
 
-    ifm:  torch.Tensor = torch.arange(0, M * K, dtype=dtype).reshape(M, K)
-    wgt:  torch.Tensor = torch.arange(0, K * N, dtype=dtype).reshape(K, N).T  # (N, K)
-    bias: torch.Tensor = torch.arange(0, N, dtype=acc_dtype).flatten()
-    ofm:  torch.Tensor = torch.zeros((M, N), dtype=acc_dtype)
-    
+    ifm:  torch.Tensor = torch.randint(-32, 32, (M * K,)).to(dtype=dtype).reshape(M, K)
+    wgt:  torch.Tensor = torch.randint(-32, 32, (K * N,)).to(dtype=dtype).reshape(K, N).T  # (N, K)
+    bias: torch.Tensor = torch.randint(-32, 32, (N,)).to(dtype=acc_dtype).flatten()
+
+    # ifm = ifm - 0.5
+    # wgt = wgt - 0.5
+    # bias = bias - 0.5
+
     main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, page_shape=(32, 32))
     l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
     core_ids = core_grid.core_ids
@@ -77,6 +80,10 @@ if __name__ == "__main__":
         buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum,
         dtype=dtype, acc_dtype=acc_dtype,
     )
+    
+    MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
+    
+    l1_buf_ofm = TT_RT_RELU(device, core_grid, l1_buf_ofm, inplace=True)  # TODO: is this layer fusion??
     
     MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
     
@@ -128,22 +135,15 @@ if __name__ == "__main__":
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
     
-    reference = torch.matmul(ifm.to(dtype=acc_dtype), wgt.T.to(dtype=acc_dtype)) + bias
+    linear_ref = torch.matmul(ifm.to(dtype=acc_dtype), wgt.T.to(dtype=acc_dtype)) + bias
     simulated = main_buf_ofm.restore()
-
-    print(f"\n=== REFERENCE ===\n{reference}")
-    print(f"\n=== SIMULATED ===\n{simulated}")
-    print(f"\nnumber of mismatched elements: {torch.sum(reference != simulated)} / {torch.numel(reference)}")
-    print(f"simulation terminated with valid result: {torch.allclose(reference, simulated)}")
     
-    for core_id, core in device.cores.items():
-        if isinstance(core, NPUCore) and (not core.is_idle):
-            print(f"\n=== NPUCore {core_id} RUNNING CONTEXT (EXCEPTION CAUSED BY PRETERMINATION)")
-            for slot_id, kernel in core._dispatched_main_kernels.items():
-                print(f"Slot {slot_id}: {kernel.callstack}")
-                for cmd in kernel.recursive_current_commands(core):
-                    print(f"  - {cmd}")
-            for slot_id, kernel in core._dispatched_rpc_kernels.items():
-                print(f"Slot {slot_id}: {kernel.callstack}")
-                for cmd in kernel.recursive_current_commands(core):
-                    print(f"  - {cmd}")
+    n_neg_vals_linear_ref = (linear_ref < 0).sum().item()
+    n_neg_vals_simulated = (simulated < 0).sum().item()
+    
+    linear_ref = torch.nn.functional.relu(linear_ref)
+    
+    print(f"\nnumber of negative values in linear output: {n_neg_vals_linear_ref}")
+    print(f"number of negative values in simulated output: {n_neg_vals_simulated}")
+    print(f"simulation terminated with valid result: {n_neg_vals_simulated == 0}")
+    print(f"simulation terminated with valid result: {torch.allclose(linear_ref, simulated, atol=1e-2)}")

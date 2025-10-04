@@ -136,7 +136,13 @@ def get_global_current_parent_kernel_callstack() -> tuple[GlobalContextMode, 'Co
 def jit_prototype(_func: Callable):
     @functools.wraps(_func)
     def __jit_prototype_wrapper(*_args, **_kwargs) -> KernelPrototype:
-        return KernelPrototype(func=_func, args=_args, kwargs=_kwargs)
+        prototype = KernelPrototype(func=_func, args=_args, kwargs=_kwargs)
+
+        if get_global_context_mode() == GlobalContextMode.COMPILE:  # the jit prototype is called inside another kernel function
+            kernel_context = get_global_kernel_context()
+            kernel_context.add_execution_step(prototype)
+        
+        return prototype
     return __jit_prototype_wrapper
 
 def core_command_method(_func: Callable):
@@ -305,7 +311,7 @@ class Command:
             if self._cached_cycle is None:
                 self._cached_cycle = 1
             
-            self._cached_cycle = max(1, self._cached_cycle)  # ensure at least 1 cycle
+            self._cached_cycle = max(0, self._cached_cycle)  # ensure at least 1 cycle
 
         return max(0, self._cached_cycle - self._cached_cycle_slack)
 
@@ -439,7 +445,7 @@ class Kernel:
         self.kernel_id = kernel_id
         self.root_kernel: Kernel = None
         
-        self._execution_steps: list[Command | ThreadGroup] = []
+        self._execution_steps: list[Command | ThreadGroup | KernelPrototype] = []
         self._execution_cursor: int = 0
         
     def __enter__(self):
@@ -457,7 +463,7 @@ class Kernel:
         
         restore_global_parent_kernel_callstack()
         
-    def add_execution_step(self, step: Command | ThreadGroup):
+    def add_execution_step(self, step: Command | ThreadGroup | KernelPrototype):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception(f"[ERROR] Cannot add execution step '{step}' to the kernel '{self.kernel_id}' since it is not in compile mode")
         if isinstance(step, Kernel):
@@ -486,17 +492,26 @@ class Kernel:
         return parallel_kernel
         
     def get_remaining_cycles(self, core: 'Core') -> int:
-        if self.is_finished(core):
-            return None
+        cycle = None
         
-        step = self.current_step(core)
+        while not self.is_finished(core):        
+            step = self.current_step(core)
 
-        if isinstance(step, ConditionalCommand):
-            return step.get_remaining_cycles(core, kernel=self)
-        elif isinstance(step, Command):
-            return step.get_remaining_cycles(core, kernel=self)
-        else:
-            return step.get_remaining_cycles(core=core)
+            if isinstance(step, ConditionalCommand):
+                cycle = step.get_remaining_cycles(core, kernel=self)
+            elif isinstance(step, Command):
+                cycle = step.get_remaining_cycles(core, kernel=self)
+            else:
+                cycle = step.get_remaining_cycles(core=core)
+                
+            if cycle is None:
+                break
+            if cycle == 0:
+                self.update_cycle_time(core, cycle_time=0)
+            else:
+                break
+            
+        return cycle
 
     def update_cycle_time(self, core: 'Core', cycle_time: int):
         if self.is_finished(core):
@@ -516,6 +531,11 @@ class Kernel:
     def current_step(self, core: 'Core') -> 'Command | ThreadGroup':
         if self.is_finished(core):
             return None
+        
+        if isinstance(self._execution_steps[self._execution_cursor], KernelPrototype):
+            kernel_step = self._execution_steps[self._execution_cursor].compile()
+            kernel_step.root_kernel = self
+            self._execution_steps[self._execution_cursor] = kernel_step
         
         return self._execution_steps[self._execution_cursor]
     
@@ -772,7 +792,10 @@ class Core:
                 
     @core_command_method
     def debug_core_with_ambiguous_func(self, func: Callable, *args, **kwargs):
-        return func(*args, **kwargs)
+        if isinstance(func, str):
+            logger.debug(f"{func} args: {args} kwargs: {kwargs}")
+        else:
+            func(*args, **kwargs)
     
     ###########################################################################
     # Cycle / Behavioral Model

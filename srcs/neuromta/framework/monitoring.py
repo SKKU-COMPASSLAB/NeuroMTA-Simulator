@@ -31,9 +31,13 @@ class ProgressBarHandle:
         header = f"{self.desc} [{self._cached_progress_kernel_num:<3d}/{self._cached_total_kernel_num:<3d}] {percentage:6.2f}% |"
         tail   = "|  "
         
-        bar_width = max(10, self.ncols - len(header) - len(tail) - 1)
-        filled_len = int(round(bar_width * percentage / 100))
-        bar = '█' * filled_len + ' ' * (bar_width - filled_len)
+        bar_width = max(10, self.ncols - len(header) - len(tail))
+        
+        if self._cached_total_kernel_num > 0:
+            filled_len = int(round(bar_width * percentage / 100))
+            bar = '█' * filled_len + ' ' * (bar_width - filled_len)
+        else:
+            bar = _LOG_LEVEL_COLORS[LogLevel.INFO] + "IDLE".center(bar_width, '-') + _COLOR_RESET
         
         sys.stdout.write(f"{header}{bar}{tail}")
         
@@ -54,6 +58,7 @@ class ProgressBarHandle:
     def bind_core(self, core: Core):
         self._binded_core = core
         self._hook_id = core.register_kernel_debug_hook(self._update_pbar_kernel_status)
+        self._update_pbar_kernel_status(core=core)  # initial update
         
     def unbind_core(self):
         if self._hook_id is not None and self._binded_core is not None:
@@ -63,7 +68,7 @@ class ProgressBarHandle:
             self._binded_core = None
             self._cached_total_kernel_num = None
     
-    def _update_pbar_kernel_status(self, core: Core, kernel: Kernel, issue_time: int=None, commit_time: int=None):
+    def _update_pbar_kernel_status(self, core: Core, kernel: Kernel=None, issue_time: int=None, commit_time: int=None):
         if core.is_idle:
             self._cached_total_kernel_num = 0
             self._cached_progress_kernel_num = 0

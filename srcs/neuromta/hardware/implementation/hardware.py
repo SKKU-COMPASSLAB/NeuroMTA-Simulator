@@ -304,5 +304,8 @@ class MTA_DeviceBase(MCA_DeviceBase):
 
         mem_handles = [self.get_l1_mem_handle(core_id=core_id) for core_id in core_ids]
         ptr = create_distributed_buffer(mem_handles=mem_handles, page_size=page_size, n_pages=n_pages, contiguous_n_pages=contiguous_n_pages)
+        
+        if ptr is None:
+            logger.info(f"Unable to locate distributed buffer with page_size={page_size}, n_pages={n_pages}, contiguous_n_pages={contiguous_n_pages} on cores {core_ids}.")
 
         return ptr

@@ -41,9 +41,9 @@ if __name__ == "__main__":
     device.initialize()
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
-    M = 512
-    N = 512
-    K = 512
+    M = 4
+    N = 384
+    K = 508
     dtype = torch.int8
     acc_dtype = torch.int32
 
@@ -51,8 +51,8 @@ if __name__ == "__main__":
     wgt:  torch.Tensor = torch.arange(0, K * N, dtype=dtype).reshape(K, N)
     bias: torch.Tensor = torch.arange(0, N, dtype=acc_dtype).reshape(1, N).T
     
-    main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, grid_shape=(1, 1), page_shape=(128, 128))
-    l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, grid_shape=(1, 1), page_shape=(128, 128))
+    main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, page_shape=(128, 128))
+    l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(128, 128))
     core_id = device.npu_core_ids[0]
 
     main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device)

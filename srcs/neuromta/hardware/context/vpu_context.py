@@ -1,4 +1,5 @@
 import enum
+import math
 import torch
 
 from neuromta.framework.parser_utils import parse_mem_cap_str
@@ -92,7 +93,11 @@ class VPUContext:
             
         self._vdtype    = vdtype
         self._vlen      = vlen
-        self._n_vregs   = self._physical_vreg_len // (self._vlen * self._vdtype.itemsize) * self._physical_vreg_num
+        # self._n_vregs   = self._physical_vreg_len // (self._vlen * self._vdtype.itemsize) * self._physical_vreg_num
+        self._n_vregs   = self.get_vreg_num_with_config(vlen=vlen, vdtype=vdtype)
+        
+        if self._n_vregs <= 0:
+            raise Exception(f"[ERROR] Invalid vector register configuration (vlen={vlen}, vdtype={vdtype}).")
         
         self._vreg_view = self._physical_vrf.view(dtype=self._vdtype).reshape(self._n_vregs, self._vlen)
         
@@ -142,7 +147,12 @@ class VPUContext:
         elif opcode == VPUOperator.DIV:
             self._vreg_view[vreg_dest, :] = self._vreg_view[vreg_a, :] / self._vreg_view[vreg_b, :]
         elif opcode == VPUOperator.RELU:
-            torch.maximum(self._vreg_view[vreg_a, :], 0, out=self._vreg_view[vreg_dest, :])
+            torch.maximum(self._vreg_view[vreg_a, :], torch.zeros_like(self._vreg_view[vreg_a, :]), out=self._vreg_view[vreg_dest, :])
+            
+    def get_vreg_num_with_config(self, vlen: int, vdtype: torch.dtype) -> int:
+        if isinstance(vdtype, str):
+            vdtype = torch.dtype(vdtype)
+        return math.floor(self._physical_vreg_len / (vlen * vdtype.itemsize) * self._physical_vreg_num)
 
     @property
     def vdtype(self) -> torch.dtype:

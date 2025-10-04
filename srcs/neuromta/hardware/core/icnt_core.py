@@ -30,7 +30,7 @@ class IcntCore(Core):
     @property
     def is_booksim2_enabled(self) -> bool:
         return PYBOOKSIM2_AVAILABLE and self.icnt_context.booksim2_enable
-
+    
     def noc_create_data_read_transaction(self, src_id: int, dst_id: int, data_size: int):
         if self.is_booksim2_enabled:
             n_flits = math.ceil(data_size / self.icnt_context.flit_size)
@@ -65,7 +65,7 @@ class IcntCore(Core):
             
         else:
             self._static_noc_create_data_read_transaction(src_id, src_id, data_size)
-            
+          
     def noc_create_data_write_transaction(self, src_id: int, dst_id: int, data_size: int):
         if self.is_booksim2_enabled:
             n_flits = math.ceil(data_size / self.icnt_context.flit_size)
