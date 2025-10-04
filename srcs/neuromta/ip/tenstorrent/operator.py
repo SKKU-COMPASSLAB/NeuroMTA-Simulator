@@ -13,6 +13,7 @@ __all__ = [
     "TT_RT_LINEAR",
     "TT_RT_RELU",
     "TT_RT_CONV2D",
+    "TT_RT_MAXPOOL2D",
 ]
     
     
@@ -122,7 +123,6 @@ def TT_RT_CONV2D(
     
     dtype:      torch.dtype = torch.float32,
     acc_dtype:  torch.dtype = torch.float32,
-    cb_n_pages: int         = 8, 
 ) -> MCA_TensorBuffer:
     N, H, W, C   = buf_ifm.tensor_shape
     FH, FW, K, C = buf_wgt.tensor_shape
@@ -191,6 +191,88 @@ def TT_RT_CONV2D(
                         oh_it = oh_it,
                         ow_tile_it = ow_tile_it,
                         k_tile_it = k_tile_it,
+
+                        dtype = dtype,
+                        acc_dtype = acc_dtype,
+                    )
+                    
+                    ofm_tile_cnt += 1
+                
+    return buf_ofm
+
+@MCA_RT_OPERATOR
+def TT_RT_MAXPOOL2D(
+    device: TenstorrentDevice, 
+    core_grid: MTA_CoreGrid,
+    
+    buf_ifm:  MCA_TensorBuffer,
+    
+    kernel:    tuple[int, int] = (2, 2),
+    stride:    tuple[int, int] = (1, 1),
+    padding:   tuple[int, int] = (0, 0),
+    dilation:  tuple[int, int] = (1, 1),
+    
+    dtype:      torch.dtype = torch.float32,
+    acc_dtype:  torch.dtype = torch.float32,
+) -> MCA_TensorBuffer:
+    N, H, W, C   = buf_ifm.tensor_shape
+    FH, FW = kernel
+    SH, SW = stride
+    PH, PW = padding
+    DH, DW = dilation
+    
+    if buf_ifm.layout.mem_type == MCA_TensorMemoryType.MAIN:
+        raise Exception(f"[ERROR] Input feature map buffer must be allocated in L1 memory.")
+    
+    OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
+    OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
+
+    buf_ofm = MCA_TensorBuffer(shape=(N, OH, OW, C), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
+
+    ow_tile_size = buf_ofm.layout.y_page_size
+    w_tile_size  = buf_ifm.layout.y_page_size
+    c_tile_size  = buf_ifm.layout.x_page_size
+
+    buf_ofm_n_pages = buf_ofm.n_pages
+    n_ofm_pages_per_core = math.ceil(buf_ofm_n_pages / len(core_grid.core_ids))
+
+    w_tile_num  = math.ceil(W  / w_tile_size)
+    ow_tile_num = math.ceil(OW / ow_tile_size)
+    c_tile_num  = math.ceil(C  / c_tile_size)
+    
+    ofm_tile_cnt = 0
+    
+    for n_it in range(N):  # batch dimension
+        for oh_it in range(OH):  # output height dimension
+            for ow_tile_it in range(ow_tile_num):  # output width tile dimension
+                for c_tile_it in range(c_tile_num):
+                    core_idx = ofm_tile_cnt // n_ofm_pages_per_core
+                    core_id  = core_grid.core_ids[core_idx]
+                    
+                    TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
+                        core = device.get_core_from_id(core_id=core_id),
+            
+                        buf_ifm = buf_ifm.reference,
+                        buf_ofm = buf_ofm.reference,
+                        
+                        ifm_shape = buf_ifm.buffer_shape,  # NOTE: use buffer_shape instead of tensor_shape to consider padding applied to the rows and columns MCA_TensorBuffer
+                        kernel_shape = (FH, FW),
+                        pad_shape = (PH, PW),
+                        stride_shape = (SH, SW),
+                        dilation_shape = (DH, DW),
+                        
+                        ow_tile_num = ow_tile_num,
+                        w_tile_num  = w_tile_num,
+                        c_tile_num  = c_tile_num,
+                        
+                        ow_tile_size = ow_tile_size,
+                        w_tile_size  = w_tile_size,
+                        c_tile_size  = c_tile_size,
+                        
+                        n_it = n_it,
+                        oh_it = oh_it,
+                        ow_tile_it = ow_tile_it,
+                        c_tile_it = c_tile_it,
 
                         dtype = dtype,
                         acc_dtype = acc_dtype,

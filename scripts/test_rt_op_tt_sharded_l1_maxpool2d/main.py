@@ -38,49 +38,41 @@ if __name__ == "__main__":
     config = TenstorrentConfig.BLACKHOLE()
 
     device = TenstorrentDevice(**config)
-    device.initialize()
+    device.initialize(print_command_debug_msg=True)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
-    M = 512
-    N = 512
-    K = 512
-    dtype = torch.int8
+    N, H, W, C = 4, 36, 36, 28
+    FH, FW = 2, 2
+    SH, SW = 2, 2
+    PH, PW = 0, 0
+    DH, DW = 1, 1
+    dtype = torch.int32
     acc_dtype = torch.int32
 
     core_grid = device.get_npu_core_grid(offset=(0, 0), shape=(4, 4))
 
-    ifm:  torch.Tensor = torch.arange(0, M * K, dtype=dtype).reshape(M, K)
-    wgt:  torch.Tensor = torch.arange(0, K * N, dtype=dtype).reshape(K, N).T  # (N, K)
-    bias: torch.Tensor = torch.arange(0, N, dtype=acc_dtype).flatten()
-    ofm:  torch.Tensor = torch.zeros((M, N), dtype=acc_dtype)
+    ifm:  torch.Tensor = torch.randint(0, 16, (N * H * W * C,)).to(dtype=dtype).reshape(N, H, W, C)
     
-    main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, page_shape=(32, 32))
-    l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
+    layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
     core_ids = core_grid.core_ids
 
-    main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device)
-    main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device)
-    main_buf_psum = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device)
+    buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=layout, device=device, core_ids=core_ids)
+    buf_ifm.update(ifm)
 
-    main_buf_ifm.update(ifm)
-    main_buf_wgt.update(wgt)
-    main_buf_psum.update(bias)
-    
-    l1_buf_ifm  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_ifm,  l1_layout=l1_layout)
-    l1_buf_wgt  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_wgt,  l1_layout=l1_layout)
-    l1_buf_psum = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_psum, l1_layout=l1_layout.overrides(page_shape=(1, 32)))
-    
-    MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
-
-    l1_buf_ofm = TT_RT_LINEAR(
-        device=device, core_grid=core_grid,
-        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum,
-        dtype=dtype, acc_dtype=acc_dtype,
+    buf_ofm = TT_RT_MAXPOOL2D(
+        device = device,
+        core_grid = core_grid,
+        
+        buf_ifm = buf_ifm,
+        
+        kernel = (FH, FW),
+        stride = (SH, SW),
+        padding = (PH, PW),
+        dilation = (DH, DW),
+        
+        dtype = dtype,
+        acc_dtype = acc_dtype,
     )
-    
-    MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
-    
-    main_buf_ofm = TT_RT_DMA_STORE(device, core_grid, l1_buf=l1_buf_ofm, main_layout=main_layout)
     
     
     tracer_hub = TracerHub()
@@ -98,7 +90,7 @@ if __name__ == "__main__":
             
     icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
     main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
-    
+
     with MonitoringWindow() as monitor:
         for core_id in core_grid.core_ids:
             core = device.get_npu_core(core_id=core_id)
@@ -108,7 +100,7 @@ if __name__ == "__main__":
         st = time.time()
         device.run_kernels()
         ed = time.time()
-        
+    
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
     icnt_core_tracer.save_traces(ICNT_CORE_TRACE_FNAME)
@@ -127,15 +119,21 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"failed to visualize the bandwidth utilization graph: {e}")
 
-
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
     
-    reference = torch.matmul(ifm.to(dtype=acc_dtype), wgt.T.to(dtype=acc_dtype)) + bias
-    simulated = main_buf_ofm.restore()
+    reference = torch.max_pool2d(
+        input = ifm.permute(0, 3, 1, 2).to(dtype=acc_dtype),
+        kernel_size = (FH, FW),
+        stride = (SH, SW),
+        padding = (PH, PW),
+        dilation = (DH, DW),
+    ).permute(0, 2, 3, 1)
+    
+    simulated = buf_ofm.restore()
 
-    print(f"\n=== REFERENCE ===\n{reference}")
-    print(f"\n=== SIMULATED ===\n{simulated}")
+    print(f"\n=== REFERENCE ===\n{reference.reshape(-1, C)}")
+    print(f"\n=== SIMULATED ===\n{simulated.reshape(-1, C)}")
     print(f"\nnumber of mismatched elements: {torch.sum(reference != simulated)} / {torch.numel(reference)}")
     print(f"simulation terminated with valid result: {torch.allclose(reference, simulated)}")
     
@@ -143,10 +141,6 @@ if __name__ == "__main__":
         if isinstance(core, NPUCore) and (not core.is_idle):
             print(f"\n=== NPUCore {core_id} RUNNING CONTEXT (EXCEPTION CAUSED BY PRETERMINATION)")
             for slot_id, kernel in core._dispatched_main_kernels.items():
-                print(f"Slot {slot_id}: {kernel.callstack}")
-                for cmd in kernel.recursive_current_commands(core):
-                    print(f"  - {cmd}")
-            for slot_id, kernel in core._dispatched_rpc_kernels.items():
                 print(f"Slot {slot_id}: {kernel.callstack}")
                 for cmd in kernel.recursive_current_commands(core):
                     print(f"  - {cmd}")

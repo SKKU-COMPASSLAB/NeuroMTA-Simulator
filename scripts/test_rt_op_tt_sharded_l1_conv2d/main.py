@@ -81,7 +81,6 @@ if __name__ == "__main__":
         
         dtype = dtype,
         acc_dtype = acc_dtype,
-        cb_n_pages = 8,
     )
     
     
@@ -118,13 +117,16 @@ if __name__ == "__main__":
     main_mem_core_tracer.save_traces(MAIN_MEM_CORE_TRACE_FNAME)
     main_mem_core_tracer.save_bandwidth_analysis(MAIN_MEM_CORE_BW_ANALYSIS_FNAME, bin_size=1)
     
-    if visualizer_enabled:
-        visualize_bandwidth_utilization_graph(
-            PROFILE_DIR,
-            ICNT_CORE_TRACE_FNAME,
-            MAIN_MEM_CORE_TRACE_FNAME,
-            IMG_SAVE_FNAME
-        )
+    try:
+        if visualizer_enabled:
+            visualize_bandwidth_utilization_graph(
+                PROFILE_DIR,
+                ICNT_CORE_TRACE_FNAME,
+                MAIN_MEM_CORE_TRACE_FNAME,
+                IMG_SAVE_FNAME
+            )
+    except Exception as e:
+        logger.warning(f"failed to visualize the bandwidth utilization graph: {e}")
 
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

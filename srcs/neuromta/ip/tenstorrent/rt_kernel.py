@@ -9,6 +9,7 @@ from neuromta.ip.tenstorrent.architecture import *
 __all__ = [
     "TT_RT_KERNEL_TILED_LINEAR_BURST_K",
     "TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C",
+    "TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C",
     "TT_RT_KERNEL_TILED_RELU",
 ]
 
@@ -161,6 +162,98 @@ def TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
                 )
     
     core.mem_write_with_container(buf_ofm[ofm_page_idx], containers[3])
+    
+    
+@MCA_RT_KERNEL
+def TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
+    core: NPUCore,
+    
+    buf_ifm:  BufferPointer,            # memory layout: ROW_MAJOR_REFERENCE / shape=(N*H*W, C)
+    buf_ofm:  BufferPointer,            # memory layout: ROW_MAJOR_REFERENCE / shape=(N*OH*OW, K)
+    
+    ifm_shape: tuple[int, int, int, int],   # (N, H, W, C)
+    kernel_shape: tuple[int, int],          # (FH, FW)
+    pad_shape: tuple[int, int],             # (PH, PW)
+    stride_shape: tuple[int, int],          # (SH, SW)
+    dilation_shape: tuple[int, int],        # (DH, DW)
+    
+    ow_tile_num: int,
+    w_tile_num: int,
+    c_tile_num: int,
+    
+    ow_tile_size: int,
+    w_tile_size: int,
+    c_tile_size: int,
+    
+    n_it: int,
+    oh_it: int,
+    ow_tile_it: int,
+    c_tile_it: int,
+
+    dtype: torch.dtype,
+    acc_dtype: torch.dtype,
+):
+    _, H, W, _ = ifm_shape
+    FH, FW = kernel_shape
+    PH, PW = pad_shape
+    SH, SW = stride_shape
+    DH, DW = dilation_shape
+    
+    OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
+    OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
+
+    ofm_page_idx = (n_it * OH * ow_tile_num * c_tile_num) + (oh_it * ow_tile_num * c_tile_num) + (ow_tile_it * c_tile_num) + c_tile_it
+
+    fh_min = max(0,  math.ceil((PH - oh_it) / DH))
+    fh_max = min(FH, math.ceil((H + PH - oh_it) / DH))
+        
+    containers = [DataContainer() for _ in range(3)]
+        
+    core.mxu_reconfigure(dtype=dtype, acc_dtype=acc_dtype)
+    
+    core.mem_container_init(containers[1], shape=(ow_tile_size, c_tile_size), dtype=dtype)
+    
+    for fh_it in range(fh_min, fh_max, 1):
+        for fw_it in range(FW):
+            h_it = (SH * oh_it) + (DH * fh_it) - PH
+
+            core.mem_container_init(containers[0], shape=(ow_tile_size, c_tile_size), dtype=dtype)                    
+            copy_layout_pattern: dict[int, list[tuple[int, int]]] = {}
+            
+            for ow_intra_tile_it in range(ow_tile_size):
+                ow_it = ow_tile_it * ow_tile_size + ow_intra_tile_it
+                w_it = (SW * ow_it) + (DW * fw_it) - PW
+                w_tile_it = w_it // w_tile_size
+                
+                ifm_page_idx = (n_it * H * w_tile_num * c_tile_num) + (h_it * w_tile_num * c_tile_num) + (w_tile_it * c_tile_num) + c_tile_it
+                    
+                if 0 <= h_it < H and 0 <= w_it < W:
+                    if ifm_page_idx not in copy_layout_pattern.keys():
+                        copy_layout_pattern[ifm_page_idx] = []
+                    
+                    dst_seg_id = ow_intra_tile_it
+                    src_seg_id = (w_it % w_tile_size)
+                    
+                    copy_layout_pattern[ifm_page_idx].append((dst_seg_id, src_seg_id))
+                    
+            for ifm_page_idx, pattern in copy_layout_pattern.items():
+                core.mem_read_with_container(
+                    buf_ifm[ifm_page_idx], 
+                    containers[0], 
+                    copy_layout_width=c_tile_size * dtype.itemsize,
+                    copy_layout_pattern=pattern,
+                )
+            
+            preload_psum = (fh_it == fh_min and fw_it == 0 and c_tile_it == 0)
+            flush_ofm    = (fh_it == (fh_max - 1) and fw_it == (FW - 1) and c_tile_it == (c_tile_num - 1))
+            
+            core.mxu_tiled_maxpool(
+                *containers,
+                preload_psum=preload_psum,
+                flush_ofm=flush_ofm,
+            )
+    
+    core.mem_write_with_container(buf_ofm[ofm_page_idx], containers[2])
                     
     
 @MCA_RT_KERNEL

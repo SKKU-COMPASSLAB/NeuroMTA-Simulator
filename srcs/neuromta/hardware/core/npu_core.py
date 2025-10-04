@@ -511,7 +511,57 @@ class NPUCore(Core):
                 ofm_tile = ofm_tile.T
             
             ofm_cont.data = ofm_tile
+            
+    @core_command_method
+    def mxu_tiled_maxpool(
+        self, 
+        
+        ifm_cont:  DataContainer[torch.Tensor],
+        psum_cont: DataContainer[torch.Tensor],
+        ofm_cont:  DataContainer[torch.Tensor],
+        
+        preload_psum:  bool=False,
+        flush_ofm:     bool=False,
+        
+        ifm_transposed: bool=False,
+    ):  
+        if not self.use_functional_model:
+            return  # Terminate the command to reduce the simulation time without actual MXU functional unit (do not return anything to make sure that the command is executed only once)
+        
+        if preload_psum:
+            if self.mxu_context.dataflow == MXUDataflow.OS:
+                if psum_cont.data is None:
+                    psum_tile = torch.zeros(self.mxu_context.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
+                else:
+                    psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ofm_tile_shape)
+                
+                self.mxu_context.load_tile_pe_arr(psum_tile)
+            elif self.mxu_context.dataflow == MXUDataflow.WS:
+                raise Exception(f"[ERROR] PSUM preload is not supported in WS dataflow") 
+        
+        if self.mxu_context.dataflow == MXUDataflow.OS:
+            ifm_tile = ifm_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ofm_tile_shape)
+            if ifm_transposed: ifm_tile = ifm_tile.T
+            self.mxu_context.execute_maxpool(ifm_tile=ifm_tile)
+        elif self.mxu_context.dataflow == MXUDataflow.WS:
+            ifm_tile = ifm_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ofm_tile_shape)
+            if ifm_transposed: ifm_tile = ifm_tile.T
+            
+            if psum_cont.data is None:
+                psum_tile = torch.zeros(self.mxu_context.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
+            else:
+                psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ofm_tile_shape)
+                    
+            self.mxu_context.execute_maxpool(ifm_tile=ifm_tile, psum_tile=psum_tile)
+        
+        if flush_ofm:
+            if self.mxu_context.dataflow == MXUDataflow.OS:
+                ofm_tile = self.mxu_context.get_pe_arr_regs()   
+            elif self.mxu_context.dataflow == MXUDataflow.WS:
+                ofm_tile = self.mxu_context.get_acc_regs()
 
+            ofm_cont.data = ofm_tile
+            
     #############################################################
     # VPU Commands
     #############################################################
@@ -609,6 +659,37 @@ class NPUCoreCycleModel(CoreCycleModel):
                 raise Exception("[ERROR] WGT preload is not supported in OS dataflow.")
             elif self.core.mxu_context.dataflow == MXUDataflow.WS:
                 total_cycles += self.core.mxu_context.get_preload_pe_arr_cycles()
+                
+        total_cycles += self.core.mxu_context.get_execute_cycles()
+
+        if flush_ofm:
+            if self.core.mxu_context.dataflow == MXUDataflow.OS:
+                total_cycles += self.core.mxu_context.get_flush_pe_arr_cycles()
+            elif self.core.mxu_context.dataflow == MXUDataflow.WS:
+                total_cycles += self.core.mxu_context.get_flush_acc_regs_cycles()
+                    
+        return total_cycles
+    
+    def mxu_tiled_maxpool(
+        self, 
+        
+        ifm_cont:  DataContainer[torch.Tensor],
+        psum_cont: DataContainer[torch.Tensor],
+        ofm_cont:  DataContainer[torch.Tensor],
+        
+        preload_psum:  bool=False,
+        flush_ofm:     bool=False,
+        
+        ifm_transposed: bool=False,
+        psum_vectored:  bool=False,
+    ):  
+        total_cycles = 0
+        
+        if preload_psum:
+            if self.core.mxu_context.dataflow == MXUDataflow.OS:
+                total_cycles += self.core.mxu_context.get_preload_pe_arr_cycles()
+            elif self.core.mxu_context.dataflow == MXUDataflow.WS:
+                raise Exception(f"[ERROR] PSUM preload is not supported in WS dataflow")
                 
         total_cycles += self.core.mxu_context.get_execute_cycles()
 

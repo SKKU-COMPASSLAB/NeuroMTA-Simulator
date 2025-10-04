@@ -81,7 +81,6 @@ if __name__ == "__main__":
         
         dtype = dtype,
         acc_dtype = acc_dtype,
-        cb_n_pages = 8,
     )
 
     with MonitoringWindow() as monitor:

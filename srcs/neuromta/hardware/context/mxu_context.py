@@ -135,14 +135,23 @@ class MXUContext:
         else:
             raise Exception(f"[ERROR] Unsupported MXU dataflow: {self._dataflow}.")
         
-    def flush_pe_arr(self):
-        self._pe_arr_regs = torch.zeros((self.pe_arr_height, self.pe_arr_width), dtype=self._acc_dtype)
-
-    def flush_acc_regs(self) -> torch.Tensor:
-        if self._acc_regs is None:
-            raise Exception("[ERROR] Accumulator registers are not available in this dataflow.")
-
-        self._acc_regs = torch.zeros((self.seq_len, self.pe_arr_width), dtype=self._acc_dtype)
+    def execute_maxpool(self, ifm_tile: torch.Tensor, psum_tile: torch.Tensor=None) -> torch.Tensor:
+        if self._dataflow == MXUDataflow.OS:
+            if psum_tile is not None:
+                raise Exception("[ERROR] PSUM tile must not be provided for OS dataflow.")
+            if ifm_tile.shape != self.ofm_tile_shape:
+                raise Exception(f"[ERROR] IFM tile shape {ifm_tile.shape} does not match expected shape {self.ofm_tile_shape}.")
+            
+            self._pe_arr_regs = torch.maximum(ifm_tile.to(dtype=self._acc_dtype), self._pe_arr_regs)
+        elif self._dataflow == MXUDataflow.WS:
+            if psum_tile is None:
+                raise Exception("[ERROR] PSUM tile should be provided for WS dataflow.")
+            if ifm_tile.shape != psum_tile.shape:
+                raise Exception(f"[ERROR] IFM tile shape {ifm_tile.shape} does not match expected shape {psum_tile.shape}.")
+            
+            self._acc_regs[:, :] = torch.maximum(ifm_tile.to(dtype=self._acc_dtype), psum_tile.to(dtype=self._acc_dtype))
+        else:
+            raise Exception(f"[ERROR] Unsupported MXU dataflow: {self._dataflow}.")
         
     @property
     def acc_dtype(self) -> torch.dtype:
