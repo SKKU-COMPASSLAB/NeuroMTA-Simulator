@@ -71,7 +71,8 @@ class CompanionCore(Core):
 
     def update_cycle_time_companion_modules(self, cycle_time: int):
         for cmod in self._companion_modules.values():
-            cmod.update_cycle_time(cycle_time=cycle_time)
+            if cmod.is_busy:
+                cmod.update_cycle_time(cycle_time=cycle_time)
             
     def update_cycle_time_until_cmd_executed(self) -> int:
         if len(self._companion_modules) == 0:

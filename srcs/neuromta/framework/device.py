@@ -6,7 +6,7 @@ from typing import Sequence, Callable  #, Any
 from neuromta.framework.core import Core, Kernel, Command, RPCMessage
 from neuromta.framework.companion import CompanionCore
 from neuromta.framework.logger import logger
-# from neuromta.framework.tracer import Tracer, TraceEntry
+from neuromta.framework.debug_utils import print_log_execution_time
 
 
 __all__ = [
@@ -80,7 +80,9 @@ class Device:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
         
         remaining_cycles = None
-            
+        
+        # with print_log_execution_time("1) RUN SINGLE STEP"):
+        #     with print_log_execution_time(f" 1-1) Remaining Cycles Estimation"):     
         for core_id, core in self.cores.items():
             c = core.get_remaining_cycles()
             
@@ -88,18 +90,21 @@ class Device:
                 remaining_cycles = c
             elif c is not None:
                 remaining_cycles = min(remaining_cycles, c)
-                
+            
+            # with print_log_execution_time(f" 1-2) Update RPC Core Routine"):                    
         for core_id, core in self.cores.items():
             core.rpc_update_routine()
 
+            # with print_log_execution_time(f" 1-3) Update Companion Core Cycle Time"):
         if remaining_cycles == 0 or remaining_cycles is None:
             remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
-                
+        
             if remaining_cycles == 0 or remaining_cycles is None:
                 remaining_cycles = cycle_resolution
         else:
             self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
 
+            # with print_log_execution_time(f" 1-4) Update Core Cycle Time (remaining cycles: {remaining_cycles})"):
         for core_id, core in self.cores.items():
             core.update_cycle_time(cycle_time=remaining_cycles)
 
@@ -123,7 +128,7 @@ class Device:
             if self.timestamp >= max_timestamp > 0:
                 logger.info(f"Reached maximum timestamp: {max_timestamp}. Stopping simulation.")
                 break
-            
+
             self.run_single_step(cycle_resolution=cycle_resolution)
 
     def register_command_debug_hook(self, hook: Callable):

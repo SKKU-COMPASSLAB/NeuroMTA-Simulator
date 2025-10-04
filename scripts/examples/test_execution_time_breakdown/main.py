@@ -9,11 +9,11 @@ from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
 from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
 from neuromta.ip.tenstorrent import *
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 visualizer_enabled = False
 try:
-    from scripts.utils.visualize import visualize_bandwidth_utilization_graph
+    from scripts.examples.utils.visualize import visualize_bandwidth_utilization_graph
     visualizer_enabled = True
 except ImportError as e:
     logger.warning(f"failed to import visualize module: {e}")
@@ -38,7 +38,7 @@ if __name__ == "__main__":
     config = TenstorrentConfig.BLACKHOLE()
 
     device = TenstorrentDevice(**config)
-    device.initialize()
+    device.initialize(print_command_debug_msg=False)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
     M = 512
@@ -52,10 +52,6 @@ if __name__ == "__main__":
     ifm:  torch.Tensor = torch.randint(-32, 32, (M * K,)).to(dtype=dtype).reshape(M, K)
     wgt:  torch.Tensor = torch.randint(-32, 32, (K * N,)).to(dtype=dtype).reshape(K, N).T  # (N, K)
     bias: torch.Tensor = torch.randint(-32, 32, (N,)).to(dtype=acc_dtype).flatten()
-
-    # ifm = ifm - 0.5
-    # wgt = wgt - 0.5
-    # bias = bias - 0.5
 
     main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, page_shape=(32, 32))
     l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
@@ -88,65 +84,10 @@ if __name__ == "__main__":
     MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
     
     main_buf_ofm = TT_RT_DMA_STORE(device, core_grid, l1_buf=l1_buf_ofm, main_layout=main_layout)
-    
-    
-    tracer_hub = TracerHub()
-    profiler_hub = ProfilerHub()
-    
-    for core_id, core in device.cores.items():
-        tracer = Tracer()
-        tracer.register_core(core)
-        tracer_hub.register_tracer(f"{type(core).__name__}_{core.core_id}", tracer)
         
-    for core_id in core_grid.core_ids:
-        core = device.get_npu_core(core_id=core_id)
-        profiler = CommandUtilizationProfiler(core)
-        profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
-            
-    icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
-    main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
-    
-    with MonitoringWindow() as monitor:
-        for core_id in core_grid.core_ids:
-            core = device.get_npu_core(core_id=core_id)
-            pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
-            pbar.bind_core(core)
-        
-        st = time.time()
-        device.run_kernels()
-        ed = time.time()
-        
-    tracer_hub.save_traces(TRACE_DIR)
-    profiler_hub.save_profiles(PROFILE_DIR)
-    icnt_core_tracer.save_traces(ICNT_CORE_TRACE_FNAME)
-    icnt_core_tracer.save_bandwidth_analysis(ICNT_CORE_BW_ANALYSIS_FNAME, bin_size=1)
-    main_mem_core_tracer.save_traces(MAIN_MEM_CORE_TRACE_FNAME)
-    main_mem_core_tracer.save_bandwidth_analysis(MAIN_MEM_CORE_BW_ANALYSIS_FNAME, bin_size=1)
-    
-    try:
-        if visualizer_enabled:
-            visualize_bandwidth_utilization_graph(
-                PROFILE_DIR,
-                ICNT_CORE_TRACE_FNAME,
-                MAIN_MEM_CORE_TRACE_FNAME,
-                IMG_SAVE_FNAME
-            )
-    except Exception as e:
-        logger.warning(f"failed to visualize the bandwidth utilization graph: {e}")
-
+    st = time.time()
+    device.run_kernels(cycle_resolution=1)
+    ed = time.time()
 
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
-    
-    linear_ref = torch.matmul(ifm.to(dtype=acc_dtype), wgt.T.to(dtype=acc_dtype)) + bias
-    simulated = main_buf_ofm.restore()
-    
-    n_neg_vals_linear_ref = (linear_ref < 0).sum().item()
-    n_neg_vals_simulated = (simulated < 0).sum().item()
-    
-    linear_ref = torch.nn.functional.relu(linear_ref)
-    
-    print(f"\nnumber of negative values in linear output: {n_neg_vals_linear_ref}")
-    print(f"number of negative values in simulated output: {n_neg_vals_simulated}")
-    print(f"simulation terminated with valid result: {n_neg_vals_simulated == 0}")
-    print(f"simulation terminated with valid result: {torch.allclose(linear_ref, simulated, atol=1e-2)}")

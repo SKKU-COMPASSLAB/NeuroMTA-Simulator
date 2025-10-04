@@ -151,7 +151,8 @@ def core_command_method(_func: Callable):
         if get_global_context_mode() == GlobalContextMode.IDLE:
             raise Exception(f"[ERROR] Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
         if get_global_context_mode() == GlobalContextMode.EXECUTE:
-            return _func(_core, *_args, **_kwargs)
+            with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
+                return _func(_core, *_args, **_kwargs)
 
         if not isinstance(_core, Core):
             raise Exception(f"[ERROR] Command method '{_func.__name__}' can only be called on an instance of Core")
@@ -186,7 +187,8 @@ def core_conditional_command_method(_func: Callable):
         if get_global_context_mode() == GlobalContextMode.IDLE:
             raise Exception(f"[ERROR] Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
         if get_global_context_mode() == GlobalContextMode.EXECUTE:
-            return _func(_core, *_args, **_kwargs)
+            with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
+                return _func(_core, *_args, **_kwargs)
 
         if not isinstance(_core, Core):
             raise Exception(f"[ERROR] Command method '{_func.__name__}' can only be called on an instance of Core")
@@ -376,14 +378,11 @@ class ConditionalCommand(Command):
         self._is_async_finished = False
     
     def get_remaining_cycles(self, core: 'Core', kernel: 'Kernel') -> int:
-        return None
+        return None  # TODO: currently, the conditional command is not used for remaining cycle estimation. However, it would be better if we can predict the execution time of the conditional command...
 
     def update_cycle_time(self, core: 'Core', kernel: 'Kernel', cycle_time: int):
         if self._cached_issue_time is None:
             self._cached_issue_time = core.timestamp
-
-        if cycle_time < 0:
-            raise ValueError(f"[ERROR] Cycle time cannot be negative: {cycle_time}")
 
         self._is_async_finished = self.run_behavioral_model(core, kernel)
 
@@ -506,7 +505,7 @@ class Kernel:
                 
             if cycle is None:
                 break
-            if cycle == 0:
+            elif cycle == 0:
                 self.update_cycle_time(core, cycle_time=0)
             else:
                 break

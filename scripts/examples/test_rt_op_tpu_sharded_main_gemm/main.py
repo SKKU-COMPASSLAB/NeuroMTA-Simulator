@@ -9,11 +9,11 @@ from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
 from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
 from neuromta.ip.google_tpu import *
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
 visualizer_enabled = False
 try:
-    from scripts.utils.visualize import visualize_bandwidth_utilization_graph
+    from scripts.examples.utils.visualize import visualize_bandwidth_utilization_graph
     visualizer_enabled = True
 except ImportError as e:
     logger.warning(f"failed to import visualize module: {e}")
