@@ -240,6 +240,7 @@ class MCA_DeviceBase(Device):
     
     def summary(self) -> dict[str, Any]:
         return {
+            "device_type": type(self).__name__,
             "npu_cores": len(self.npu_cores),
             "dma_cores": len(self.dma_cores),
             "cmap_config": self.cmap_context.config.summary(),
@@ -252,7 +253,7 @@ class MCA_DeviceBase(Device):
         }
         
     def print_summary(self):
-        pp = pprint.PrettyPrinter(indent=4)
+        pp = pprint.PrettyPrinter(indent=4, sort_dicts=False)
         pp.pprint(self.summary())
 
 
