@@ -46,6 +46,10 @@ if __name__ == "__main__":
     SH, SW = 2, 2
     PH, PW = 0, 0
     DH, DW = 1, 1
+    
+    OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
+    OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
+    
     dtype = torch.int32
     acc_dtype = torch.int32
 
@@ -56,14 +60,17 @@ if __name__ == "__main__":
     layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
     core_ids = core_grid.core_ids
 
-    buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=layout, device=device, core_ids=core_ids)
+    buf_ifm = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=layout, device=device, core_ids=core_ids)
+    buf_ofm = MCA_TensorBuffer(shape=(N, OH, OW, C), dtype=dtype, layout=layout, device=device, core_ids=core_ids)
+    
     buf_ifm.update(ifm)
 
-    buf_ofm = TT_RT_MAXPOOL2D(
+    TT_RT_MAXPOOL2D(
         device = device,
         core_grid = core_grid,
         
         buf_ifm = buf_ifm,
+        buf_ofm = buf_ofm,
         
         kernel = (FH, FW),
         stride = (SH, SW),

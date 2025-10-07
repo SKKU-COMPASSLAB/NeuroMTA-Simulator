@@ -1,3 +1,4 @@
+from typing import Any
 from ctypes import c_void_p
 from neuromta.framework import *
 
@@ -19,30 +20,35 @@ class BookSim2Config:
     def __init__(self, subnets: int, x: int, y: int, xr: int, yr: int):
         if not PYBOOKSIM2_AVAILABLE:
             raise RuntimeError("[ERROR] BookSim2 is not available. Please install pybooksim2 to use this module.")
+        
+        self._subnets: int = subnets
+        self._x: int = x
+        self._y: int = y
+        self._xr: int = xr
+        self._yr: int = yr
 
         self._config: c_void_p = pybooksim2.create_config_torus_2d(subnets, x, y, xr, yr)
-        self._is_registered: bool = False
+        # self._is_registered: bool = True
     
     def create_icnt(self) -> c_void_p:
-        if self.is_registered:
-            raise RuntimeError("[ERROR] Cannot creatae interconnect network with this config since it is already registered.")
+        # if self.is_registered:
+        #     del self._config
         
-        self._is_registered = True
+        # self._is_registered = True
         return pybooksim2.create_icnt(config=self._config)
+
+    # @property
+    # def is_registered(self) -> bool:
+    #     return self._is_registered
     
-    def update(self, **kwargs):
-        if self.is_registered:
-            raise RuntimeError("[ERROR] Cannot update this config since it is already registered.")
-
-        for key, value in kwargs.items():
-            if hasattr(self._config, key):
-                setattr(self._config, key, value)
-            else:
-                raise AttributeError(f"[ERROR] BookSim2Config has no attribute '{key}'")
-
-    @property
-    def is_registered(self) -> bool:
-        return self._is_registered
+    def summary(self) -> dict[str, Any]:
+        return {
+            "subnets": self._subnets,
+            "x": self._x,
+            "y": self._y,
+            "xr": self._xr,
+            "yr": self._yr,
+        }
 
 
 class BookSim2(CompanionModule):

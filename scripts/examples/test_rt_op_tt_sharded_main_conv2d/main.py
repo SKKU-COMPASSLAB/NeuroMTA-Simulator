@@ -47,6 +47,10 @@ if __name__ == "__main__":
     SH, SW = 1, 1
     PH, PW = 1, 1
     DH, DW = 1, 1
+    
+    OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
+    OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
+    
     dtype = torch.int8
     acc_dtype = torch.int32
 
@@ -57,33 +61,40 @@ if __name__ == "__main__":
     bias: torch.Tensor = torch.randint(0, 16, (K,)).to(dtype=acc_dtype).flatten()
     
     l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
-    main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
+    main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, page_shape=(32, 32))
     core_ids = core_grid.core_ids
 
     main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device, core_ids=core_ids)
     main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device, core_ids=core_ids)
     main_buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
+    main_buf_ofm  = MCA_TensorBuffer(shape=(N, OH, OW, K), dtype=acc_dtype, layout=main_layout, device=device, core_ids=core_ids)
+    
+    l1_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
+    l1_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
+    l1_buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
+    l1_buf_ofm  = MCA_TensorBuffer(shape=(N, OH, OW, K), dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids)
 
     main_buf_ifm.update(ifm)
     main_buf_wgt.update(wgt)
     main_buf_bias.update(bias)
     
-    l1_buf_ifm  = TT_RT_DMA_LOAD(device, core_grid, main_buf_ifm,  l1_layout)
-    l1_buf_wgt  = TT_RT_DMA_LOAD(device, core_grid, main_buf_wgt,  l1_layout)
-    l1_buf_bias = TT_RT_DMA_LOAD(device, core_grid, main_buf_bias, l1_layout.overrides(page_shape=(1, 32)))
+    MCA_RT_DMA_LOAD(device, src_buf=main_buf_ifm, dst_buf=l1_buf_ifm)
+    MCA_RT_DMA_LOAD(device, src_buf=main_buf_wgt, dst_buf=l1_buf_wgt)
+    MCA_RT_DMA_LOAD(device, src_buf=main_buf_bias, dst_buf=l1_buf_bias)
 
     MCA_RT_GLOBAL_SYNC(device, core_ids=core_ids)
     
-    l1_buf_ofm = TT_RT_CONV2D(
+    TT_RT_CONV2D(
         device = device,
         core_grid = core_grid,
 
-        buf_ifm = l1_buf_ifm,
-        buf_wgt = l1_buf_wgt,
+        buf_ifm  = l1_buf_ifm,
+        buf_wgt  = l1_buf_wgt,
         buf_bias = l1_buf_bias,
+        buf_ofm  = l1_buf_ofm,
 
-        stride = (SH, SW),
-        padding = (PH, PW),
+        stride   = (SH, SW),
+        padding  = (PH, PW),
         dilation = (DH, DW),
         
         dtype = dtype,
@@ -92,7 +103,7 @@ if __name__ == "__main__":
     
     MCA_RT_GLOBAL_SYNC(device, core_ids=core_ids)
     
-    main_buf_ofm = TT_RT_DMA_STORE(device, core_grid, l1_buf_ofm, main_layout)
+    MCA_RT_DMA_STORE(device, src_buf=l1_buf_ofm, dst_buf=main_buf_ofm)
     
     tracer_hub = TracerHub()
     profiler_hub = ProfilerHub()

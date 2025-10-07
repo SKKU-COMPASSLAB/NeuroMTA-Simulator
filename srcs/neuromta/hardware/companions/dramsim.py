@@ -1,6 +1,7 @@
 import os
 import math
 import configparser
+from typing import Any
 
 from neuromta.framework import *
 
@@ -66,6 +67,12 @@ class DRAMSim3Config:
 
         self.config_path = config_path
         self.processor_clock_freq = processor_clock_freq
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "config_path": os.path.abspath(self.config_path),
+            "processor_clock_freq": self.processor_clock_freq,
+        }
 
 
 class DRAMSim3(CompanionModule):

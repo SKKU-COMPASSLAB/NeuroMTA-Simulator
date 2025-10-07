@@ -1,5 +1,5 @@
 import enum
-from typing import Sequence
+from typing import Sequence, Any
 
 from neuromta.framework import *
 
@@ -178,6 +178,14 @@ class CmapConfig:
             raise ValueError(f"Address {addr} is out of range of main memory and L1 SPM.")
         
         return ((addr - base_addr) // bank_size) * bank_size + base_addr
+    
+    def summary(self) -> dict[str, Any]:
+        return {
+            "n_l1_spm_bank": self.n_l1_spm_bank,
+            "n_main_mem_channels": self.n_main_mem_channels,
+            "l1_spm_bank_size": self.l1_spm_bank_size,
+            "main_mem_channel_size": self.main_mem_channel_size,
+        }
     
 
 class CmapContext:

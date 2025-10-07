@@ -1,4 +1,6 @@
 import math
+from typing import Any
+
 from neuromta.framework import *
 from neuromta.hardware.companions.dramsim import DRAMSim3Config
 
@@ -42,6 +44,22 @@ class MainMemoryConfig:
         
         return math.ceil(size / self.transfer_speed_per_cycles)
     
+    def summary(self) -> dict[str, Any]:
+        if self.dramsim3_enable:
+            return {
+                "dramsim3_enable": self.dramsim3_enable,
+                "dramsim3_config": self.dramsim3_config.summary(),
+            }
+        else:
+            return {
+                "transfer_speed": self.transfer_speed,
+                "ch_io_width": self.ch_io_width,
+                "ch_num": self.ch_num,
+                "burst_len": self.burst_len,
+                "is_ddr": self.is_ddr,
+                "processor_clock_freq": self.processor_clock_freq,
+            }
+    
     
 class L1MemoryConfig:
     def __init__(
@@ -53,6 +71,11 @@ class L1MemoryConfig:
         
     def get_cycles(self, size: int) -> int:
         return math.ceil(size / self.access_gran)
+    
+    def summary(self) -> dict[str, Any]:
+        return {
+            "access_gran": self.access_gran,
+        }
 
 
 class MemConfig:

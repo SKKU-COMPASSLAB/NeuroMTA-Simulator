@@ -58,14 +58,15 @@ if __name__ == "__main__":
     l1_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=[core_id])
     l1_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=l1_layout, device=device, core_ids=[core_id])
     l1_buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(128, 1)), device=device, core_ids=[core_id])
+    l1_buf_ofm  = MCA_TensorBuffer(shape=(N, M), dtype=acc_dtype, layout=l1_layout, device=device, core_ids=[core_id])
 
     l1_buf_ifm.update(ifm)
     l1_buf_wgt.update(wgt)
     l1_buf_bias.update(bias)
     
-    l1_buf_ofm = TPU_RT_LINEAR(
+    TPU_RT_LINEAR(
         device=device, core_id=core_id,
-        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_bias,
+        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_bias, buf_ofm=l1_buf_ofm,
         dtype=dtype, acc_dtype=acc_dtype,
     )
     

@@ -46,6 +46,14 @@ class IcntConfig:
         col = core_id % self.shape[1]
         row = core_id // self.shape[1]
         return (row, col)
+    
+    def summary(self) -> dict[str, Any]:
+        return {
+            "shape": self.shape,
+            "flit_size": self.flit_size,
+            "booksim2_enable": self.booksim2_enable,
+            "booksim2_config": self.booksim2_config.summary() if self.booksim2_enable else None,
+        }
 
 
 class IcntContext:

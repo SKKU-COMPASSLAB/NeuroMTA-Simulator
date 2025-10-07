@@ -8,46 +8,12 @@ from neuromta.ip.tenstorrent.runtime_kernel import *
 
 
 __all__ = [
-    "TT_RT_DMA_LOAD",
-    "TT_RT_DMA_STORE",
     "TT_RT_LINEAR",
     "TT_RT_RELU",
     "TT_RT_CONV2D",
     "TT_RT_MAXPOOL2D",
 ]
-    
-    
-@MCA_RT_OPERATOR
-def TT_RT_DMA_LOAD(device: TenstorrentDevice, core_grid: MTA_CoreGrid, main_buf: MCA_TensorBuffer, l1_layout: MCA_TensorMemoryLayout) -> MCA_TensorBuffer:
-    l1_buf = MCA_TensorBuffer(shape=main_buf.tensor_shape, dtype=main_buf.tensor_dtype, layout=l1_layout, device=device, core_ids=core_grid.core_ids)
-    
-    for core_id in l1_buf.core_ids:
-        core = device.get_npu_core(core_id=core_id)
 
-        with MCA_RT_JIT_COMPILE_REGION(core, "MEM_COPY"):
-            page_indice = l1_buf.get_page_idx_by_owner(core.core_id)
-            buf_src = main_buf.get_reference_by_page_idx(*page_indice)
-            buf_dst = l1_buf.get_reference_by_page_idx(*page_indice)
-
-            core.mem_buffer_copy(buf_dst, buf_src, n_pages=len(page_indice))
-
-    return l1_buf
-      
-@MCA_RT_OPERATOR
-def TT_RT_DMA_STORE(device: TenstorrentDevice, core_grid: MTA_CoreGrid, l1_buf: MCA_TensorBuffer, main_layout: MCA_TensorMemoryLayout) -> MCA_TensorBuffer:
-    main_buf = MCA_TensorBuffer(shape=l1_buf.tensor_shape, dtype=l1_buf.tensor_dtype, layout=main_layout, device=device, core_ids=core_grid.core_ids)
-
-    for core_id in l1_buf.core_ids:
-        core = device.get_npu_core(core_id=core_id)
-        
-        with MCA_RT_JIT_COMPILE_REGION(core, "MEM_COPY"):
-            page_indice = l1_buf.get_page_idx_by_owner(core_id)
-            buf_src = l1_buf.get_reference_by_page_idx(*page_indice)
-            buf_dst = main_buf.get_reference_by_page_idx(*page_indice)
-
-            core.mem_buffer_copy(buf_dst, buf_src, n_pages=len(page_indice))
-
-    return main_buf
 
 @MCA_RT_OPERATOR
 def TT_RT_LINEAR(
@@ -57,6 +23,7 @@ def TT_RT_LINEAR(
     buf_ifm:  MCA_TensorBuffer,
     buf_wgt:  MCA_TensorBuffer,
     buf_bias: MCA_TensorBuffer | None,
+    buf_ofm:  MCA_TensorBuffer,
     
     dtype:      torch.dtype = torch.float32,
     acc_dtype:  torch.dtype = torch.float32,
@@ -80,7 +47,14 @@ def TT_RT_LINEAR(
     n_tile_num = buf_wgt.y_n_pages
     k_tile_num = buf_ifm.x_n_pages
     
-    buf_ofm = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
+    # buf_ofm = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
+    
+    if buf_ofm.tensor_shape != (M, N):
+        raise Exception(f"[ERROR] The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(M, N)}.")
+    if buf_ofm.tensor_dtype != acc_dtype:
+        raise Exception(f"[ERROR] The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
+    if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
+        raise Exception(f"[ERROR] Output feature map buffer must be allocated in L1 memory.")
     
     for m_it in range(m_tile_num):
         for n_it in range(n_tile_num):
@@ -106,7 +80,7 @@ def TT_RT_LINEAR(
                 acc_dtype = acc_dtype,
             )
 
-    return buf_ofm
+    # return buf_ofm
 
 @MCA_RT_OPERATOR
 def TT_RT_CONV2D(
@@ -116,6 +90,7 @@ def TT_RT_CONV2D(
     buf_ifm:  MCA_TensorBuffer,
     buf_wgt:  MCA_TensorBuffer,
     buf_bias: MCA_TensorBuffer | None,
+    buf_ofm:  MCA_TensorBuffer,
     
     stride:    tuple[int, int] = (1, 1),
     padding:   tuple[int, int] = (0, 0),
@@ -140,7 +115,14 @@ def TT_RT_CONV2D(
     OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
     OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
     
-    buf_ofm = MCA_TensorBuffer(shape=(N, OH, OW, K), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
+    # buf_ofm = MCA_TensorBuffer(shape=(N, OH, OW, K), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
+    
+    if buf_ofm.tensor_shape != (N, OH, OW, K):
+        raise Exception(f"[ERROR] The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, K)}.")
+    if buf_ofm.tensor_dtype != acc_dtype:
+        raise Exception(f"[ERROR] The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
+    if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
+        raise Exception(f"[ERROR] Output feature map buffer must be allocated in L1 memory.")
 
     ow_tile_size = buf_ofm.layout.y_page_size
     w_tile_size  = buf_ifm.layout.y_page_size
@@ -158,9 +140,9 @@ def TT_RT_CONV2D(
     ofm_tile_cnt = 0
     
     for n_it in range(N):  # batch dimension
-        for oh_it in range(OH):  # output height dimension
+        for k_tile_it in range(k_tile_num):  # kernel tile dimension
             for ow_tile_it in range(ow_tile_num):  # output width tile dimension
-                for k_tile_it in range(k_tile_num):  # kernel tile dimension
+                for oh_it in range(OH):  # output height dimension
                     core_idx = ofm_tile_cnt // n_ofm_pages_per_core
                     core_id  = core_grid.core_ids[core_idx]
                     
@@ -198,7 +180,7 @@ def TT_RT_CONV2D(
                     
                     ofm_tile_cnt += 1
                 
-    return buf_ofm
+    # return buf_ofm
 
 @MCA_RT_OPERATOR
 def TT_RT_MAXPOOL2D(
@@ -206,6 +188,7 @@ def TT_RT_MAXPOOL2D(
     core_grid: MTA_CoreGrid,
     
     buf_ifm:  MCA_TensorBuffer,
+    buf_ofm:  MCA_TensorBuffer,
     
     kernel:    tuple[int, int] = (2, 2),
     stride:    tuple[int, int] = (1, 1),
@@ -227,7 +210,14 @@ def TT_RT_MAXPOOL2D(
     OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
     OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
 
-    buf_ofm = MCA_TensorBuffer(shape=(N, OH, OW, C), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
+    # buf_ofm = MCA_TensorBuffer(shape=(N, OH, OW, C), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
+    
+    if buf_ofm.tensor_shape != (N, OH, OW, C):
+        raise Exception(f"[ERROR] The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, C)}.")
+    if buf_ofm.tensor_dtype != acc_dtype:
+        raise Exception(f"[ERROR] The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
+    if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
+        raise Exception(f"[ERROR] Output feature map buffer must be allocated in L1 memory.")
 
     ow_tile_size = buf_ofm.layout.y_page_size
     w_tile_size  = buf_ifm.layout.y_page_size
@@ -280,7 +270,7 @@ def TT_RT_MAXPOOL2D(
                     
                     ofm_tile_cnt += 1
                 
-    return buf_ofm
+    # return buf_ofm
 
 @MCA_RT_OPERATOR
 def TT_RT_RELU(
@@ -288,6 +278,8 @@ def TT_RT_RELU(
     core_grid: MTA_CoreGrid,
     
     buf_src:  MCA_TensorBuffer,
+    buf_dst:  MCA_TensorBuffer | None = None,
+    
     dtype:    torch.dtype = None, 
     inplace:  bool = False,
 ) -> MCA_TensorBuffer:
@@ -298,9 +290,9 @@ def TT_RT_RELU(
     if dtype is None:
         dtype = buf_src.tensor_dtype
     
-    if not inplace:
-        buf_dst = MCA_TensorBuffer(shape=buf_src.tensor_shape, dtype=dtype, layout=buf_src.layout, device=device, core_ids=core_grid.core_ids)
-    else:
+    # if not inplace:
+    #     buf_dst = MCA_TensorBuffer(shape=buf_src.tensor_shape, dtype=dtype, layout=buf_src.layout, device=device, core_ids=core_grid.core_ids)
+    if inplace:
         if buf_src.tensor_dtype != dtype:
             raise Exception(f"[ERROR] In in-place operation, source and destination buffer must have the same data type.")
         buf_dst = buf_src
@@ -319,4 +311,4 @@ def TT_RT_RELU(
             vlen = core.vpu_context.vlen_max   # TODO: hard-coded vector length (should be configurable)
         )
     
-    return buf_dst
+    # return buf_dst

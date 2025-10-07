@@ -1,3 +1,4 @@
+import pprint
 import torch
 from typing import Any, Sequence
 
@@ -237,6 +238,23 @@ class MCA_DeviceBase(Device):
 
         return content
     
+    def summary(self) -> dict[str, Any]:
+        return {
+            "npu_cores": len(self.npu_cores),
+            "dma_cores": len(self.dma_cores),
+            "cmap_config": self.cmap_context.config.summary(),
+            "mxu_config": self.mxu_config,
+            "vpu_config": self.vpu_config,
+            "mem_config": {
+                "l1_config": self.mem_context.l1_config.summary(),
+                "main_config": self.mem_context.main_config.summary(),
+            }
+        }
+        
+    def print_summary(self):
+        pp = pprint.PrettyPrinter(indent=4)
+        pp.pprint(self.summary())
+
 
 class MTA_CoreGrid:
     def __init__(self, offset: tuple[int, int], shape: tuple[int, int], core_ids: list[int]):
@@ -309,3 +327,8 @@ class MTA_DeviceBase(MCA_DeviceBase):
             logger.info(f"Unable to locate distributed buffer with page_size={page_size}, n_pages={n_pages}, contiguous_n_pages={contiguous_n_pages} on cores {core_ids}.")
 
         return ptr
+    
+    def summary(self):
+        s = super().summary()
+        s["icnt_config"] = self.icnt_context.config.summary()
+        return s

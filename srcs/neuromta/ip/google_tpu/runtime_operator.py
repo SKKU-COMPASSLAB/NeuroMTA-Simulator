@@ -6,23 +6,10 @@ from neuromta.ip.google_tpu.architecture import *
 from neuromta.ip.google_tpu.runtime_kernel import *
 
 
-@MCA_RT_OPERATOR
-def TPU_RT_DMA_LOAD(device: GoogleTPUDevice, core_id: int, main_buf: MCA_TensorBuffer, l1_layout: MCA_TensorMemoryLayout) -> MCA_TensorBuffer:
-    l1_buf = MCA_TensorBuffer(shape=main_buf.tensor_shape, dtype=main_buf.tensor_dtype, layout=l1_layout, device=device, core_ids=[core_id,])
-    
-    core = device.get_npu_core(core_id=core_id)
-    with MCA_RT_JIT_COMPILE_REGION(core, "MEM_COPY"):
-        core.mem_buffer_copy(l1_buf.reference, main_buf.reference, n_pages=main_buf.n_pages)
-    return l1_buf
-     
-@MCA_RT_OPERATOR
-def TPU_RT_DMA_STORE(device: GoogleTPUDevice, core_id: int, l1_buf: MCA_TensorBuffer, main_layout: MCA_TensorMemoryLayout) -> MCA_TensorBuffer:
-    main_buf = MCA_TensorBuffer(shape=l1_buf.tensor_shape, dtype=l1_buf.tensor_dtype, layout=main_layout, device=device)
-    
-    core = device.get_npu_core(core_id=core_id)
-    with MCA_RT_JIT_COMPILE_REGION(core, "MEM_COPY"):
-        core.mem_buffer_copy(main_buf.reference, l1_buf.reference, n_pages=l1_buf.n_pages)        
-    return main_buf
+__all__ = [
+    "TPU_RT_LINEAR"
+]
+
 
 @MCA_RT_OPERATOR
 def TPU_RT_LINEAR(
@@ -32,10 +19,11 @@ def TPU_RT_LINEAR(
     buf_ifm:  MCA_TensorBuffer,
     buf_wgt:  MCA_TensorBuffer,
     buf_bias: MCA_TensorBuffer | None,
+    buf_ofm:  MCA_TensorBuffer,
     
     dtype:      torch.dtype = torch.float32,
     acc_dtype:  torch.dtype = torch.float32, 
-) -> MCA_TensorBuffer:
+) -> None:
     K, M = buf_ifm.tensor_shape
     KW, N = buf_wgt.tensor_shape
     NB, _ = buf_bias.tensor_shape if buf_bias is not None else (N, 1)
@@ -54,12 +42,19 @@ def TPU_RT_LINEAR(
     m_tile_num = buf_ifm.x_n_pages
     n_tile_num = buf_wgt.x_n_pages
     
-    ofm_layout = MCA_TensorMemoryLayout(
-        mem_type=MCA_TensorMemoryType.L1,
-        page_shape=(buf_ifm.layout.y_page_size, buf_ifm.layout.x_page_size),
-    )
+    # ofm_layout = MCA_TensorMemoryLayout(
+    #     mem_type=MCA_TensorMemoryType.L1,
+    #     page_shape=(buf_ifm.layout.y_page_size, buf_ifm.layout.x_page_size),
+    # )
     
-    buf_ofm = MCA_TensorBuffer(shape=(N, M), dtype=acc_dtype, layout=ofm_layout, device=device, core_ids=[core_id,])
+    # buf_ofm = MCA_TensorBuffer(shape=(N, M), dtype=acc_dtype, layout=ofm_layout, device=device, core_ids=[core_id,])
+    
+    if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
+        raise Exception(f"[ERROR] Output feature map buffer must be allocated in L1 memory.")
+    if buf_ofm.tensor_shape != (N, M):
+        raise Exception(f"[ERROR] Output feature map buffer shape {buf_ofm.tensor_shape} does not match the expected shape {(N, M)}.")
+    if buf_ofm.tensor_dtype != acc_dtype:
+        raise Exception(f"[ERROR] Output feature map buffer dtype {buf_ofm.dtype} does not match the expected dtype {acc_dtype}.")
     
     TPU_RT_KERNEL_TILED_LINEAR_BURST_NKM(
         core = device.get_npu_core(core_id=core_id),
@@ -73,4 +68,4 @@ def TPU_RT_LINEAR(
         dtype=dtype, acc_dtype=acc_dtype,
     )
     
-    return buf_ofm
+    # return buf_ofm

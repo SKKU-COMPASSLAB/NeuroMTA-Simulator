@@ -62,18 +62,20 @@ if __name__ == "__main__":
     buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=layout, device=device, core_ids=core_ids)
     buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=layout, device=device, core_ids=core_ids)
     buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
+    buf_ofm  = MCA_TensorBuffer(shape=(N, H, W, K), dtype=acc_dtype, layout=layout, device=device, core_ids=core_ids)
 
     buf_ifm.update(ifm)
     buf_wgt.update(wgt)
     buf_bias.update(bias)
 
-    buf_ofm = TT_RT_CONV2D(
+    TT_RT_CONV2D(
         device = device,
         core_grid = core_grid,
         
         buf_ifm = buf_ifm,
         buf_wgt = buf_wgt,
         buf_bias = buf_bias,
+        buf_ofm = buf_ofm,
         
         stride = (SH, SW),
         padding = (PH, PW),

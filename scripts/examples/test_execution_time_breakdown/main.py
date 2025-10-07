@@ -60,31 +60,37 @@ if __name__ == "__main__":
     main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device)
     main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device)
     main_buf_psum = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device)
+    main_buf_ofm  = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=main_layout, device=device)
+    
+    l1_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
+    l1_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
+    l1_buf_psum = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
+    l1_buf_ofm  = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids)
 
     main_buf_ifm.update(ifm)
     main_buf_wgt.update(wgt)
     main_buf_psum.update(bias)
     
-    l1_buf_ifm  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_ifm,  l1_layout=l1_layout)
-    l1_buf_wgt  = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_wgt,  l1_layout=l1_layout)
-    l1_buf_psum = TT_RT_DMA_LOAD(device, core_grid, main_buf=main_buf_psum, l1_layout=l1_layout.overrides(page_shape=(1, 32)))
-    
+    MCA_RT_DMA_LOAD(device, main_buf_ifm, l1_buf_ifm)
+    MCA_RT_DMA_LOAD(device, main_buf_wgt, l1_buf_wgt)
+    MCA_RT_DMA_LOAD(device, main_buf_psum, l1_buf_psum)
+
     MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
 
-    l1_buf_ofm = TT_RT_LINEAR(
+    TT_RT_LINEAR(
         device=device, core_grid=core_grid,
-        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum,
+        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum, buf_ofm=l1_buf_ofm,
         dtype=dtype, acc_dtype=acc_dtype,
     )
     
     MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
     
-    l1_buf_ofm = TT_RT_RELU(device, core_grid, l1_buf_ofm, inplace=True)  # TODO: is this layer fusion??
+    TT_RT_RELU(device, core_grid, l1_buf_ofm, inplace=True)  # TODO: is this layer fusion??
     
     MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
-    
-    main_buf_ofm = TT_RT_DMA_STORE(device, core_grid, l1_buf=l1_buf_ofm, main_layout=main_layout)
-        
+
+    MCA_RT_DMA_STORE(device, l1_buf_ofm, main_buf_ofm)
+
     st = time.time()
     device.run_kernels(cycle_resolution=1)
     ed = time.time()

@@ -197,7 +197,7 @@ class MCA_TensorBuffer:
         return tuple(shape)
     
     def __str__(self):
-        return f"MCA_TensorBuffer(shape={self.tensor_shape}, dtype={self.tensor_dtype}, page_shape=({self.y_page}, {self.x_page}), page_grid=({self.i_dim}, {self.y_n_pages}, {self.x_n_pages}), device={type(self.device).__name__}, core_ids={self.core_ids})"
+        return f"MCA_TensorBuffer(mem_type={self.layout.mem_type}, shape={self.tensor_shape}, dtype={self.tensor_dtype}, page_shape=({self.y_page}, {self.x_page}), page_grid=({self.i_dim}, {self.y_n_pages}, {self.x_n_pages}), device={type(self.device).__name__}, core_ids={self.core_ids})"
 
 
 _global_mca_rt_op_id: str = None
@@ -278,7 +278,7 @@ def MCA_RT_KERNEL(func: Callable):
 
 def MCA_RT_OPERATOR(func: Callable):
     @functools.wraps(func)
-    def __wrapper(*args, **kwargs):
+    def __wrapper(*args, **kwargs) -> None:
         try:
             activate_global_mca_rt_op(rt_op_id=func.__name__)
             
@@ -291,6 +291,8 @@ def MCA_RT_OPERATOR(func: Callable):
             ret = func(*args, **kwargs)
         finally:
             deactivate_global_mca_rt_op()
-            
+        
+        if ret is not None:
+            raise Exception(f"[ERROR] The MCA_RT_OPERATOR-decorated function must return None, but got {type(ret)}.")
         return ret
     return __wrapper

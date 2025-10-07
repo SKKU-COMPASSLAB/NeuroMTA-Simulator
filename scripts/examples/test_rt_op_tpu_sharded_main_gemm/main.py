@@ -58,22 +58,28 @@ if __name__ == "__main__":
     main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device)
     main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device)
     main_buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(128, 1)), device=device)
+    main_buf_ofm  = MCA_TensorBuffer(shape=(N, M), dtype=acc_dtype, layout=main_layout, device=device)
+    
+    l1_buf_ifm    = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=[core_id])
+    l1_buf_wgt    = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=l1_layout, device=device, core_ids=[core_id])
+    l1_buf_bias   = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(128, 1)), device=device, core_ids=[core_id])
+    l1_buf_ofm    = MCA_TensorBuffer(shape=(N, M), dtype=acc_dtype, layout=l1_layout, device=device, core_ids=[core_id])
 
     main_buf_ifm.update(ifm)
     main_buf_wgt.update(wgt)
     main_buf_bias.update(bias)
     
-    l1_buf_ifm  = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_ifm,  l1_layout=l1_layout)
-    l1_buf_wgt  = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_wgt,  l1_layout=l1_layout)
-    l1_buf_bias = TPU_RT_DMA_LOAD(device, core_id, main_buf=main_buf_bias, l1_layout=l1_layout.overrides(page_shape=(128, 1)))
+    MCA_RT_DMA_LOAD(device, src_buf=main_buf_ifm, dst_buf=l1_buf_ifm)
+    MCA_RT_DMA_LOAD(device, src_buf=main_buf_wgt, dst_buf=l1_buf_wgt)
+    MCA_RT_DMA_LOAD(device, src_buf=main_buf_bias, dst_buf=l1_buf_bias)
     
-    l1_buf_ofm = TPU_RT_LINEAR(
+    TPU_RT_LINEAR(
         device=device, core_id=core_id,
-        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_bias,
+        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_bias, buf_ofm=l1_buf_ofm,
         dtype=dtype, acc_dtype=acc_dtype,
     )
     
-    main_buf_ofm = TPU_RT_DMA_STORE(device, core_id, l1_buf=l1_buf_ofm, main_layout=main_layout)
+    MCA_RT_DMA_STORE(device, src_buf=l1_buf_ofm, dst_buf=main_buf_ofm)
     
     tracer_hub = TracerHub()
     profiler_hub = ProfilerHub()
