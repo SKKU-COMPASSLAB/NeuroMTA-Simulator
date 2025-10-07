@@ -151,7 +151,7 @@ def core_command_method(_func: Callable):
         if get_global_context_mode() == GlobalContextMode.IDLE:
             raise Exception(f"[ERROR] Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
         if get_global_context_mode() == GlobalContextMode.EXECUTE:
-            with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
+            # with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
                 return _func(_core, *_args, **_kwargs)
 
         if not isinstance(_core, Core):
@@ -187,7 +187,7 @@ def core_conditional_command_method(_func: Callable):
         if get_global_context_mode() == GlobalContextMode.IDLE:
             raise Exception(f"[ERROR] Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
         if get_global_context_mode() == GlobalContextMode.EXECUTE:
-            with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
+            # with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
                 return _func(_core, *_args, **_kwargs)
 
         if not isinstance(_core, Core):
@@ -447,6 +447,15 @@ class Kernel:
         self._execution_steps: list[Command | ThreadGroup | KernelPrototype] = []
         self._execution_cursor: int = 0
         
+        self._is_blocked: bool = False
+        
+    def set_blocked(self, flag: bool=True):
+        self._is_blocked = flag
+        
+    @property
+    def is_blocked(self) -> bool:
+        return self._is_blocked
+        
     def __enter__(self):
         if get_global_context_mode() == GlobalContextMode.COMPILE:
             raise Exception(f"[ERROR] Cannot enter kernel '{self.kernel_id}' since the global context mode is already COMPILE")
@@ -491,6 +500,9 @@ class Kernel:
         return parallel_kernel
         
     def get_remaining_cycles(self, core: 'Core') -> int:
+        if self.is_blocked:
+            return None
+        
         cycle = None
         
         while not self.is_finished(core):        
@@ -513,7 +525,7 @@ class Kernel:
         return cycle
 
     def update_cycle_time(self, core: 'Core', cycle_time: int):
-        if self.is_finished(core):
+        if self.is_finished(core) or self.is_blocked:
             return
         
         step = self.current_step(core)
@@ -556,7 +568,7 @@ class Kernel:
         return commands
     
     def is_finished(self, core: 'Core') -> bool:
-        return self._execution_cursor >= len(self._execution_steps)
+        return (self._execution_cursor >= len(self._execution_steps)) and (not self.is_blocked)
     
     @property
     def root_callstack(self) -> str | None:
@@ -602,8 +614,9 @@ class Core:
 
         self._suspended_main_kernels: dict[str, list[Kernel | KernelPrototype]] = {}
         self._suspended_rpc_req_msg: dict[str, RPCMessage] = {}
-        self._suspended_rpc_rsp_msg: dict[str, RPCMessage] = {}
+        # self._suspended_rpc_rsp_msg: dict[str, RPCMessage] = {}
         self._suspended_rpc_to_main_kernels_mapping: dict[str, str] = {}  # RPC request message ID -> main kernel slot ID (to resume the main kernel when the RPC response is received)
+        self._suspended_rpc_kernel_blocking_condition: dict[str, list[Kernel]] = {}  # RPC kernel ID -> blocking condition (RPC request message)
 
         self._rpc_req_recv_queue: list[RPCMessage] = None               # queue to receive RPC request messages
         self._rpc_rsp_recv_queue: list[RPCMessage] = None               # queue to receive RPC response messages
@@ -628,7 +641,7 @@ class Core:
         self._dispatched_rpc_msg_mappings.clear()
         self._suspended_main_kernels.clear()
         self._suspended_rpc_req_msg.clear()
-        self._suspended_rpc_rsp_msg.clear()
+        # self._suspended_rpc_rsp_msg.clear()
         
         return self
 
@@ -843,23 +856,23 @@ class Core:
         self._suspended_rpc_req_msg[msg_id] = req_msg
         self._suspended_rpc_to_main_kernels_mapping[msg_id] = get_global_kernel_context().root_kernel_id
         
-    @core_conditional_command_method
+    @core_command_method
     def async_rpc_wait_rsp_msg(self, req_msg: RPCMessage):
         msg_id = req_msg.msg_id
         
-        if msg_id not in self._suspended_rpc_req_msg:
-            return True   # if the request message is not in the suspended RPC request message list, it means that the response message has already been received and processed
-        if msg_id not in self._suspended_rpc_rsp_msg:
-            return False  # if the response message is not in the suspended RPC response message list, it means that the response message has not been received yet
+        if msg_id not in self._suspended_rpc_kernel_blocking_condition:
+            self._suspended_rpc_kernel_blocking_condition[msg_id] = []
+            
+        context = get_global_kernel_context()
         
-        rsp_msg = self._suspended_rpc_rsp_msg[msg_id]
-        req_msg.copy_args_from_rsp(rsp_msg)
-
-        self._suspended_rpc_req_msg.pop(msg_id)  # remove the request message from the suspended RPC request message list
-        self._suspended_rpc_rsp_msg.pop(msg_id)  # remove the response message from the suspended RPC response message list
-        self._suspended_rpc_to_main_kernels_mapping.pop(msg_id)  # remove the mapping from the suspended RPC to main kernel mapping
-
-        return True
+        if context is None:
+            raise Exception(f"[ERROR] Cannot suspend the current kernel since there is no kernel context")
+        elif not isinstance(context, Kernel):
+            raise Exception(f"[ERROR] Cannot suspend the current kernel since the current context is not an instance of Kernel, but {type(context).__name__}")
+        
+        context.set_blocked(True)
+        
+        self._suspended_rpc_kernel_blocking_condition[msg_id].append(context)
 
     def _rpc_req_kernel_dispatch_routine(self):
         while len(self.rpc_req_recv_queue):
@@ -894,7 +907,18 @@ class Core:
     def _rpc_rsp_msg_receive_routine(self):
         while len(self.rpc_rsp_recv_queue):
             rsp_msg: RPCMessage = self.rpc_rsp_recv_queue.pop(0)
-            self._suspended_rpc_rsp_msg[rsp_msg.msg_id] = rsp_msg
+            msg_id = rsp_msg.msg_id
+
+            req_msg = self._suspended_rpc_req_msg[msg_id]
+            req_msg.copy_args_from_rsp(rsp_msg)
+
+            self._suspended_rpc_req_msg.pop(msg_id)  # remove the request message from the suspended RPC request message list
+            self._suspended_rpc_to_main_kernels_mapping.pop(msg_id)  # remove the mapping from the suspended RPC to main kernel mapping
+            
+            if msg_id in self._suspended_rpc_kernel_blocking_condition:
+                for kernel in self._suspended_rpc_kernel_blocking_condition[msg_id]:
+                    kernel.set_blocked(False)  # unblock the RPC kernel
+                self._suspended_rpc_kernel_blocking_condition.pop(msg_id)
         
     def _rpc_req_kernel_remove_and_rsp_send_routine(self, slot_id: str):
         kernel = self._dispatched_rpc_kernels[slot_id]

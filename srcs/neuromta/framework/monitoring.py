@@ -17,7 +17,6 @@ class ProgressBarHandle:
     def __init__(self, desc: str="", ncols: int=80):
         self.desc = desc
         self.ncols = ncols
-        # self.percentage = percentage
         
         self._hook_id = None
         self._binded_core = None

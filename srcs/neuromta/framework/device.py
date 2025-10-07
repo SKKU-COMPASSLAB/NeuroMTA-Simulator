@@ -63,11 +63,26 @@ class Device:
             core.initialize_mp_queue_inbox(rpc_req_send_inbox=self._rpc_req_send_inbox, rpc_rsp_send_inbox=self._rpc_rsp_send_inbox)
         
         if print_command_debug_msg:
-            for core in self._cores.values():
-                hook_id = core.register_command_debug_hook(self._verbose_command_debug_hook)
-                self._verbose_hook_ids[core.core_id] = hook_id
+            self.set_command_debug_verbosity()
         
         return self
+    
+    def set_command_debug_verbosity(self):
+        for core in self._cores.values():
+            if core.core_id in self._verbose_hook_ids:
+                continue    # already registered
+            
+            hook_id = core.register_command_debug_hook(self._verbose_command_debug_hook)
+            self._verbose_hook_ids[core.core_id] = hook_id
+            
+    def reset_command_debug_verbosity(self):
+        for core in self._cores.values():
+            if core.core_id not in self._verbose_hook_ids:
+                continue    # not registered
+            
+            hook_id = self._verbose_hook_ids[core.core_id]
+            core.unregister_command_debug_hook(hook_id)
+            del self._verbose_hook_ids[core.core_id]
     
     def _verbose_command_debug_hook(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
         callstack = kernel.callstack if kernel else "N/A"

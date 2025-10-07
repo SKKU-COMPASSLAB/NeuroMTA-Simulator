@@ -3,7 +3,7 @@ import torch
 from neuromta.framework import *
 from neuromta.hardware import *
 from neuromta.ip.google_tpu.architecture import *
-from neuromta.ip.google_tpu.rt_kernel import *
+from neuromta.ip.google_tpu.runtime_kernel import *
 
 
 @MCA_RT_OPERATOR
