@@ -38,10 +38,11 @@ if __name__ == "__main__":
     config = TenstorrentConfig.BLACKHOLE()
 
     device = TenstorrentDevice(**config)
-    device.initialize(print_command_debug_msg=True)
+    device.initialize()
+    device.set_command_debug_verbosity(verbose=True)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
-    N, H, W, C = 4, 36, 36, 28
+    N, H, W, C = 1, 6, 6, 64
     FH, FW = 2, 2
     SH, SW = 2, 2
     PH, PW = 0, 0
@@ -53,7 +54,7 @@ if __name__ == "__main__":
     dtype = torch.int32
     acc_dtype = torch.int32
 
-    core_grid = device.get_npu_core_grid(offset=(0, 0), shape=(4, 4))
+    core_grid = device.get_npu_core_grid(offset=(0, 0), shape=(8, 8))
 
     ifm:  torch.Tensor = torch.randint(0, 16, (N * H * W * C,)).to(dtype=dtype).reshape(N, H, W, C)
     

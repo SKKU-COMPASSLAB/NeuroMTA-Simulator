@@ -262,12 +262,14 @@ class NPUCore(Core):
         else:
             rd_handle = ptr
             wr_handle = ptr
+            
+        if size is None:
+            size = rd_handle.size - offset
+        if container.data is None:
+            self.mem_container_init(container, shape=size, dtype=torch.uint8)
         
         raw_data: torch.Tensor = self.mem_handle.get_content(rd_handle, shape=(-1,), dtype=torch.uint8)
         wr_data:  torch.Tensor = container.data.reshape(-1).view(torch.uint8)
-        
-        if size is None:
-            size = rd_handle.size
         
         wr_data = wr_data[:size]
     
@@ -379,15 +381,15 @@ class NPUCore(Core):
         if src_page_owner_id == dst_page_owner_id == self.core_id:
             self.local_mem_page_copy(dst_ptr, src_ptr, page_offset=page_offset)
         else:
-            if self.cmap_context.config.check_l1_mem_addr(dst_page_ptr.addr):
-                dst_write_msg = RPCMessage(self.core_id, dst_page_owner_id, cmd_id="local_mem_write_with_container").with_args(ptr=dst_ptr[page_offset], container=container, offset=0)
-            elif self.cmap_context.config.check_main_mem_addr(dst_page_ptr.addr):
-                dst_write_msg = RPCMessage(self.core_id, dst_page_owner_id, cmd_id="mem_page_write").with_args(ptr=dst_ptr[page_offset], container=container)
-        
             if self.cmap_context.config.check_l1_mem_addr(src_page_ptr.addr):
                 src_read_msg = RPCMessage(self.core_id, src_page_owner_id, cmd_id="local_mem_read_with_container").with_args(ptr=src_ptr[page_offset], container=container, offset=0, size=src_ptr.size)
             elif self.cmap_context.config.check_main_mem_addr(src_page_ptr.addr):
                 src_read_msg = RPCMessage(self.core_id, src_page_owner_id, cmd_id="mem_page_read").with_args(ptr=src_ptr[page_offset], container=container)
+            
+            if self.cmap_context.config.check_l1_mem_addr(dst_page_ptr.addr):
+                dst_write_msg = RPCMessage(self.core_id, dst_page_owner_id, cmd_id="local_mem_write_with_container").with_args(ptr=dst_ptr[page_offset], container=container, offset=0)
+            elif self.cmap_context.config.check_main_mem_addr(dst_page_ptr.addr):
+                dst_write_msg = RPCMessage(self.core_id, dst_page_owner_id, cmd_id="mem_page_write").with_args(ptr=dst_ptr[page_offset], container=container)
                 
             noc_transaction_msgs = []
         
@@ -472,8 +474,16 @@ class NPUCore(Core):
                 self.mxu_context.load_tile_pe_arr(wgt_tile)
 
         if self.mxu_context.dataflow == MXUDataflow.OS:
-            ifm_tile = ifm_cont.data.view(self.mxu_context.dtype).reshape(self.mxu_context.ifm_tile_shape)
-            wgt_tile = wgt_cont.data.view(self.mxu_context.dtype).reshape(self.mxu_context.wgt_tile_shape)
+            ifm_tile = ifm_cont.data.view(self.mxu_context.dtype)  #.reshape(self.mxu_context.ifm_tile_shape)
+            wgt_tile = wgt_cont.data.view(self.mxu_context.dtype)  #.reshape(self.mxu_context.wgt_tile_shape)
+            
+            if self.mxu_context.ifm_tile_numel != ifm_tile.numel():
+                ifm_tile = torch.nn.functional.pad(ifm_tile, (0, self.mxu_context.ifm_tile_numel - ifm_tile.numel()), 'constant', 0)
+            if self.mxu_context.wgt_tile_numel != wgt_tile.numel():
+                wgt_tile = torch.nn.functional.pad(wgt_tile, (0, self.mxu_context.wgt_tile_numel - wgt_tile.numel()), 'constant', 0)
+                
+            ifm_tile = ifm_tile.reshape(self.mxu_context.ifm_tile_shape)
+            wgt_tile = wgt_tile.reshape(self.mxu_context.wgt_tile_shape)
             
             if ifm_transposed: ifm_tile = ifm_tile.T
             if wgt_transposed: wgt_tile = wgt_tile.T

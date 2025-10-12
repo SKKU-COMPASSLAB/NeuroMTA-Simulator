@@ -1,0 +1,768 @@
+import abc
+import warnings
+import enum
+import torch
+
+from collections import deque, defaultdict
+from typing import Any, Callable, Dict, Iterable, List, Set, Callable
+
+from neuromta.framework import *
+from neuromta.hardware import *
+from neuromta.ip.common.runtime_operator import *
+
+
+__all__ = [
+    "Placeholder",
+    "get_global_host_context",
+    
+    "HostContext",
+    "HostActionType",
+    "HostAction",
+    "HostRuntime",
+    
+    "NetworkGraphEntryType",
+    "NetworkGraphEntry",
+    "NetworkGraphContext",
+    "NetworkGraph",
+]
+
+
+class Placeholder:
+    def __init__(self, name: str):
+        self.name = name
+
+
+_global_host_context: 'HostContext' = None
+
+def get_global_host_context() -> 'HostContext':
+    global _global_host_context
+    return _global_host_context
+
+class HostContext:
+    def __init__(self, device: MCA_DeviceBase, core_ids: list[int]):
+        self.device = device
+        self.core_ids = core_ids
+        
+        self.buffers: dict[str, MCA_TensorBuffer] = {}
+        self.actions: list[HostAction] = []
+        self._mapping: dict[str, HostRuntime] = {}
+        
+    def __enter__(self):
+        return self.open()
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        
+    def open(self) -> 'HostContext':
+        global _global_host_context
+        assert _global_host_context is None, "A HostContext is already active."
+        _global_host_context = self
+        return self
+    
+    def close(self):
+        global _global_host_context
+        assert _global_host_context is self, "Exiting a HostContext that is not active."
+        _global_host_context = None
+    
+    def add_action(self, action: 'HostAction'):
+        self.actions.append(action)
+        
+    def add_buffer(self, name: str | Placeholder, buffer: MCA_TensorBuffer):
+        if isinstance(name, Placeholder):
+            name = name.name
+        self.buffers[name] = buffer
+
+    def add_buffer_placeholder(self, name: str | Placeholder):
+        if isinstance(name, Placeholder):
+            name = name.name
+        self.buffers[name] = None
+        
+    def clear_actions(self):
+        self.actions.clear()
+        
+    def get_buffer(self, name: Placeholder | str) -> MCA_TensorBuffer:
+        if isinstance(name, Placeholder):
+            name = name.name
+        return self.buffers.get(name, None)
+    
+    def remove_buffer(self, name: Placeholder | str):
+        if isinstance(name, Placeholder):
+            name = name.name
+        if name in self.buffers:
+            del self.buffers[name]
+            
+    def new_placeholder(self, base_name: str="_tmp") -> Placeholder:
+        idx = 0
+        while True:
+            name = f"{base_name}_{idx}"
+            if name not in self.buffers:
+                return Placeholder(name)
+            idx += 1
+
+    @staticmethod
+    def _get_primitive_name(name: str) -> str:
+        if isinstance(name, torch.Node):
+            name = name.kind()
+        elif isinstance(name, torch.nn.Module):
+            name = type(name).__name__
+        elif isinstance(name, type):
+            name = name.__name__
+        return name
+        
+    def rt_register(self, name: str, runtime: 'HostRuntime'):
+        name = self._get_primitive_name(name)
+        if name in self._mapping:
+            logger.warning(f"HostRuntime '{name}' is already registered. Overwriting...")
+        self._mapping[name] = runtime
+        
+    def rt_get(self, name: str) -> 'HostRuntime':
+        name = self._get_primitive_name(name)
+        return self._mapping.get(name, None)
+    
+    def rt_supports(self, name: str) -> bool:
+        name = self._get_primitive_name(name)
+        return name in self._mapping
+
+class HostActionType(enum.Enum):
+    ALLOC_BUFFER    = enum.auto()
+    DEALLOC_BUFFER  = enum.auto()
+    INIT_BUFFER     = enum.auto()
+    DISPATCH_KERNEL = enum.auto()
+    
+class HostAction:
+    def __init__(self, action_type: HostActionType, name: str=None, buf_signature: dict=None, tensor: torch.Tensor=None, kernel_method: Callable=None, kernel_args: list[Any]=None, kernel_kwargs: dict[str, Any]=None):
+        self.action_type = action_type
+        self.tokens: dict[str, Any] = {}
+        
+        # For ALLOC_BUFFER
+        if self.action_type == HostActionType.ALLOC_BUFFER:
+            assert name is not None
+            assert buf_signature is not None
+        
+            self.tokens["name"] = name
+            self.tokens["buf_signature"] = buf_signature
+        
+        # For INIT_BUFFER
+        elif self.action_type == HostActionType.INIT_BUFFER:
+            assert name is not None
+            assert tensor is not None
+            
+            self.tokens["name"] = name
+            self.tokens["tensor"] = tensor
+        
+        # For DISPATCH_KERNEL
+        elif self.action_type == HostActionType.DISPATCH_KERNEL:
+            assert kernel_method is not None
+            
+            self.tokens["kernel_method"] = kernel_method
+            self.tokens["kernel_args"]   = kernel_args if kernel_args is not None else []
+            self.tokens["kernel_kwargs"] = kernel_kwargs if kernel_kwargs is not None else {}
+            
+        if get_global_host_context() is not None:
+            get_global_host_context().add_action(self)
+        
+    @classmethod
+    def alloc_buffer(cls, name: str, shape: tuple[int, ...], dtype: torch.dtype, layout: MCA_TensorMemoryLayout):
+        buf_signature = {
+            "shape": shape,
+            "dtype": dtype,
+            "layout": layout,
+        }
+        return cls(HostActionType.ALLOC_BUFFER, name=name, buf_signature=buf_signature)
+    
+    @classmethod
+    def dealloc_buffer(cls, name: str):
+        return cls(HostActionType.DEALLOC_BUFFER, name=name)
+    
+    @classmethod
+    def init_buffer(cls, name: str, tensor: torch.Tensor):
+        return cls(HostActionType.INIT_BUFFER, name=name, tensor=tensor)
+    
+    @classmethod
+    def dispatch_kernel(cls, kernel_method: Callable, *args, **kwargs):
+        return cls(HostActionType.DISPATCH_KERNEL, kernel_method=kernel_method, kernel_args=list(args), kernel_kwargs=kwargs)
+    
+    def execute(self) -> bool:
+        if self.action_type == HostActionType.ALLOC_BUFFER:
+            name = self.tokens["name"]
+            buf_signature = self.tokens["buf_signature"]
+            host_context = get_global_host_context()
+
+            buf = MCA_TensorBuffer(**buf_signature, device=host_context.device, core_ids=host_context.core_ids)
+            if buf is None:
+                return False
+            
+            host_context.add_buffer(name, buf)
+            
+        elif self.action_type == HostActionType.DEALLOC_BUFFER:
+            name = self.tokens["name"]
+            host_context = get_global_host_context()
+            buf = host_context.get_buffer(name)
+            
+            host_context.device.remove_buffer(buf)
+            host_context.remove_buffer(name)
+            
+        elif self.action_type == HostActionType.INIT_BUFFER:
+            name = self.tokens["name"]
+            tensor = self.tokens["tensor"]
+            
+            buf = get_global_host_context().get_buffer(name)
+            assert buf is not None, f"Buffer '{name}' not found in HostContext."
+            
+            buf.update(tensor)
+            
+        elif self.action_type == HostActionType.DISPATCH_KERNEL:
+            kernel_method = self.tokens["kernel_method"]
+            kernel_args   = self.tokens["kernel_args"]
+            kernel_kwargs = self.tokens["kernel_kwargs"]
+            
+            for idx, arg in enumerate(kernel_args):
+                if isinstance(arg, Placeholder):
+                    buf = get_global_host_context().get_buffer(arg.name)
+                    assert buf is not None, f"Buffer '{arg.name}' not found in HostContext."
+                    kernel_args[idx] = buf
+                    
+            for key, value in kernel_kwargs.items():
+                if isinstance(value, Placeholder):
+                    buf = get_global_host_context().get_buffer(value.name)
+                    assert buf is not None, f"Buffer '{value.name}' not found in HostContext."
+                    kernel_kwargs[key] = buf
+            
+            kernel_method(*kernel_args, **kernel_kwargs)
+        
+        return True
+    
+class HostRuntime(metaclass=abc.ABCMeta):
+    def __init__(self, n_inputs: int, n_outputs: int, input_layouts: list[MCA_TensorMemoryLayout], output_layouts: list[MCA_TensorMemoryLayout]):
+        self.n_inputs       = n_inputs          # number of input tensors
+        self.n_outputs      = n_outputs         # number of output tensors
+        self.input_layouts  = input_layouts     # expected input tensor layouts
+        self.output_layouts = output_layouts    # expected output tensor layouts
+        
+        assert len(self.input_layouts) == self.n_inputs, f"Number of input layouts ({len(self.input_layouts)}) does not match n_inputs ({self.n_inputs})"
+        assert len(self.output_layouts) == self.n_outputs, f"Number of output layouts ({len(self.output_layouts)}) does not match n_outputs ({self.n_outputs})"
+
+    @abc.abstractmethod
+    def main_process(self, *args):
+        pass
+    
+    @abc.abstractmethod
+    def post_process(self, *args):
+        pass
+    
+    @property
+    def host_context(self) -> HostContext:
+        return get_global_host_context()
+
+
+def _check_jit_type_compatibility(s_type, m_arg: Any) -> tuple[bool, bool, Any]:  # flag_compatible, flag_optional, converted arg
+    try:
+        m_type = torch._C._jit_try_infer_type(m_arg).type()
+
+        if s_type.isSubtypeOf(m_type):
+            return (True, "Optional" in s_type.kind(), m_arg)
+
+        if s_type.kind() == "BoolType" and m_type.kind() in ("BoolType", "IntType", "NumberType"):
+            return (True, False, bool(m_arg))
+        if s_type.kind() == "NumberType" and m_type.kind() in ("IntType", "FloatType"):
+            return (True, False, m_arg)
+        elif s_type.kind() == "DeviceObjType" and m_type.kind() in ("StringType"):
+            return (True, False, torch.device(m_arg))
+        elif s_type.kind() == "TensorType" and m_type.kind() in ("ListType"):
+            return (True, False, torch.tensor(m_arg))
+        elif "Optional" in s_type.kind():
+            s_opt_type = s_type.getElementType()
+            _flag_compatible, _, _converted_arg = _check_jit_type_compatibility(s_opt_type, m_arg)
+            return (_flag_compatible, True, _converted_arg)
+    except:
+        return (False, False, m_arg)
+    
+    return (False, False, m_arg)
+
+def _check_argument_compatibility(s_arg, m_arg: Any) -> tuple[bool, bool, Any]:
+    s_type = s_arg.type
+
+    return _check_jit_type_compatibility(s_type=s_type, m_arg=m_arg)
+
+def _get_attr_from_node(node: torch.Node, attr_name: str) -> any:
+    for attr_types in ['f', 'fs', 'c', 's', 'ss', 'i', 'g', 'gs', 'ival', 't', 'ts', 'ty', 'tys']:
+        try:
+            return getattr(node, attr_types)(attr_name)
+        except:
+            pass
+    
+    return None
+
+def _find_nonprim_method(method_domain: str, method_name: str, args: list[Any]) -> tuple[Callable, list[Any], dict[str, Any]]:
+    method = None
+    
+    for aten_ref in [getattr(torch.ops, method_domain), torch, torch.nn.functional]:
+        try:
+            method = getattr(aten_ref, method_name)
+            break
+        except:
+            pass
+        
+    # check schema
+    pp_args = []
+    pp_kwargs = {}
+    
+    for overload_name in method._overload_names:
+        schema: torch._C.FunctionSchema = torch._C._get_schema(method._qualified_op_name, overload_name)
+        
+        if len(schema.arguments) < len(args):
+            continue
+        
+        flag_schema_compatible = True
+        tmp_pp_args = []
+        tmp_pp_kwargs = {}
+        
+        # print(f"Checking schema: {schema}")
+        
+        for s_arg, m_arg in zip(schema.arguments, args):
+            flag_compatible, flag_optional, converted_arg = _check_argument_compatibility(s_arg=s_arg, m_arg=m_arg)
+            # print(f"  arg: {s_arg.name}, {s_arg.type}, {m_arg if not isinstance(m_arg, torch.Tensor) else 'Tensor'} -> compatible={flag_compatible}, optional={flag_optional}, converted_arg={converted_arg if not isinstance(converted_arg, torch.Tensor) else 'Tensor'}")
+            
+            if not flag_compatible and not flag_optional:
+                flag_schema_compatible = False
+            else:
+                tmp_pp_kwargs[s_arg.name] = converted_arg
+        
+        if flag_schema_compatible:
+            pp_args = tmp_pp_args
+            pp_kwargs = tmp_pp_kwargs
+            break
+    
+    return method, pp_args, pp_kwargs
+
+def _kahn_topological_sort(graph: Dict[int, Iterable[int]]) -> List[int]:
+    indeg = defaultdict(int)  # node -> in-degree
+    nodes: Set[int] = set()
+
+    # collect nodes and compute indegrees
+    for u, vs in graph.items():
+        nodes.add(u)
+        for v in vs:
+            nodes.add(v)
+            indeg[v] += 1
+        if u not in indeg:
+            indeg.setdefault(u, indeg[u])
+
+    q = deque([n for n in nodes if indeg.get(n, 0) == 0])
+    order: List[int] = []
+
+    while q:
+        u = q.popleft()
+        order.append(u)
+        for v in graph.get(u, []):
+            indeg[v] -= 1
+            if indeg[v] == 0:
+                q.append(v)
+
+    if len(order) != len(nodes):
+        raise ValueError("Graph has at least one cycle; topological ordering not possible")
+
+    return order
+
+
+class NetworkGraphEntryType(enum.Enum):
+    PRIM                = enum.auto()  # prim operators (operators starting with "prim::")
+    GRAPH               = enum.auto()  # graph node (submodule call, but not compiled as runtime kernel e.g., torch.nn.Sequential)
+    NONPRIM             = enum.auto()  # nonprim operators (operators starting with "aten::", "quantized::", etc.)
+    COMPILED_GRAPH      = enum.auto()  # compiled graph nodes (submodule call compiled as runtime kernel e.g., torch.nn.Conv2d, torch.nn.Linear ...)
+    COMPILED_NONPRIM    = enum.auto()  # compiled nonprim nodes (nonprim operators compiled as runtime kernel e.g., aten::matmul, aten::add_, ...)
+    
+    @property
+    def is_prim(self) -> bool:
+        return self in (NetworkGraphEntryType.PRIM, NetworkGraphEntryType.GRAPH, NetworkGraphEntryType.COMPILED_GRAPH)
+    
+    @property
+    def is_nonprim(self) -> bool:
+        return self in (NetworkGraphEntryType.NONPRIM, NetworkGraphEntryType.COMPILED_NONPRIM)
+    
+    @property
+    def is_compiled(self) -> bool:
+        return self in (NetworkGraphEntryType.COMPILED_GRAPH, NetworkGraphEntryType.COMPILED_NONPRIM)
+
+class NetworkGraphEntry:
+    def __init__(self, node_type: NetworkGraphEntryType, node: torch.Node, **kwargs):
+        self.node_type = node_type
+        self.node = node
+        
+        self.subgraph: NetworkGraph = kwargs.get("subgraph", None)
+        self.submodule: torch.nn.Module = kwargs.get("submodule", None)
+        
+    def __str__(self):
+        r = f"{self.node_type.name}({self.node.kind()}"
+        
+        ivars = list('%'+i.debugName() for i in self.node.inputs())
+        ovars = list('%'+i.debugName() for i in self.node.outputs())
+        
+        r += f", inputs={ivars}, outputs={ovars}"
+        
+        if self.node_type == NetworkGraphEntryType.GRAPH:
+            r += f", graph={type(self.subgraph.module).__name__}"
+        if self.node_type == NetworkGraphEntryType.COMPILED_GRAPH:
+            r += f", submodule={type(self.submodule).__name__}"
+        if self.node_type == NetworkGraphEntryType.COMPILED_NONPRIM:
+            r += f", method={self.node.kind()}"
+        
+        return r + ")"
+    
+class NetworkGraphContext(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        self.host_context = None
+        
+    def set_host_context(self, host_context: HostContext):
+        if host_context is None: return
+        self.host_context = host_context
+    
+    def __getitem__(self, key):
+        if isinstance(key, torch.Value):
+            key = key.debugName()
+        elif isinstance(key, Placeholder):
+            key = key.name
+        return super().__getitem__(key)
+    
+    def __setitem__(self, key, value):
+        if isinstance(key, torch.Value):
+            key = key.debugName()
+        elif isinstance(key, Placeholder):
+            key = key.name
+        return super().__setitem__(key, value)
+    
+    def run_prim_entry(self, entry: NetworkGraphEntry):
+        node = entry.node   
+        node_domain, node_action = node.kind().split("::")
+        
+        if node_domain != "prim":
+            raise Exception(f"only 'prim' domain is supported by the session\nexception occurred for the node: {node.kind()}")
+        
+        attrs = {attr_name: _get_attr_from_node(node, attr_name) for attr_name in node.attributeNames()}
+        
+        for o in node.outputs():
+            if o.type().kind() == 'NoneType':
+                self[o] = None
+
+        if node_action == "CallMethod":
+            submodule = self[list(node.inputs())[0]]
+            args = [self[i] for i in list(node.inputs())[1:]]
+            method_name = attrs['name']
+            
+            if isinstance(submodule, torch.nn.Module) and "forward" in method_name:
+                if entry.node_type == NetworkGraphEntryType.COMPILED_GRAPH:
+                    outputs = submodule(*args)
+                elif entry.node_type == NetworkGraphEntryType.GRAPH:
+                    outputs = entry.subgraph.run_graph(*args)
+            else:
+                method = getattr(submodule, method_name)
+                outputs = method(*args)
+            
+            if len(list(node.outputs())) == 1:
+                self[node.output()] = outputs
+            else:
+                for idx, o in enumerate(node.outputs()):
+                    self[o] = outputs[idx]
+        elif node_action == "GetAttr":
+            self[node.output()] = getattr(self[node.input()], attrs['name'])
+        elif node_action == "Constant":
+            self[node.output()] = attrs.get('value', None)
+        elif node_action == "ListConstruct":
+            self[node.output()] = [self[i] for i in node.inputs()]
+        elif node_action == "TupleConstruct":
+            self[node.output()] = tuple([self[i] for i in node.inputs()])
+        elif node_action == "NumToTensor":
+            self[node.output()] = torch.tensor(self[node.inputsAt(0)])
+        else:
+            raise Exception(f"action '{node_action}' is not supported by the session in 'prim' domain\nexception occurred for the node: {node.kind()}")
+        
+    def run_nonprim_entry(self, entry: NetworkGraphEntry):
+        node = entry.node
+        node_domain, node_action = node.kind().split("::")
+        
+        args = [self[i] for i in node.inputs()]
+        method, pp_args, pp_kwargs = _find_nonprim_method(node_domain, node_action, args=args)
+        
+        if method is None:
+            raise Exception(f"method '{node_action}' in domain '{node_domain}' not found\nexception occurred for the node: {node.kind()}")
+        
+        outputs = method(*pp_args, **pp_kwargs)
+        
+        if len(list(node.outputs())) == 1:
+            self[node.output()] = outputs
+        else:
+            for idx, o in enumerate(node.outputs()):
+                self[o] = outputs[idx]
+                
+    def run_compiled_entry(self, entry: NetworkGraphEntry):
+        if self.host_context is None:
+            raise Exception("HostContext is not set in NetworkGraphContext, cannot run compiled entry.")
+        
+        # TODO: support pipelining and concurrent runtime execution
+        with self.host_context:
+            runtime = self.host_context.rt_get(entry.submodule if entry.node_type == NetworkGraphEntryType.COMPILED_GRAPH else entry.node.kind())
+            assert runtime is not None, f"HostRuntime not found for the entry: {entry}"
+            
+            if entry.node_type == NetworkGraphEntryType.COMPILED_NONPRIM:
+                raise NotImplementedError("runtime execution with COMPILED_NONPRIM entry is not yet implemented.")  # TODO: implement
+
+            module = entry.submodule
+            tensor_input_names = [i.debugName() for i in list(entry.node.inputs())[1:]]  # skip the first input (self)
+            tensor_output_names = [o.debugName() for o in entry.node.outputs()]
+            
+            placeholder_inputs = [Placeholder(name) for name in tensor_input_names]
+            placeholder_outputs = [Placeholder(name) for name in tensor_output_names]
+            
+            for idx, name in enumerate(placeholder_inputs):
+                if name not in self.host_context.buffers:
+                    t: torch.Tensor = self[name]
+                    b = MCA_TensorBuffer(t.shape, t.dtype, runtime.input_layouts[idx].overrides(mem_type=MCA_TensorMemoryType.MAIN), device=self.host_context.device, core_ids=self.host_context.core_ids)
+                    b.update(t)
+                    self.host_context.add_buffer(name, b)
+            
+            for idx, name in enumerate(placeholder_outputs):
+                if name not in self.host_context.buffers:
+                    t: torch.Tensor = self[name]  # dummy tensor to infer shape and dtype (obtained from the pre-run of the graph, see 'run_entry' method)  # TODO: optimize
+                    b = MCA_TensorBuffer(t.shape, t.dtype, runtime.output_layouts[idx].overrides(mem_type=MCA_TensorMemoryType.MAIN), device=self.host_context.device, core_ids=self.host_context.core_ids)
+                    self.host_context.add_buffer(name, b)
+            
+            runtime.main_process(module, *placeholder_inputs, *placeholder_outputs)
+            runtime.post_process(module, *placeholder_inputs, *placeholder_outputs)
+            
+            for action in self.host_context.actions:
+                action.execute()
+                
+            self.host_context.device.run_kernels()
+            
+            if len(list(entry.node.outputs())) == 1:
+                b = self.host_context.get_buffer(placeholder_outputs[0])
+                outputs = b.restore()
+                self[entry.node.output()] = outputs
+            else:
+                for idx, o in enumerate(entry.node.outputs()):
+                    b = self.host_context.get_buffer(placeholder_outputs[idx])
+                    outputs = b.restore()
+                    self[o] = outputs
+                    
+            for idx, name in enumerate(placeholder_inputs):
+                if name in self.host_context.buffers:
+                    b = self.host_context.get_buffer(name)
+                    self.host_context.device.remove_buffer(b)
+                    self.host_context.buffers.pop(name)
+            
+            for idx, name in enumerate(placeholder_outputs):
+                if name in self.host_context.buffers:
+                    t: torch.Tensor = self[name]  # dummy tensor to infer shape and dtype (obtained from the pre-run of the graph, see 'run_entry' method)  # TODO: optimize
+                    b = MCA_TensorBuffer(t.shape, t.dtype, runtime.output_layouts[idx].overrides(mem_type=MCA_TensorMemoryType.MAIN), device=self.host_context.device, core_ids=self.host_context.core_ids)
+                    self.host_context.add_buffer(name, b)
+                    self.host_context.device.remove_buffer(b)
+                    self.host_context.buffers.pop(name)
+                
+    def run_entry(self, entry: NetworkGraphEntry):
+        # STEP 1: pre-run the entry to prepare inputs/outputs
+        if entry.node_type.is_prim:
+            self.run_prim_entry(entry)
+        elif entry.node_type.is_nonprim:
+            self.run_nonprim_entry(entry)
+        else:
+            raise Exception(f"unsupported entry type: {entry.node_type}")
+        
+        # STEP 2: run the entry with compiled runtime (if necessary)
+        if entry.node_type.is_compiled:
+            self.run_compiled_entry(entry)
+
+class NetworkGraph:
+    def __init__(self, module: torch.nn.Module, graph_ivars: list[torch.Value], graph_ovars: list[torch.Value], graph_nodes: list[torch.Node], var_context: NetworkGraphContext, entries: list[NetworkGraphEntry]):
+        self.module = module
+        self.graph_ivars = graph_ivars
+        self.graph_ovars = graph_ovars
+        self.graph_nodes = graph_nodes
+        self.var_context = var_context
+        self.entries = entries
+    
+    @classmethod
+    def from_trace(cls, module: torch.nn.Module, *dummy_inputs, host_context: HostContext=None, disable_lowering: bool=False, disable_toposort: bool=False):
+        warnings.filterwarnings("ignore", category=UserWarning)    # TODO: suppress leaf Tensor access warning
+        warnings.filterwarnings("ignore", category=FutureWarning)  # TODO: suppress quantized model warning
+        
+        # STEP 1: create traced graph (torch.jit.trace)
+        module = module
+        
+        traced_module = torch.jit.trace(module, *dummy_inputs)
+        traced_graph = traced_module.graph
+
+        # STEP 2: parse traced graph to get input/output variables and nodes
+        graph_ivars = list(traced_graph.inputs())
+        graph_ovars = list(traced_graph.outputs())
+        graph_nodes = list(traced_graph.nodes())
+        
+        # STEP 3: construct variable context and entries
+        var_context = NetworkGraphContext()
+        var_context.set_host_context(host_context)
+        
+        entries: list[NetworkGraphEntry] = []
+        
+        # STEP 3-1: initialize input variables
+        var_context[graph_ivars[0]] = module
+        for idx, ivar in enumerate(graph_ivars[1:]):
+            var_context[ivar] = dummy_inputs[idx]
+        
+        # STEP 3-2: construct entries and initialize intermediate variables
+        for node in graph_nodes:
+            node_domain, node_action = node.kind().split("::")
+            
+            # STEP 3-2-1: prim nodes
+            if node_domain == "prim":
+                entry = NetworkGraphEntry(NetworkGraphEntryType.PRIM, node)
+                attrs = {attr_name: _get_attr_from_node(node, attr_name) for attr_name in node.attributeNames()}
+
+                if node_action == "CallMethod":
+                    submodule = var_context[list(node.inputs())[0]]
+                    method_name = attrs['name']
+                    
+                    # check if the submodule is a torch.nn.Module and method is "forward" -> subgraph or compiled graph
+                    if isinstance(submodule, torch.nn.Module) and "forward" in method_name and var_context.host_context is not None:
+                        if var_context.host_context.rt_supports(submodule):
+                            entry = NetworkGraphEntry(NetworkGraphEntryType.COMPILED_GRAPH, node, submodule=submodule)
+                        else:
+                            args = [var_context[i] for i in list(node.inputs())[1:]]
+                            subgraph = NetworkGraph.from_trace(submodule, *args, host_context=host_context, disable_lowering=True, disable_toposort=True)
+                            entry = NetworkGraphEntry(NetworkGraphEntryType.GRAPH, node, subgraph=subgraph)
+                    
+                    # otherwise, the entry remains as prim::CallMethod (not compiled as runtime kernel or operator)
+                    else:
+                        entry = NetworkGraphEntry(NetworkGraphEntryType.PRIM, node)
+            
+            # STEP 3-2-2: nonprim nodes (aten::, quantized::, ...)
+            else:
+                if var_context.host_context is not None and var_context.host_context.rt_supports(node.kind()):
+                    entry = NetworkGraphEntry(NetworkGraphEntryType.COMPILED_NONPRIM, node)
+                else:
+                    entry = NetworkGraphEntry(NetworkGraphEntryType.NONPRIM, node)
+            
+            entries.append(entry)
+            var_context.run_entry(entry)
+            
+        warnings.filterwarnings("default", category=UserWarning)    # TODO: suppress leaf Tensor access warning
+        warnings.filterwarnings("default", category=FutureWarning)  # TODO: suppress quantized model warning 
+            
+        graph = cls(module, graph_ivars, graph_ovars, graph_nodes, var_context, entries)
+        
+        if not disable_lowering:
+            graph.lowering()
+        if not disable_toposort:
+            graph.topological_sort()
+            
+        return graph
+    
+    def rename_vars(self, var_rename_map: dict[str, str]):
+        # STEP 1: rename input variables
+        for ivar in self.graph_ivars:
+            if ivar.debugName() in var_rename_map:
+                ivar.setDebugName(var_rename_map[ivar.debugName()])
+                
+        # STEP 2: rename output variables
+        for ovar in self.graph_ovars:
+            if ovar.debugName() in var_rename_map:
+                ovar.setDebugName(var_rename_map[ovar.debugName()])
+                
+        # STEP 3: rename variables in nodes
+        for node in self.graph_nodes:
+            for ivar in node.inputs():
+                if ivar.debugName() in var_rename_map:
+                    ivar.setDebugName(var_rename_map[ivar.debugName()])
+            for ovar in node.outputs():
+                if ovar.debugName() in var_rename_map:
+                    ovar.setDebugName(var_rename_map[ovar.debugName()])
+        
+        # STEP 4: reconstruct variable context
+        host_context = self.var_context.host_context
+        self.var_context = NetworkGraphContext({var_rename_map.get(k, k): v for k, v in self.var_context.items()})
+        self.var_context.set_host_context(host_context)
+
+    def lowering(self, context_name=None):
+        if context_name is None:
+            context_name = self.module.__class__.__name__
+            
+        # STEP 1: rename all the variables
+        var_rename_map = {vname: f"{context_name}::{vname}" for vname in self.var_context.keys()}
+        self.rename_vars(var_rename_map=var_rename_map)
+        
+        # STEP 2: lower subgraphs
+        lowered_entries: list[NetworkGraphEntry] = []
+        lowered_graph_nodes: list[torch.Node] = []
+        
+        for entry in self.entries:
+            if entry.node_type == NetworkGraphEntryType.GRAPH:
+                # STEP 2-1: lowering subgraph
+                subgraph_context_name = context_name + "::" + entry.node.inputsAt(0).debugName().split("::")[-1]
+                entry.subgraph.lowering(context_name=subgraph_context_name)
+
+                # STEP 2-2: rename subgraph input variables
+                var_rename_map = {cvar.debugName(): pvar.debugName() for cvar, pvar in zip(entry.subgraph.graph_ivars, entry.node.inputs())}
+                entry.subgraph.rename_vars(var_rename_map=var_rename_map)
+                
+                # STEP 2-3: rename subgraph output variables
+                var_rename_map = {cvar.debugName(): pvar.debugName() for cvar, pvar in zip(entry.subgraph.graph_ovars, entry.node.outputs())}
+                entry.subgraph.rename_vars(var_rename_map=var_rename_map)
+                
+                # STEP 2-4: append lowered entries and nodes
+                lowered_entries.extend(entry.subgraph.entries)
+                lowered_graph_nodes.extend(entry.subgraph.graph_nodes)
+            else:  
+                lowered_entries.append(entry)
+                lowered_graph_nodes.append(entry.node)
+        
+        self.entries = lowered_entries
+        self.graph_nodes = lowered_graph_nodes
+
+        return self
+        
+    def topological_sort(self):
+        # STEP 1: build dependency graph between entries
+        entry_dept_graph: Dict[int, Set[int]] = {idx: set() for idx in range(len(self.entries))}
+        
+        for entry_idx, entry in enumerate(self.entries[:-1]):
+            ovars = list(o.debugName() for o in entry.node.outputs())
+            
+            for check_idx, check_entry in enumerate(self.entries[entry_idx+1:], start=entry_idx+1):
+                ivars = list(i.debugName() for i in check_entry.node.inputs())
+                
+                if any(o in ivars for o in ovars):
+                    entry_dept_graph[entry_idx].add(check_idx)
+        
+        # STEP 2: topological sort            
+        sorted_entry_indices = _kahn_topological_sort(entry_dept_graph)
+        self.entries = [self.entries[idx] for idx in sorted_entry_indices]
+        
+        return self
+        
+    def get_outputs(self):
+        if len(self.graph_ovars) == 1:
+            return self.var_context[self.graph_ovars[0]]
+        return [self.var_context[o] for o in self.graph_ovars]
+    
+    def run_graph(self, *dummy_inputs):
+        for idx, ivar in enumerate(self.graph_ivars[1:]):
+            self.var_context[ivar] = dummy_inputs[idx]
+        
+        for entry in self.entries:
+            try:
+                self.var_context.run_entry(entry)
+            except Exception as e:
+                logger.error(f"exception occurred while running the graph with node: {entry.node}")
+                raise Exception(f"exception occurred while running the entry: {entry}\n{e}") from e
+        
+        return self.get_outputs()
+    
+    def print_graph(self, indent: int=0):
+        print(" " * indent + f"OPEN_GRAPH[type={type(self.module).__name__}]({', '.join(list('%'+i.debugName() for i in self.graph_ivars))}):")
+        for entry in self.entries:
+            print(" " * (indent + 2) + str(entry))
+            
+            if entry.node_type == NetworkGraphEntryType.GRAPH:
+                entry.subgraph.print_graph(indent=indent+2)
+        print(" " * (indent + 2) + f"return {', '.join(list('%'+o.debugName() for o in self.graph_ovars))}")
+    

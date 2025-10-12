@@ -38,7 +38,7 @@ if __name__ == "__main__":
     config = TenstorrentConfig.BLACKHOLE()
 
     device = TenstorrentDevice(**config)
-    device.initialize(print_command_debug_msg=False)
+    device.initialize()
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
     M = 512

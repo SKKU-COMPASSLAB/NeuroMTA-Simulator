@@ -127,6 +127,7 @@ if __name__ == "__main__":
 
     device = GoogleTPUDevice(**config)
     device.initialize()
+    device.set_command_debug_verbosity(verbose=True)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
     M = 128

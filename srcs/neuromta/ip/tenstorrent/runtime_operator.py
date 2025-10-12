@@ -115,8 +115,6 @@ def TT_RT_CONV2D(
     OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
     OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
     
-    # buf_ofm = MCA_TensorBuffer(shape=(N, OH, OW, K), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
-    
     if buf_ofm.tensor_shape != (N, OH, OW, K):
         raise Exception(f"[ERROR] The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, K)}.")
     if buf_ofm.tensor_dtype != acc_dtype:
@@ -179,8 +177,6 @@ def TT_RT_CONV2D(
                     )
                     
                     ofm_tile_cnt += 1
-                
-    # return buf_ofm
 
 @MCA_RT_OPERATOR
 def TT_RT_MAXPOOL2D(
@@ -210,8 +206,6 @@ def TT_RT_MAXPOOL2D(
     OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
     OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
 
-    # buf_ofm = MCA_TensorBuffer(shape=(N, OH, OW, C), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
-    
     if buf_ofm.tensor_shape != (N, OH, OW, C):
         raise Exception(f"[ERROR] The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, C)}.")
     if buf_ofm.tensor_dtype != acc_dtype:
@@ -261,6 +255,7 @@ def TT_RT_MAXPOOL2D(
                         
                         n_it = n_it,
                         oh_it = oh_it,
+                        
                         ow_tile_it = ow_tile_it,
                         c_tile_it = c_tile_it,
 
@@ -269,8 +264,6 @@ def TT_RT_MAXPOOL2D(
                     )
                     
                     ofm_tile_cnt += 1
-                
-    # return buf_ofm
 
 @MCA_RT_OPERATOR
 def TT_RT_RELU(
@@ -286,12 +279,12 @@ def TT_RT_RELU(
     
     if buf_src.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"[ERROR] Source buffer must be allocated in L1 memory.")
+    if buf_dst is not None and buf_dst.layout.mem_type == MCA_TensorMemoryType.MAIN:
+        raise Exception(f"[ERROR] Destination buffer must be allocated in L1 memory.")
     
     if dtype is None:
         dtype = buf_src.tensor_dtype
     
-    # if not inplace:
-    #     buf_dst = MCA_TensorBuffer(shape=buf_src.tensor_shape, dtype=dtype, layout=buf_src.layout, device=device, core_ids=core_grid.core_ids)
     if inplace:
         if buf_src.tensor_dtype != dtype:
             raise Exception(f"[ERROR] In in-place operation, source and destination buffer must have the same data type.")
@@ -301,6 +294,9 @@ def TT_RT_RELU(
         page_indice = buf_dst.get_page_idx_by_owner(core_id)
         core = device.get_npu_core(core_id=core_id)
         
+        if len(page_indice) == 0:
+            continue
+        
         TT_RT_KERNEL_TILED_RELU(
             core,
             
@@ -308,7 +304,6 @@ def TT_RT_RELU(
             buf_dst = buf_dst.get_reference_by_page_idx(*page_indice),
 
             dtype = dtype,
-            vlen = core.vpu_context.vlen_max   # TODO: hard-coded vector length (should be configurable)
-        )
-    
-    # return buf_dst
+            vlen = buf_src.reference.page_size // dtype.itemsize,
+        )       
+       

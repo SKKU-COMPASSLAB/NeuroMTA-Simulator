@@ -39,9 +39,10 @@ if __name__ == "__main__":
 
     device = TenstorrentDevice(**config)
     device.initialize()
+    device.set_command_debug_verbosity(verbose=True)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
-    M = 512
+    M = 1
     N = 512
     K = 512
     dtype = torch.int8
@@ -53,23 +54,19 @@ if __name__ == "__main__":
     wgt:  torch.Tensor = torch.randint(-32, 32, (K * N,)).to(dtype=dtype).reshape(K, N).T  # (N, K)
     bias: torch.Tensor = torch.randint(-32, 32, (N,)).to(dtype=acc_dtype).flatten()
 
-    # ifm = ifm - 0.5
-    # wgt = wgt - 0.5
-    # bias = bias - 0.5
-
     main_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.MAIN, page_shape=(32, 32))
     l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
     core_ids = core_grid.core_ids
 
-    main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device)
+    main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout.overrides(page_shape=(1, 32)), device=device)
     main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device)
     main_buf_psum = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device)
-    main_buf_ofm  = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=main_layout, device=device)
-    
-    l1_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
+    main_buf_ofm  = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device)
+
+    l1_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
     l1_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
     l1_buf_psum = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
-    l1_buf_ofm  = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids)
+    l1_buf_ofm  = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
 
     main_buf_ifm.update(ifm)
     main_buf_wgt.update(wgt)

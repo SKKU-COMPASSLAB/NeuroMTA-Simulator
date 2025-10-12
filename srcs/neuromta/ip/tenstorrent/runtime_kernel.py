@@ -244,8 +244,8 @@ def TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
                     copy_layout_pattern=pattern,
                 )
             
-            preload_psum = (fh_it == fh_min and fw_it == 0 and c_tile_it == 0)
-            flush_ofm    = (fh_it == (fh_max - 1) and fw_it == (FW - 1) and c_tile_it == (c_tile_num - 1))
+            preload_psum = (fh_it == fh_min and fw_it == 0)
+            flush_ofm    = (fh_it == (fh_max - 1) and fw_it == (FW - 1))
             
             core.mxu_tiled_maxpool(
                 *containers,
@@ -268,8 +268,8 @@ def TT_RT_KERNEL_TILED_RELU(
 ):  
     if buf_src.page_size != buf_dst.page_size:
         raise Exception(f"[ERROR] Source and destination buffer must have the same size.")
-    if buf_src.page_size % vlen != 0:
-        raise Exception(f"[ERROR] Buffer size {buf_src.page_size} is not divisible by vector length {vlen}.")
+    if buf_src.page_size % (vlen * dtype.itemsize) != 0:
+        raise Exception(f"[ERROR] Buffer size {buf_src.page_size} is not divisible by vector register length {(vlen * dtype.itemsize)}.")
     if vlen is None:
         vlen = core.vpu_context.vlen_max
     

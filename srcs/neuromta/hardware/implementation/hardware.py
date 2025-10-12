@@ -257,8 +257,10 @@ class MCA_DeviceBase(Device):
         pp.pprint(self.summary())
 
 
-class MTA_CoreGrid:
+class MTA_CoreGrid(list):
     def __init__(self, offset: tuple[int, int], shape: tuple[int, int], core_ids: list[int]):
+        super().__init__(core_ids)
+        
         self.offset = offset
         self.shape = shape
         self.core_ids = core_ids
@@ -266,7 +268,7 @@ class MTA_CoreGrid:
     def __getitem__(self, idx: int) -> int:
         if isinstance(idx, tuple):
             return self.core_ids[idx[0] * self.shape[1] + idx[1]]
-        return self.core_ids[idx]
+        return super().__getitem__(idx)
 
 
 class MTA_DeviceBase(MCA_DeviceBase):

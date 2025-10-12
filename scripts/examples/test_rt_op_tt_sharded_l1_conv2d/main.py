@@ -38,7 +38,8 @@ if __name__ == "__main__":
     config = TenstorrentConfig.BLACKHOLE()
 
     device = TenstorrentDevice(**config)
-    device.initialize(print_command_debug_msg=True)
+    device.initialize()
+    device.set_command_debug_verbosity(verbose=True)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
     N, H, W, C = 4, 36, 36, 28
