@@ -1,4 +1,5 @@
 import torch
+import torchvision
 
 from neuromta.framework import *
 from neuromta.hardware import *
@@ -36,15 +37,17 @@ if __name__ == "__main__":
     config = TenstorrentConfig.BLACKHOLE()
     device = TenstorrentDevice(**config)
     device.initialize()
+    device.set_command_debug_verbosity(verbose=True)
     
     core_grid = device.get_npu_core_grid(offset=(0 , 0), shape=(4, 4))
     host_context = TT_HOST_CONTEXT(device=device, core_ids=core_grid)
 
-    model = CNN().eval()
+    input_shape = (1, 3, 224, 224)
+    model = torchvision.models.alexnet(num_classes=1024).eval()
     
     with torch.no_grad():
         print(f"=== Trace Graph ===")
-        dummy_input = torch.randn(1, 1, 28, 28)
+        dummy_input = torch.randn(*input_shape)
         graph = NetworkGraph.from_trace(model, dummy_input, host_context=host_context)
         graph.print_graph()
     
@@ -53,8 +56,8 @@ if __name__ == "__main__":
                 core = device.get_npu_core(core_id=core_id)
                 pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
                 pbar.bind_core(core)
-                
-            dummy_input = torch.randn(1, 1, 28, 28)
+
+            dummy_input = torch.randn(*input_shape)
             reference = model(dummy_input)
             simulated = graph.run_graph(dummy_input)
         

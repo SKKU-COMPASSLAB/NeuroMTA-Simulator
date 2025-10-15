@@ -42,7 +42,8 @@ class IcntCore(Core):
             ).with_args(
                 self.cmap_context.config.booksim_module_id,
                 src_id, dst_id, 
-                subnet=0, n_flits=n_flits, 
+                subnet=src_id % self.icnt_context.config.booksim2_config._subnets, n_flits=n_flits, 
+                # subnet=1, n_flits=n_flits, 
                 is_write=False, is_response=False
             )
             
@@ -56,7 +57,8 @@ class IcntCore(Core):
             ).with_args(
                 self.cmap_context.config.booksim_module_id,
                 dst_id, src_id, 
-                subnet=0, n_flits=n_flits, 
+                subnet=src_id % self.icnt_context.config.booksim2_config._subnets, n_flits=n_flits, 
+                # subnet=1, n_flits=n_flits, 
                 is_write=False, is_response=True
             )
             
@@ -77,7 +79,8 @@ class IcntCore(Core):
             ).with_args(
                 self.cmap_context.config.booksim_module_id,
                 src_id, dst_id, 
-                subnet=0, n_flits=n_flits, 
+                subnet=src_id % self.icnt_context.config.booksim2_config._subnets, n_flits=n_flits, 
+                # subnet=0, n_flits=n_flits, 
                 is_write=True, is_response=False
             )
             

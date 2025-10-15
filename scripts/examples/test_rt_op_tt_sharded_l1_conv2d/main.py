@@ -42,16 +42,16 @@ if __name__ == "__main__":
     device.set_command_debug_verbosity(verbose=True)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
-    N, H, W, C = 4, 36, 36, 28
-    K = 36
+    N, H, W, C = 1, 224, 224, 32
+    K = 128
     FH, FW = 3, 3
     SH, SW = 1, 1
     PH, PW = 1, 1
     DH, DW = 1, 1
-    dtype = torch.int8
-    acc_dtype = torch.int32
+    dtype = torch.float32
+    acc_dtype = torch.float32
 
-    core_grid = device.get_npu_core_grid(offset=(0, 0), shape=(4, 4))
+    core_grid = device.get_npu_core_grid(offset=(0, 0), shape=(6, 6))
 
     ifm:  torch.Tensor = torch.randint(0, 16, (N * H * W * C,)).to(dtype=dtype).reshape(N, H, W, C)
     wgt:  torch.Tensor = torch.randint(0, 16, (FH * FW * K * C,)).to(dtype=dtype).reshape(FH, FW, K, C)

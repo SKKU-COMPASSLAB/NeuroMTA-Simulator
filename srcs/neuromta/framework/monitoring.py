@@ -1,3 +1,4 @@
+import signal
 import time
 import sys
 import os
@@ -129,12 +130,18 @@ class MWDrawingProcess(mp.Process):
         self._enable_prompt = False
         
     def setup_terminal(self):
+        signal.signal(signal.SIGINT, self.exception_handle)
+        
         sys.stdout.write("\033[2J")     # erase the entire screen
         sys.stdout.write("\033[?25l")   # hide cursor (prevent blinking)
 
     def teardown_terminal(self, height: int):
-        sys.stdout.write(f"\033[{height};1H\n")     # move cursor to the line after the last log line
-        sys.stdout.write("\033[?25h")                   # show cursor again
+        sys.stdout.write(f"\033[{height};1H\n")  # move cursor to the line after the last log line
+        sys.stdout.write("\033[?25h")            # show cursor again
+        sys.stdout.flush()
+        
+    def exception_handle(self):
+        sys.stdout.write("\033[?25h") # show cursor again
         sys.stdout.flush()
         
     def draw(self, log_messages: list[LogEntryHandle], pbar_handles: list[ProgressBarHandle], term_width: int, term_height: int):

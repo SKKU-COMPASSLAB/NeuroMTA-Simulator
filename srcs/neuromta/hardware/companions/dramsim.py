@@ -1,7 +1,7 @@
 import os
 import math
 import configparser
-from typing import Any
+from typing import Any, Callable
 
 from neuromta.framework import *
 
@@ -59,6 +59,7 @@ class DRAMSim3Config:
         self, 
         config_path: str,  #="GDDR5_8Gb_x32", 
         processor_clock_freq: int,  #=parse_freq_str("1GHz"),
+        cmd_queue_num: int,
     ):  
         if not os.path.isfile(config_path):
             config_path = pydramsim3.PYDRAMSIM_MSYS_CONFIG_PATH(config_path)
@@ -67,6 +68,7 @@ class DRAMSim3Config:
 
         self.config_path = config_path
         self.processor_clock_freq = processor_clock_freq
+        self.cmd_queue_num = cmd_queue_num
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -83,7 +85,8 @@ class DRAMSim3(CompanionModule):
         
         self._msys = pydramsim3.create_msys(
             config_file=self.config.config_path,
-            output_dir=pydramsim3.PYDRAMSIM_DEFAULT_OUT_DIR
+            output_dir=pydramsim3.PYDRAMSIM_DEFAULT_OUT_DIR,
+            cmd_queue_num=self.config.cmd_queue_num,
         )
         
         self._mem_clock_time = pydramsim3.msys_get_tck(self._msys)
@@ -98,22 +101,11 @@ class DRAMSim3(CompanionModule):
         
         pydramsim3.msys_cycle_step(msys=self._msys, cycles=mem_cycles)
 
-    def create_command(self, addr: int, size: int, is_write: bool):
-        return pydramsim3.create_msys_cmd(addr=addr, size=size, is_write=is_write)
+    def create_command(self, cmd_q_id: int, addr: int, size: int, is_write: bool) -> Any:
+        return pydramsim3.create_msys_cmd(cmd_q_id=cmd_q_id, addr=addr, size=size, is_write=is_write)
 
-    def dispatch_command(self, cmd) -> bool:
-        return pydramsim3.msys_dispatch_cmd(msys=self._msys, cmd=cmd)
-        
+    def dispatch_command(self, cmd, dispatch_callback: Callable, execute_callback: Callable) -> bool:
+        return pydramsim3.msys_dispatch_cmd(msys=self._msys, cmd=cmd, dispatch_callback=dispatch_callback, execute_callback=execute_callback)
+
     def check_command_executed(self, cmd) -> bool:
         return pydramsim3.check_msys_cmd_executed(cmd=cmd)
-    
-    # def get_cmd_wait_check_interval(self, cmd) -> int:
-    #     if self.config.cmd_wait_resolution is None:
-    #         return 1
-
-    #     mem_to_ref_clock_ratio = self._mem_clock_time / self._ref_clock_time
-
-    #     cycles = pydramsim3.get_expected_cmd_cycles(msys=self._msys, cmd=cmd)
-    #     cycles *= mem_to_ref_clock_ratio
-    #     cycles = math.floor(cycles / self.config.cmd_wait_resolution)
-    #     return max(cycles, 1)

@@ -49,6 +49,8 @@ class MainMemoryCore(Core):
                 
                 addr = handle.page_ptrs[0].addr
                 size = handle.page_ptrs[0].size
+                
+            ch_id = (addr // self.cmap_context.config.main_mem_channel_size) % self.cmap_context.config.n_main_mem_channels
 
             msg = RPCMessage(
                 src_core_id=self.core_id,
@@ -56,7 +58,7 @@ class MainMemoryCore(Core):
                 cmd_id="send_companion_command",
             ).with_args(
                 self.cmap_context.config.dramsim_module_id,
-                addr=addr, size=size, is_write=False,
+                cmd_q_id=ch_id, addr=addr, size=size, is_write=False,
             )
             
             self.async_rpc_send_req_msg(msg)
@@ -77,6 +79,8 @@ class MainMemoryCore(Core):
                 
                 addr = handle.page_ptrs[0].addr
                 size = handle.page_ptrs[0].size
+                
+            ch_id = (addr // self.cmap_context.config.main_mem_channel_size) % self.cmap_context.config.n_main_mem_channels
             
             msg = RPCMessage(
                 src_core_id=self.core_id,
@@ -84,7 +88,7 @@ class MainMemoryCore(Core):
                 cmd_id="send_companion_command",
             ).with_args(
                 self.cmap_context.config.dramsim_module_id,
-                addr=addr, size=size, is_write=True,
+                cmd_q_id=ch_id, addr=addr, size=size, is_write=True,
             )
             
             self.async_rpc_send_req_msg(msg)

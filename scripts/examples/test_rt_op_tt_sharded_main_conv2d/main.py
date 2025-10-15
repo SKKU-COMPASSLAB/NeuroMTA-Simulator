@@ -42,20 +42,17 @@ if __name__ == "__main__":
     device.set_command_debug_verbosity(verbose=True)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
-    N, H, W, C = 4, 36, 36, 28
-    K = 36
+    N, H, W, C = 1, 224, 224, 32
+    K = 128
     FH, FW = 3, 3
     SH, SW = 1, 1
     PH, PW = 1, 1
     DH, DW = 1, 1
     
-    OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
-    OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
-    
-    dtype = torch.int8
-    acc_dtype = torch.int32
+    dtype = torch.float32
+    acc_dtype = torch.float32
 
-    core_grid = device.get_npu_core_grid(offset=(0, 0), shape=(4, 4))
+    core_grid = device.get_npu_core_grid(offset=(0, 0), shape=(6, 6))
 
     ifm:  torch.Tensor = torch.randint(0, 16, (N * H * W * C,)).to(dtype=dtype).reshape(N, H, W, C)
     wgt:  torch.Tensor = torch.randint(0, 16, (FH * FW * K * C,)).to(dtype=dtype).reshape(FH, FW, K, C)
@@ -68,12 +65,12 @@ if __name__ == "__main__":
     main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device, core_ids=core_ids)
     main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device, core_ids=core_ids)
     main_buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
-    main_buf_ofm  = MCA_TensorBuffer(shape=(N, OH, OW, K), dtype=acc_dtype, layout=main_layout, device=device, core_ids=core_ids)
+    main_buf_ofm  = MCA_TensorBuffer(shape=(N, H, W, K), dtype=acc_dtype, layout=main_layout, device=device, core_ids=core_ids)
     
     l1_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
     l1_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
     l1_buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
-    l1_buf_ofm  = MCA_TensorBuffer(shape=(N, OH, OW, K), dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids)
+    l1_buf_ofm  = MCA_TensorBuffer(shape=(N, H, W, K), dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids)
 
     main_buf_ifm.update(ifm)
     main_buf_wgt.update(wgt)

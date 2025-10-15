@@ -1,6 +1,8 @@
 import abc
-from typing import Any
+import functools
+from typing import Any, Callable
 
+from neuromta.framework.logger import logger
 from neuromta.framework.core import *
 
 
@@ -17,40 +19,22 @@ COMPANION_CORE_ID = "COMPANION"
 class CompanionModule(metaclass=abc.ABCMeta):
     def __init__(self):
         self.module_id = None
-        self._ongoing_cmds = []
     
     @abc.abstractmethod
     def update_cycle_time(self, cycle_time: int):
         pass
     
     @abc.abstractmethod
-    def create_command(self, *args, **kwargs) -> Any:
+    def create_command(self, *args, callback: Callable, **kwargs) -> Any:
         pass
     
     @abc.abstractmethod
-    def dispatch_command(self, cmd: Any) -> bool:
+    def dispatch_command(self, cmd: Any, dispatch_callback: Callable, execute_callback: Callable) -> bool:
         pass
 
     @abc.abstractmethod
     def check_command_executed(self, cmd: Any) -> bool:
         pass
-    
-    def register_command(self, cmd: Any):
-        self._ongoing_cmds.append(cmd)
-        
-    def retire_executed_commands(self):
-        self._ongoing_cmds = [cmd for cmd in self._ongoing_cmds if not self.check_command_executed(cmd)]
-
-    @property
-    def is_busy(self):
-        return len(self._ongoing_cmds) > 0
-
-    @property
-    def has_executed_ongoing_cmd(self) -> bool:
-        for cmd in self._ongoing_cmds:
-            if self.check_command_executed(cmd):
-                return True
-        return False
 
 
 class CompanionCore(Core):
@@ -58,6 +42,10 @@ class CompanionCore(Core):
         super().__init__(core_id=COMPANION_CORE_ID)
         
         self._companion_modules: dict[str, CompanionModule] = {}
+        # self._suspended_dispatch_context: dict[int, Kernel] = {}
+        # self._ongoing_command_context: dict[int, Kernel] = {}
+        self._command_execution_context: dict[int, list[Kernel, int]] = {}
+        self._is_any_cmd_retired: bool = False
         
     def register_companion_module(self, module_id: str, module: CompanionModule):
         if not isinstance(module, CompanionModule):
@@ -71,8 +59,7 @@ class CompanionCore(Core):
 
     def update_cycle_time_companion_modules(self, cycle_time: int):
         for cmod in self._companion_modules.values():
-            if cmod.is_busy:
-                cmod.update_cycle_time(cycle_time=cycle_time)
+            cmod.update_cycle_time(cycle_time=cycle_time)
             
     def update_cycle_time_until_cmd_executed(self) -> int:
         if len(self._companion_modules) == 0:
@@ -80,52 +67,74 @@ class CompanionCore(Core):
 
         cycle_time = 0
         
+        if len(self._command_execution_context) == 0:
+            return cycle_time
+        
+        self._is_any_cmd_retired = False
+        
         while True:
-            if all(not cmod.is_busy for cmod in self._companion_modules.values()):
-                break
-
-            if any(cmod.has_executed_ongoing_cmd for cmod in self._companion_modules.values()):
-                break
-
             self.update_cycle_time_companion_modules(1)
             cycle_time += 1
 
-        for cmod in self._companion_modules.values():
-            cmod.retire_executed_commands()
+            if self._is_any_cmd_retired:
+                break
             
         return cycle_time
-            
-    @core_conditional_command_method
+    
+    @core_command_method
     def dispatch_command_with_module(self, module_id: str, cmd):
         cmod = self.get_companion_module(module_id)
         if cmod is None:
             raise ValueError(f"[ERROR] Companion module '{module_id}' not found in core '{self.core_id}'")
         
-        return cmod.dispatch_command(cmd)
-    
+        cmd_id = id(cmd)
+        
+        if cmd_id in self._command_execution_context:
+            raise Exception(f"[ERROR] Command id {cmd_id} is already being tracked in core '{self.core_id}'")
+        
+        kernel = get_global_kernel_context()
+        self._command_execution_context[cmd_id] = [kernel, 1]  # 2 means dispatch and execute
+        kernel.set_blocked(True)
+        
+        dispatch_callback = functools.partial(self._callback_common, module_id)
+        execute_callback = functools.partial(self._callback_common, module_id)
+        cmod.dispatch_command(cmd, dispatch_callback, execute_callback)
+        
     @core_command_method
-    def register_command_with_module(self, module_id: str, cmd: Any):
-        cmod = self.get_companion_module(module_id)
-        if cmod is None:
-            raise ValueError(f"[ERROR] Companion module '{module_id}' not found in core '{self.core_id}'")
-
-        cmod.register_command(cmd)
-
-    @core_conditional_command_method
-    def wait_command_with_module(self, module_id: str, cmd) -> bool:
-        cmod = self.get_companion_module(module_id)
-        if cmod is None:
-            raise ValueError(f"[ERROR] Companion module '{module_id}' not found in core '{self.core_id}'")
-
-        return cmod.check_command_executed(cmd)
+    def wait_command_with_module(self, module_id: str, cmd):
+        cmd_id = id(cmd)
+        
+        kernel, cnt = self._command_execution_context.get(cmd_id, (None, 0))
+        if kernel is None:
+            return  # The command has already been executed and there is no need to wait.
+        
+        if cnt <= 0:
+            kernel.set_blocked(False)
+            self._is_any_cmd_retired = True
+            del self._command_execution_context[cmd_id]
+        else:
+            kernel.set_blocked(True)
+            self._command_execution_context[cmd_id][1] = cnt + 1  # increase the count of waiters
+        
+    def _callback_common(self, module_id: str, cmd):
+        cmd_id = id(cmd)
+        kernel, cnt = self._command_execution_context.get(cmd_id, (None, 0))
+        
+        if kernel is None:
+            return
+        
+        cnt -= 1
+        
+        if cnt <= 0:
+            kernel.set_blocked(False)
+            self._is_any_cmd_retired = True
+            del self._command_execution_context[cmd_id]
     
     def send_companion_command(self, module_id: str, *args, **kwargs) -> Any:
         cmod = self.get_companion_module(module_id)
         if cmod is None:
             raise ValueError(f"[ERROR] Companion module '{module_id}' not found in core '{self.core_id}'")
-        
-        cmd = cmod.create_command(*args, **kwargs)
 
+        cmd = cmod.create_command(*args, **kwargs)
         self.dispatch_command_with_module(module_id, cmd)
-        self.register_command_with_module(module_id, cmd)
         self.wait_command_with_module(module_id, cmd)

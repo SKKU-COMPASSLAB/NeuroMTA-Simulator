@@ -39,7 +39,7 @@ if __name__ == "__main__":
 
     device = TenstorrentDevice(**config)
     device.initialize()
-    device.set_command_debug_verbosity(verbose=True)
+    device.set_command_debug_verbosity(verbose=False)
     device.change_sim_model_options(use_cycle_model=True, use_functional_model=True)
     
     M = 512
@@ -89,15 +89,15 @@ if __name__ == "__main__":
     icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
     main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
 
-    with MonitoringWindow() as monitor:
-        for core_id in core_grid.core_ids:
-            core = device.get_npu_core(core_id=core_id)
-            pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
-            pbar.bind_core(core)
+    # with MonitoringWindow() as monitor:
+    #     for core_id in core_grid.core_ids:
+    #         core = device.get_npu_core(core_id=core_id)
+    #         pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
+    #         pbar.bind_core(core)
         
-        st = time.time()
-        device.run_kernels()
-        ed = time.time()
+    st = time.time()
+    device.run_kernels()
+    ed = time.time()
     
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)

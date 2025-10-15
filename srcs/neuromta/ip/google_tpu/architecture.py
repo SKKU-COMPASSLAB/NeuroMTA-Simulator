@@ -82,6 +82,7 @@ class GoogleTPUConfig(dict):
             dramsim3_config = DRAMSim3Config(
                 config_path=dramsim3_config_path,
                 processor_clock_freq=processor_clock_freq,
+                cmd_queue_num=n_main_mem_channels,
             )
         else:
             dramsim3_config = None

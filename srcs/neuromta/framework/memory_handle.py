@@ -373,6 +373,18 @@ class _MemoryHandleChannelSpaceTracker:
         self._tail: _MemoryHandleDataEntry = None
         self._addr_map: dict[int, _MemoryHandleDataEntry] = {}
         
+    def empty_space(self) -> int:
+        if self._head is None:
+            return self._size
+        
+        head_addr = self._head.addr
+        tail_addr = self._tail.addr + self._tail.elem.size
+        
+        if head_addr < tail_addr:
+            return (self._base_addr + self._size - tail_addr) + (head_addr - self._base_addr)
+        else:
+            return head_addr - tail_addr
+        
     def allocate_space(self, elem: _DataElement) -> int | None:
         if self._tail is None:
             if elem.size > self._size:

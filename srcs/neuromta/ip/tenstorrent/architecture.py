@@ -5,7 +5,7 @@ import torch
 from neuromta.framework import *
 from neuromta.hardware import *
 
-from neuromta.hardware.companions.booksim import PYBOOKSIM2_AVAILABLE
+from neuromta.hardware.companions.booksim import PYBOOKSIM2_AVAILABLE, BookSim2Config
 from neuromta.hardware.companions.dramsim import PYDRAMSIM3_AVAILABLE, DRAMSim3Config, create_new_dramsim_config_file
 
 
@@ -54,8 +54,15 @@ class TenstorrentConfig(dict):
         
         icnt_config = IcntConfig(
             shape=icnt_shape,
-            flit_size=parse_mem_cap_str("16B") * 6,  # TODO: (flit size) * (processor clock) * (full-duplex) * (node per router) = 16B * 1GHz * 2 * 6 = 192GB/s (assume that each core has 1 router port and single TX/RX interface)
+            flit_size=parse_mem_cap_str("32B") * 6,  # TODO: (flit size) * (processor clock) * (full-duplex) * (node per router) = 16B * 1GHz * 2 * 6 = 192GB/s (assume that each core has 1 router port and single TX/RX interface)
             booksim2_enable=PYBOOKSIM2_AVAILABLE,
+            booksim2_config=BookSim2Config(
+                subnets=1,   # TODO: 6 physical networks (randomized mapping with respect to the source ID / see details at "hardware/core/icnt_core.py")
+                x=icnt_shape[1],
+                y=icnt_shape[0],
+                xr=1,
+                yr=1,
+            )
         )
         
         cmap_config = CmapConfig(
@@ -110,6 +117,7 @@ class TenstorrentConfig(dict):
             dramsim3_config = DRAMSim3Config(
                 config_path=dramsim3_config_path,
                 processor_clock_freq=processor_clock_freq,
+                cmd_queue_num=n_main_mem_channels,
             )
         else:
             dramsim3_config = None
