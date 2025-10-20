@@ -88,12 +88,26 @@ class MCA_TensorBuffer:
         self.y_n_pages = self.y_dim // self.y_page
         self.x_n_pages = self.x_dim // self.x_page
         
-        self._reference = None  # type: BufferPointer
+        self._reference: BufferPointer = None  # type: BufferPointer (will be set in allocate())
         
+        self._n_pages = self.i_dim * self.y_n_pages * self.x_n_pages
+        self._page_size = self.y_page * self.x_page * self.tensor_dtype.itemsize
+    
+    @property
+    def buffer_size(self) -> int:
+        return self._n_pages * self._page_size
+    
+    @property    
+    def buffer_segment_size(self) -> int:
         if self.layout.mem_type == MCA_TensorMemoryType.L1:
-            n_pages = self.i_dim * self.y_n_pages * self.x_n_pages
-            page_size = self.y_page * self.x_page * self.tensor_dtype.itemsize
-            
+            return math.ceil(self.n_pages / len(self.core_ids)) * self._page_size
+        elif self.layout.mem_type == MCA_TensorMemoryType.MAIN:
+            return self.buffer_size
+        else:
+            raise Exception(f"[ERROR] Unsupported memory type: {self.layout.mem_type}.")
+
+    def allocate(self, initial: torch.Tensor=None):
+        if self.layout.mem_type == MCA_TensorMemoryType.L1:
             if self.core_ids is None:
                 raise Exception("[ERROR] core_ids must be specified when the memory type is L1.")
             elif isinstance(self.core_ids, int):
@@ -105,18 +119,29 @@ class MCA_TensorBuffer:
             if len(self.core_ids) > 1:
                 if not isinstance(self.device, MTA_DeviceBase):
                     raise Exception("[ERROR] The device must be a MTA_DeviceBase when allocating sharded L1 buffer.")
-                
-                self._reference: BufferPointer = self.device.create_sharded_l1_buffer(page_size=page_size, n_pages=n_pages, core_ids=self.core_ids, contiguous_n_pages=1)
+
+                self._reference: BufferPointer = self.device.create_sharded_l1_buffer(page_size=self._page_size, n_pages=self._n_pages, core_ids=self.core_ids, contiguous_n_pages=1)
             else:
-                self._reference: BufferPointer = self.device.create_local_l1_buffer(page_size=page_size, n_pages=n_pages, core_ids=self.core_ids)
+                self._reference: BufferPointer = self.device.create_local_l1_buffer(page_size=self._page_size, n_pages=self._n_pages, core_ids=self.core_ids)
         else:
-            n_pages = self.i_dim * self.y_n_pages * self.x_n_pages
-            page_size = self.y_page * self.x_page * self.tensor_dtype.itemsize
-            
-            self._reference: BufferPointer = self.device.create_sharded_main_buffer(page_size=page_size, n_pages=n_pages)  # TODO: support selective channel interleaving for each page
+            self._reference: BufferPointer = self.device.create_sharded_main_buffer(page_size=self._page_size, n_pages=self._n_pages)  # TODO: support selective channel interleaving for each page
             
         if self._reference is None:
             raise Exception("[ERROR] Failed to allocate tensor buffer. This exception is may derived by the out-of-memory situation.")
+        
+        if initial is not None:
+            self.update(initial)
+        
+        return self
+    
+    def deallocate(self):
+        if not self.is_allocated:
+            raise Exception("Cannot deallocate the tensor buffer since it is not allocated yet.")
+        
+        self.device.remove_buffer(self.reference)
+        self._reference = None
+        
+        return self
     
     def update(self, tensor: torch.Tensor):
         tensor = tensor.to(dtype=self.tensor_dtype).reshape((self.i_dim, self.y_dim-self.y_pad, self.x_dim-self.x_pad))
@@ -130,6 +155,8 @@ class MCA_TensorBuffer:
         for page_idx in range(self.n_pages):
             page_ptr = buffer_handle.page_ptrs[page_idx]
             self.device.set_ptr_content(page_ptr, tensor[page_idx, :])
+            
+        return self
             
     def restore(self) -> torch.Tensor:
         tensor = self.device.get_ptr_content(self.reference.resolve(is_read=True), shape=(-1,), dtype=self.tensor_dtype)
@@ -146,7 +173,7 @@ class MCA_TensorBuffer:
             raise Exception("[ERROR] get_page_idx_by_owner is only available for L1 memory type.")
         
         if core_id not in self.core_ids:
-            raise Exception(f"[ERROR] core_id {core_id} is not in the core_ids of this buffer.")
+            raise Exception(f"core_id {core_id} is not in the core_ids of this buffer.")
         
         if len(self.core_ids) == 1:
             return list(range(self.n_pages))
@@ -183,6 +210,8 @@ class MCA_TensorBuffer:
 
     @property
     def reference(self) -> BufferPointer:
+        if not self.is_allocated:
+            raise Exception("Cannot obtain the reference of the tensor buffer since it is not allocated yet.")
         return self._reference[:self.n_pages]  # TODO: prevent out-of-bound access (channel-interleaved buffer may have more pages than the number of pages required by the tensor shape)
     
     @property
@@ -195,6 +224,10 @@ class MCA_TensorBuffer:
         if len(shape) >= 2: shape[-2] += self.y_pad
         if len(shape) >= 1: shape[-1] += self.x_pad
         return tuple(shape)
+    
+    @property
+    def is_allocated(self) -> bool:
+        return self._reference is not None
     
     def __str__(self):
         return f"MCA_TensorBuffer(mem_type={self.layout.mem_type}, shape={self.tensor_shape}, dtype={self.tensor_dtype}, page_shape=({self.y_page}, {self.x_page}), page_grid=({self.i_dim}, {self.y_n_pages}, {self.x_n_pages}), device={type(self.device).__name__}, core_ids={self.core_ids})"
@@ -230,7 +263,7 @@ class MCA_RT_JIT_COMPILE_REGION:
         self._history_kernel_context = None
         
         if not isinstance(core, NPUCore):
-            raise Exception(f"[ERROR] The argument of MCA_RT_JIT_REGION_AUTO_DISPATCH must be a NPUCore instance, but got {type(core)}.")
+            raise Exception(f"The argument of MCA_RT_JIT_REGION_AUTO_DISPATCH must be a NPUCore instance, but got {type(core)}.")
 
     def __enter__(self):
         self._history_context_mode   = get_global_context_mode()
@@ -240,7 +273,7 @@ class MCA_RT_JIT_COMPILE_REGION:
         if self._history_context_mode == GlobalContextMode.COMPILE:
             logger.warning(f"Calling MCA_RT_JIT_REGION_AUTO_DISPATCH with COMPILE context may cause unexpected behavior.")
             if self._history_core_context.core_id != self._core.core_id:
-                raise Exception(f"[ERROR] Nested MCA_RT_JIT_REGION_AUTO_DISPATCH with different core context is not allowed. (current core: {self._core.core_id}, history core: {self._history_core_context.core_id})")
+                raise Exception(f"Nested MCA_RT_JIT_REGION_AUTO_DISPATCH with different core context is not allowed. (current core: {self._core.core_id}, history core: {self._history_core_context.core_id})")
         
         set_global_context(GlobalContextMode.COMPILE, self._core, kernel=self._kernel)
         
@@ -263,7 +296,7 @@ def MCA_RT_KERNEL(func: Callable):
         core: NPUCore = pargs["core"]
         
         if not isinstance(core, NPUCore):
-            raise Exception(f"[ERROR] The first argument of the MCA_RT_KERNEL-decorated function or the keyword argument 'core' must be a NPUCore instance, but got {type(core)}.")
+            raise Exception(f"The first argument of the MCA_RT_KERNEL-decorated function or the keyword argument 'core' must be a NPUCore instance, but got {type(core)}.")
         
         rt_kernel = KernelPrototype(func=func, args=args, kwargs=kwargs)
         rt_kernel.compiled_kernel_id = func.__name__
@@ -286,13 +319,13 @@ def MCA_RT_OPERATOR(func: Callable):
             device: MCA_DeviceBase = pargs["device"]
             
             if not isinstance(device, MCA_DeviceBase):
-                raise Exception(f"[ERROR] The first argument of the MCA_RT_OPERATOR-decorated function or the keyword argument 'device' must be a MCA_DeviceBase instance, but got {type(device)}.")
+                raise Exception(f"The first argument of the MCA_RT_OPERATOR-decorated function or the keyword argument 'device' must be a MCA_DeviceBase instance, but got {type(device)}.")
             
             ret = func(*args, **kwargs)
         finally:
             deactivate_global_mca_rt_op()
         
         if ret is not None:
-            raise Exception(f"[ERROR] The MCA_RT_OPERATOR-decorated function must return None, but got {type(ret)}.")
+            raise Exception(f"The MCA_RT_OPERATOR-decorated function must return None, but got {type(ret)}.")
         return ret
     return __wrapper

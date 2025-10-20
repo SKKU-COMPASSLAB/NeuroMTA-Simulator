@@ -97,13 +97,13 @@ class TracerHub:
     
     def register_tracer(self, tracer_id: str, tracer: Tracer):
         if tracer_id in self._tracers.keys():
-            raise Exception(f"[ERROR] Tracer with ID '{tracer_id}' already exists. Please use a unique ID.")
+            raise Exception(f"Tracer with ID '{tracer_id}' already exists. Please use a unique ID.")
         
         self._tracers[tracer_id] = tracer
         
     def unregister_tracer(self, tracer_id: str):
         if tracer_id not in self._tracers.keys():
-            raise Exception(f"[ERROR] Tracer with ID '{tracer_id}' does not exist.")
+            raise Exception(f"Tracer with ID '{tracer_id}' does not exist.")
         
         del self._tracers[tracer_id]
         

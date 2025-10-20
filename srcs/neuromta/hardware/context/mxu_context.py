@@ -63,7 +63,7 @@ class MXUContext:
         # Determine the tile shape
         if self._dataflow == MXUDataflow.OS:
             if self.seq_len != self.pe_arr_height:
-                raise Exception(f"[ERROR] The sequence length should be the same with the PE array height for OS dataflow (input output tile shape consistency)")
+                raise Exception(f"The sequence length should be the same with the PE array height for OS dataflow (input output tile shape consistency)")
         
         # Initialize registers
         self._pe_arr_regs: torch.Tensor = torch.zeros((self.pe_arr_height, self.pe_arr_width), dtype=self._acc_dtype)
@@ -118,40 +118,40 @@ class MXUContext:
             if wgt_tile is None:
                 raise Exception("[ERROR] WGT tile must be provided for OS dataflow.")
             if ifm_tile.shape != self.ifm_tile_shape:
-                raise Exception(f"[ERROR] IFM tile shape {ifm_tile.shape} does not match expected shape {self.ifm_tile_shape}.")
+                raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ifm_tile_shape}.")
             if wgt_tile.shape != self.wgt_tile_shape:
-                raise Exception(f"[ERROR] WGT tile shape {wgt_tile.shape} does not match expected shape {self.wgt_tile_shape}.")
+                raise Exception(f"WGT tile shape {wgt_tile.shape} does not match expected shape {self.wgt_tile_shape}.")
             
             self._pe_arr_regs = (ifm_tile.to(dtype=self._acc_dtype) @ wgt_tile.to(dtype=self._acc_dtype)) + self._pe_arr_regs
         elif self._dataflow == MXUDataflow.WS:
             if wgt_tile is not None:
                 raise Exception("[ERROR] WGT tile should not be provided for WS dataflow.")
             if ifm_tile.shape != self.ifm_tile_shape:
-                raise Exception(f"[ERROR] IFM tile shape {ifm_tile.shape} does not match expected shape {self.ifm_tile_shape}.")
+                raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ifm_tile_shape}.")
             if psum_tile is None:
                 raise Exception("[ERROR] PSUM tile must be provided for WS dataflow.")
             
             self._acc_regs[:, :] = (ifm_tile.to(dtype=self._acc_dtype) @ self._pe_arr_regs) + psum_tile.to(dtype=self._acc_dtype)
         else:
-            raise Exception(f"[ERROR] Unsupported MXU dataflow: {self._dataflow}.")
+            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
         
     def execute_maxpool(self, ifm_tile: torch.Tensor, psum_tile: torch.Tensor=None) -> torch.Tensor:
         if self._dataflow == MXUDataflow.OS:
             if psum_tile is not None:
                 raise Exception("[ERROR] PSUM tile must not be provided for OS dataflow.")
             if ifm_tile.shape != self.ofm_tile_shape:
-                raise Exception(f"[ERROR] IFM tile shape {ifm_tile.shape} does not match expected shape {self.ofm_tile_shape}.")
+                raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ofm_tile_shape}.")
             
             self._pe_arr_regs = torch.maximum(ifm_tile.to(dtype=self._acc_dtype), self._pe_arr_regs)
         elif self._dataflow == MXUDataflow.WS:
             if psum_tile is None:
                 raise Exception("[ERROR] PSUM tile should be provided for WS dataflow.")
             if ifm_tile.shape != psum_tile.shape:
-                raise Exception(f"[ERROR] IFM tile shape {ifm_tile.shape} does not match expected shape {psum_tile.shape}.")
+                raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {psum_tile.shape}.")
             
             self._acc_regs[:, :] = torch.maximum(ifm_tile.to(dtype=self._acc_dtype), psum_tile.to(dtype=self._acc_dtype))
         else:
-            raise Exception(f"[ERROR] Unsupported MXU dataflow: {self._dataflow}.")
+            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
         
     @property
     def acc_dtype(self) -> torch.dtype:
@@ -182,7 +182,7 @@ class MXUContext:
         elif self._dataflow == MXUDataflow.WS:
             return self.seq_len
         else:
-            raise Exception(f"[ERROR] Unsupported MXU dataflow: {self._dataflow}.")
+            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
         
     @property
     def n_tile(self) -> int:
@@ -191,7 +191,7 @@ class MXUContext:
         elif self._dataflow == MXUDataflow.WS:
             return self.pe_arr_width
         else:
-            raise Exception(f"[ERROR] Unsupported MXU dataflow: {self._dataflow}.")
+            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
         
     @property
     def k_tile(self) -> int:
@@ -200,7 +200,7 @@ class MXUContext:
         elif self._dataflow == MXUDataflow.WS:
             return self.pe_arr_height
         else:
-            raise Exception(f"[ERROR] Unsupported MXU dataflow: {self._dataflow}.")
+            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
     
     @property
     def ifm_tile_numel(self) -> int:

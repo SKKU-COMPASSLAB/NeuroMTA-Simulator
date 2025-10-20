@@ -267,9 +267,9 @@ def TT_RT_KERNEL_TILED_RELU(
     vlen: int=None,
 ):  
     if buf_src.page_size != buf_dst.page_size:
-        raise Exception(f"[ERROR] Source and destination buffer must have the same size.")
+        raise Exception(f"Source and destination buffer must have the same size.")
     if buf_src.page_size % (vlen * dtype.itemsize) != 0:
-        raise Exception(f"[ERROR] Buffer size {buf_src.page_size} is not divisible by vector register length {(vlen * dtype.itemsize)}.")
+        raise Exception(f"Buffer size {buf_src.page_size} is not divisible by vector register length {(vlen * dtype.itemsize)}.")
     if vlen is None:
         vlen = core.vpu_context.vlen_max
     

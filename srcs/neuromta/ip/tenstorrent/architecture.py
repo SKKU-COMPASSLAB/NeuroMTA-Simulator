@@ -52,17 +52,19 @@ class TenstorrentConfig(dict):
         n_dma_core_per_channel = 3
         n_main_mem_channels = math.ceil(n_dma_core / n_dma_core_per_channel)
         
+        # Interconnect Configuration
+        #   - 12x16 torus network
+        #   - 32B channel width (3 flits per cycle)
+        #   - 2 subnets (randomized duplex network)
+        #   - peak bandwidth per router: 3 * 32B * 1GHz * 2 = 192GB/s
+        icnt_ch_width = parse_mem_cap_str("32B") * 3  # 3 flits per cycle
+        icnt_subnet_num = 2  # randomized duplex network
+        
         icnt_config = IcntConfig(
             shape=icnt_shape,
-            flit_size=parse_mem_cap_str("32B") * 6,  # TODO: (flit size) * (processor clock) * (full-duplex) * (node per router) = 16B * 1GHz * 2 * 6 = 192GB/s (assume that each core has 1 router port and single TX/RX interface)
+            subnets=icnt_subnet_num,
+            flit_size=icnt_ch_width,
             booksim2_enable=PYBOOKSIM2_AVAILABLE,
-            booksim2_config=BookSim2Config(
-                subnets=1,   # TODO: 6 physical networks (randomized mapping with respect to the source ID / see details at "hardware/core/icnt_core.py")
-                x=icnt_shape[1],
-                y=icnt_shape[0],
-                xr=1,
-                yr=1,
-            )
         )
         
         cmap_config = CmapConfig(

@@ -113,7 +113,7 @@ class CmapConfig:
         )
         
         if base_addr not in self.addr_space.keys():
-            raise Exception(f"[ERROR] Address {base_addr} is not mapped in the address space.")
+            raise Exception(f"Address {base_addr} is not mapped in the address space.")
         
         addr_space_entry = self.addr_space[base_addr]
         
@@ -121,7 +121,7 @@ class CmapConfig:
             raise ValueError(f"Address {base_addr} is already assigned to a different memory type.")
         
         if len(addr_space_entry.core_ids) >= 1:
-            raise Exception(f"[ERROR] Address {base_addr} is already assigned to another core.")
+            raise Exception(f"Address {base_addr} is already assigned to another core.")
 
         addr_space_entry.core_ids.append(core_id)
         
@@ -143,7 +143,7 @@ class CmapConfig:
         )
 
         if base_addr not in self.addr_space.keys():
-            raise Exception(f"[ERROR] Address {base_addr} is not mapped in the address space.")
+            raise Exception(f"Address {base_addr} is not mapped in the address space.")
         
         addr_space_entry = self.addr_space[base_addr]
         

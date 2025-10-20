@@ -89,7 +89,7 @@ class VPUContext:
             vdtype = torch.dtype(vdtype)
             
         if vlen < self.vlen_min or vlen > self.vlen_max:
-            raise Exception(f"[ERROR] Vector length {vlen} is out of bounds ({self.vlen_min}, {self.vlen_max}).")
+            raise Exception(f"Vector length {vlen} is out of bounds ({self.vlen_min}, {self.vlen_max}).")
             
         self._vdtype    = vdtype
         self._vlen      = vlen
@@ -97,7 +97,7 @@ class VPUContext:
         self._n_vregs   = self.get_vreg_num_with_config(vlen=vlen, vdtype=vdtype)
         
         if self._n_vregs <= 0:
-            raise Exception(f"[ERROR] Invalid vector register configuration (vlen={vlen}, vdtype={vdtype}).")
+            raise Exception(f"Invalid vector register configuration (vlen={vlen}, vdtype={vdtype}).")
         
         self._vreg_view = self._physical_vrf.view(dtype=self._vdtype).reshape(self._n_vregs, self._vlen)
         
@@ -105,17 +105,17 @@ class VPUContext:
         if not isinstance(data, torch.Tensor):
             raise Exception("[ERROR] Data must be a numpy array.")
         if data.dtype != self._vdtype:
-            raise Exception(f"[ERROR] Data type {data.dtype} does not match vector register type {self._vdtype}.")
+            raise Exception(f"Data type {data.dtype} does not match vector register type {self._vdtype}.")
         if len(data.flatten()) != self._vlen:
-            raise Exception(f"[ERROR] Data size {data.size()} does not match vector length {self._vlen}.")
+            raise Exception(f"Data size {data.size()} does not match vector length {self._vlen}.")
         if vreg_idx < 0 or vreg_idx >= self._n_vregs:
-            raise Exception(f"[ERROR] Vector register index {vreg_idx} out of bounds (0, {self._n_vregs}).")
+            raise Exception(f"Vector register index {vreg_idx} out of bounds (0, {self._n_vregs}).")
 
         self._vreg_view[vreg_idx, :] = data
         
     def get_vector_reg(self, vreg_idx: int) -> torch.Tensor:
         if vreg_idx < 0 or vreg_idx >= self._n_vregs:
-            raise Exception(f"[ERROR] Vector register index {vreg_idx} out of bounds (0, {self._n_vregs}).")
+            raise Exception(f"Vector register index {vreg_idx} out of bounds (0, {self._n_vregs}).")
         
         return self._vreg_view[vreg_idx, :].clone()
     
@@ -130,13 +130,13 @@ class VPUContext:
             is_unary = False
         
         if vreg_a < 0 or vreg_a >= self._n_vregs:
-            raise Exception(f"[ERROR] Vector register index {vreg_a} out of bounds (0, {self._n_vregs}).")
+            raise Exception(f"Vector register index {vreg_a} out of bounds (0, {self._n_vregs}).")
         if not is_unary and vreg_b is None:
-            raise Exception(f"[ERROR] Vector register B must be provided for binary operations.")
+            raise Exception(f"Vector register B must be provided for binary operations.")
         elif vreg_b < 0 or vreg_b >= self._n_vregs:
-            raise Exception(f"[ERROR] Vector register index {vreg_b} out of bounds (0, {self._n_vregs}).")
+            raise Exception(f"Vector register index {vreg_b} out of bounds (0, {self._n_vregs}).")
         if vreg_dest is not None and (vreg_dest < 0 or vreg_dest >= self._n_vregs):
-            raise Exception(f"[ERROR] Vector register index {vreg_dest} out of bounds (0, {self._n_vregs}).")
+            raise Exception(f"Vector register index {vreg_dest} out of bounds (0, {self._n_vregs}).")
 
         if opcode == VPUOperator.ADD:
             self._vreg_view[vreg_dest, :] = self._vreg_view[vreg_a, :] + self._vreg_view[vreg_b, :]

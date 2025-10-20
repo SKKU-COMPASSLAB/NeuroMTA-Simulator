@@ -15,21 +15,24 @@ class IcntConfig:
         self,
         
         shape: tuple[int, int], 
-        flit_size: int                  = parse_mem_cap_str("16B"),
-        booksim2_enable: bool           = False,
-        booksim2_config: BookSim2Config = None,
+        flit_size: int              = parse_mem_cap_str("16B"),
+        subnets: int                = 1,
+        booksim2_enable: bool       = False,
     ):  
-        if booksim2_enable and booksim2_config is None:
+        if booksim2_enable:
             x_dim = shape[0]
             y_dim = shape[1]
             
             booksim2_config = BookSim2Config(
-                subnets=1,  # TODO: is number of subnets always 1?
+                flit_size=flit_size,
+                subnets=subnets,
                 x=x_dim,
                 y=y_dim,
                 xr=1,   # no concentration by default
                 yr=1,   # no concentration by default
             )
+        else:
+            booksim2_config = None
             
         self.shape = shape
         self.flit_size = flit_size

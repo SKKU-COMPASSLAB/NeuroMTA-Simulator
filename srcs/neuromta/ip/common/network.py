@@ -39,17 +39,17 @@ class HostActionType(enum.Enum):
     DISPATCH_KERNEL = enum.auto()
     
 class HostAction:
-    def __init__(self, action_type: HostActionType, name: str=None, buf_signature: dict=None, tensor: torch.Tensor=None, kernel_method: Callable=None, kernel_args: list[Any]=None, kernel_kwargs: dict[str, Any]=None):
+    def __init__(self, action_type: HostActionType, name: str=None, buffer: MCA_TensorBuffer=None, tensor: torch.Tensor=None, kernel_method: Callable=None, kernel_args: list[Any]=None, kernel_kwargs: dict[str, Any]=None):
         self.action_type = action_type
         self.tokens: dict[str, Any] = {}
         
         # For ALLOC_BUFFER
         if self.action_type == HostActionType.ALLOC_BUFFER:
             assert name is not None
-            assert buf_signature is not None
+            assert buffer is not None
         
             self.tokens["name"] = name
-            self.tokens["buf_signature"] = buf_signature
+            self.tokens["buffer"] = buffer
         
         # For DEALLOC_BUFFER
         elif self.action_type == HostActionType.DEALLOC_BUFFER:
@@ -77,13 +77,8 @@ class HostAction:
             get_global_host_context().add_action(self)
         
     @classmethod
-    def alloc_buffer(cls, name: str, shape: tuple[int, ...], dtype: torch.dtype, layout: MCA_TensorMemoryLayout):
-        buf_signature = {
-            "shape": shape,
-            "dtype": dtype,
-            "layout": layout,
-        }
-        return cls(HostActionType.ALLOC_BUFFER, name=name, buf_signature=buf_signature)
+    def alloc_buffer(cls, name: str, buffer: MCA_TensorBuffer):
+        return cls(HostActionType.ALLOC_BUFFER, name=name, buffer=buffer)
     
     @classmethod
     def dealloc_buffer(cls, name: str):
@@ -101,31 +96,26 @@ class HostAction:
         try:
             if self.action_type == HostActionType.ALLOC_BUFFER:
                 name = self.tokens["name"]
-                buf_signature = self.tokens["buf_signature"]
+                buffer: MCA_TensorBuffer = self.tokens["buffer"]
                 host_context = get_global_host_context()
-
-                buf = MCA_TensorBuffer(**buf_signature, device=host_context.device, core_ids=host_context.core_ids)
-                if buf is None:
-                    return False
-                
-                host_context.add_buffer(name, buf)
+                buffer.allocate()
+                host_context.add_buffer(name, buffer)
                 
             elif self.action_type == HostActionType.DEALLOC_BUFFER:
                 name = self.tokens["name"]
                 host_context = get_global_host_context()
-                buf = host_context.get_buffer(name)
-                
-                host_context.device.remove_buffer(buf.reference)
+                buffer = host_context.get_buffer(name)
+                buffer.deallocate()
                 host_context.remove_buffer(name)
                 
             elif self.action_type == HostActionType.INIT_BUFFER:
                 name = self.tokens["name"]
                 tensor = self.tokens["tensor"]
                 
-                buf = get_global_host_context().get_buffer(name)
-                assert buf is not None, f"Buffer '{name}' not found in HostContext."
+                buffer = get_global_host_context().get_buffer(name)
+                assert buffer is not None, f"Buffer '{name}' not found in HostContext."
                 
-                buf.update(tensor)
+                buffer.update(tensor)
                 
             elif self.action_type == HostActionType.DISPATCH_KERNEL:
                 kernel_method = self.tokens["kernel_method"]
@@ -134,15 +124,15 @@ class HostAction:
                 
                 for idx, arg in enumerate(kernel_args):
                     if isinstance(arg, Placeholder):
-                        buf = get_global_host_context().get_buffer(arg.name)
-                        assert buf is not None, f"Buffer '{arg.name}' not found in HostContext."
-                        kernel_args[idx] = buf
+                        buffer = get_global_host_context().get_buffer(arg.name)
+                        assert buffer is not None, f"Buffer '{arg.name}' not found in HostContext."
+                        kernel_args[idx] = buffer
                         
                 for key, value in kernel_kwargs.items():
                     if isinstance(value, Placeholder):
-                        buf = get_global_host_context().get_buffer(value.name)
-                        assert buf is not None, f"Buffer '{value.name}' not found in HostContext."
-                        kernel_kwargs[key] = buf
+                        buffer = get_global_host_context().get_buffer(value.name)
+                        assert buffer is not None, f"Buffer '{value.name}' not found in HostContext."
+                        kernel_kwargs[key] = buffer
                 
                 kernel_method(*kernel_args, **kernel_kwargs)
         except Exception as e:
@@ -239,11 +229,8 @@ def _find_nonprim_method(method_domain: str, method_name: str, args: list[Any]) 
         tmp_pp_args = []
         tmp_pp_kwargs = {}
         
-        # print(f"Checking schema: {schema}")
-        
         for s_arg, m_arg in zip(schema.arguments, args):
             flag_compatible, flag_optional, converted_arg = _check_argument_compatibility(s_arg=s_arg, m_arg=m_arg)
-            # print(f"  arg: {s_arg.name}, {s_arg.type}, {m_arg if not isinstance(m_arg, torch.Tensor) else 'Tensor'} -> compatible={flag_compatible}, optional={flag_optional}, converted_arg={converted_arg if not isinstance(converted_arg, torch.Tensor) else 'Tensor'}")
             
             if not flag_compatible and not flag_optional:
                 flag_schema_compatible = False
@@ -537,7 +524,7 @@ class HostContext(dict):
         
         # STEP 2: run the entry with compiled runtime (if necessary)
         if entry.node_type.is_compiled and not trace_mode:
-            logger.debug(f"running compiled graph entry: {entry}")
+            logger.debug(f"running compiled graph entry: {entry} at timestamp {self.device.timestamp}")
             self.run_compiled_entry(entry)
     
 
@@ -551,7 +538,7 @@ class NetworkGraph:
         self.entries = entries
     
     @classmethod
-    def from_trace(cls, module: torch.nn.Module, *dummy_inputs, host_context: HostContext=None, disable_lowering: bool=False, disable_toposort: bool=False):
+    def from_trace(cls, module: torch.nn.Module, *dummy_inputs, host_context: HostContext, disable_lowering: bool=False, disable_toposort: bool=False):
         logger.debug(f"tracing module: {type(module).__name__} with dummy inputs: {[i.shape if isinstance(i, torch.Tensor) else type(i) for i in dummy_inputs]}")
         
         warnings.filterwarnings("ignore", category=UserWarning)    # TODO: suppress leaf Tensor access warning

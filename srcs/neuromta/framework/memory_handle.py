@@ -45,7 +45,7 @@ class _DataElement:
     @addr.setter
     def addr(self, value: int):
         if self._addr is not None:
-            raise Exception(f"[ERROR] Address is already set to {self._addr}, cannot be changed to {value}.")
+            raise Exception(f"Address is already set to {self._addr}, cannot be changed to {value}.")
         self._addr = value
 
     @property
@@ -82,7 +82,7 @@ class Page(_DataElement):
     
     def set_content(self, value: torch.Tensor, offset: int=0):
         if not isinstance(value, torch.Tensor):
-            raise TypeError(f"[ERROR] Page content must be a torch.Tensor, got {type(value)}.")
+            raise TypeError(f"Page content must be a torch.Tensor, got {type(value)}.")
         
         if self._content is None:
             self._content = torch.zeros(self.size, dtype=torch.uint8)
@@ -92,7 +92,7 @@ class Page(_DataElement):
             self._content[offset:offset + value.numel()] = value
         except Exception as e:
             logger.error(f"Failed to set content to page at address {self.addr} with size {self.size}. The provided value has size {value.numel()} and offset {offset}.")
-            raise Exception(f"[ERROR] Failed to set content: {e}")
+            raise Exception(f"Failed to set content: {e}")
 
     @property
     def content(self) -> torch.Tensor:
@@ -105,7 +105,7 @@ class Page(_DataElement):
         if value is None:
             return  # if the functional model is not used, the value can be None
         if not isinstance(value, torch.Tensor):
-            raise Exception(f"[ERROR] Page content must be a torch.Tensor, got {type(value)}.")
+            raise Exception(f"Page content must be a torch.Tensor, got {type(value)}.")
         self._content = value
 
 
@@ -182,7 +182,7 @@ class BufferPointer:
     def raw_handle(self) -> 'BufferHandle':
         if self._item != slice(0, self._handle.n_pages, 1) and self._item != slice(0, self._handle.n_pages, None):
             if self.is_circular:
-                raise Exception(f"[ERROR] Cannot access raw_handle of a CircularBufferPointer that is not pointing to the entire buffer. The current item is {self._item}. Use 'resolve' method instead.")
+                raise Exception(f"Cannot access raw_handle of a CircularBufferPointer that is not pointing to the entire buffer. The current item is {self._item}. Use 'resolve' method instead.")
             return self.resolve(is_read=True)
         return self._handle
     
@@ -204,7 +204,7 @@ class BufferPointer:
                 return BufferPointer(handle=self._handle, item=new_item)
             elif isinstance(self._item, int):
                 if new_item != 0 and new_item != slice(0, 1, 1) and new_item != slice(0, 1, None):
-                    raise Exception(f"[ERROR] Cannot slice a BufferPointer that points to a single page.")
+                    raise Exception(f"Cannot slice a BufferPointer that points to a single page.")
                 return BufferPointer(handle=self._handle, item=self._item)
             elif isinstance(self._item, slice):
                 if isinstance(new_item, int):
@@ -227,7 +227,7 @@ class BufferPointer:
     def resolve(self, is_read: bool=None) -> 'BufferHandle':
         if isinstance(self._handle, CircularBufferHandle):
             if is_read is None:
-                raise ValueError(f"[ERROR] Cannot resolve the reference since is_read is not specified for CircularBufferHandle.")
+                raise ValueError(f"Cannot resolve the reference since is_read is not specified for CircularBufferHandle.")
             elif is_read:
                 offset = self._handle._rd_ptr
             else:
@@ -265,12 +265,12 @@ class BufferHandle:
         
         for ptr in self._page_ptrs:
             if not isinstance(ptr, Pointer):
-                raise ValueError(f"[ERROR] All pages must be able to be converted to Pointer.")
+                raise ValueError(f"All pages must be able to be converted to Pointer.")
             if ptr.size != page_size:
-                raise ValueError(f"[ERROR] All pages must have the same size of {page_size}, but found page with size {ptr.size}.")
+                raise ValueError(f"All pages must have the same size of {page_size}, but found page with size {ptr.size}.")
             
         if len(self._page_ptrs) != n_pages:
-            raise ValueError(f"[ERROR] Expected {n_pages} pages, but got {len(self._page_ptrs)}.")
+            raise ValueError(f"Expected {n_pages} pages, but got {len(self._page_ptrs)}.")
     
     def __setstate__(self, state: dict):
         self._page_size = state["page_size"]
@@ -307,7 +307,7 @@ class CircularBufferHandle(BufferHandle):
         self._rsvd_ptr_phase = False
 
     def __getitem__(self, item) -> BufferHandle:
-        raise Exception(f"[ERROR] Cannot create reference for CircularBufferPointer with slicing. Use specialized reference methods 'rd_ref' or 'wr_ref' instead.")
+        raise Exception(f"Cannot create reference for CircularBufferPointer with slicing. Use specialized reference methods 'rd_ref' or 'wr_ref' instead.")
 
     @property
     def _alloc_space(self) -> int:
@@ -429,7 +429,7 @@ class _MemoryHandleChannelSpaceTracker:
             return False
         
         if addr not in self._addr_map:
-            raise Exception(f"[ERROR] Cannot find the allocated address {addr} to deallocate.")
+            raise Exception(f"Cannot find the allocated address {addr} to deallocate.")
         
         entry = self._addr_map[addr]
         entry.is_expired = True
@@ -449,9 +449,6 @@ class _MemoryHandleChannelSpaceTracker:
                 self._tail.nxt_entry = None
             else:
                 self._head = None
-            
-        # if self._head is None: self._tail = None
-        # if self._tail is None: self._head = None
         
         return True
             
@@ -469,7 +466,7 @@ class MemoryHandle:
         self._channel_size = self._size // self._n_channels
         
         if self._size % self._n_channels != 0:
-            raise Exception(f"[ERROR] Memory size {self._size} is not divisible by number of channels {self._n_channels}.")
+            raise Exception(f"Memory size {self._size} is not divisible by number of channels {self._n_channels}.")
         
         self._ch_trackers: list[_MemoryHandleChannelSpaceTracker] = [
             _MemoryHandleChannelSpaceTracker(base_addr + i * self._channel_size, self._channel_size)
@@ -480,15 +477,15 @@ class MemoryHandle:
         if isinstance(key, int):
             ch_id = (key - self._base_addr) // self._channel_size
             if ch_id < 0 or ch_id >= self._n_channels:
-                raise Exception(f"[ERROR] Address {key} is out of range for memory handle {self}.")
+                raise Exception(f"Address {key} is out of range for memory handle {self}.")
             elem = self._ch_trackers[ch_id].search_elem(key)
             if elem is None:
-                raise Exception(f"[ERROR] Cannot find the data element at address {key} in memory handle {self}.")
+                raise Exception(f"Cannot find the data element at address {key} in memory handle {self}.")
             return elem
         elif isinstance(key, Pointer):
             return self.get_data_element(key.addr)
         else:
-            raise TypeError(f"[ERROR] Key must be an int or Pointer, got {type(key)}.")
+            raise TypeError(f"Key must be an int or Pointer, got {type(key)}.")
         
     def get_content(self, key: Any, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> Any:
         if isinstance(key, BufferPointer):
@@ -526,7 +523,7 @@ class MemoryHandle:
             page.set_content(value=value, offset=0)
         elif isinstance(key, BufferHandle):
             if not isinstance(value, torch.Tensor):
-                raise TypeError(f"[ERROR] Buffer content must be a torch.Tensor, got {type(value)}.")
+                raise TypeError(f"Buffer content must be a torch.Tensor, got {type(value)}.")
             
             paged_value = value.view(dtype=torch.uint8).reshape((key.n_pages, -1)).clone()
             
@@ -534,11 +531,11 @@ class MemoryHandle:
                 page: Page = self.get_data_element(page_ptr)
                 page.set_content(value=paged_value[page_idx, :], offset=page_offset)
         else:
-            raise TypeError(f"[ERROR] Key must be an int or Pointer, got {type(key)}.")
+            raise TypeError(f"Key must be an int or Pointer, got {type(key)}.")
         
     def allocate_var_ptr(self, var_size: int, initial_value: Any, channel_id: int=0, dst_ptr: Pointer=None) -> Pointer | None:
         if channel_id >= self._n_channels:
-            raise Exception(f"[ERROR] Invalid channel id {channel_id} which exceeds the number of channels {self._n_channels}")
+            raise Exception(f"Invalid channel id {channel_id} which exceeds the number of channels {self._n_channels}")
         
         elem = Variable(addr=None, size=var_size, content=initial_value)
         
@@ -552,7 +549,7 @@ class MemoryHandle:
     
     def allocate_page_ptr(self, page_size: int, channel_id: int=0, dst_ptr: Pointer=None) -> Pointer | None:
         if channel_id >= self._n_channels:
-            raise Exception(f"[ERROR] Invalid channel id {channel_id} which exceeds the number of channels {self._n_channels}")
+            raise Exception(f"Invalid channel id {channel_id} which exceeds the number of channels {self._n_channels}")
         
         elem = Page(addr=None, size=page_size, content=None)
         
@@ -576,7 +573,7 @@ class MemoryHandle:
                 selected_channel_id = channel_id
                 
             if selected_channel_id >= self._n_channels:
-                raise Exception(f"[ERROR] Invalid channel id {selected_channel_id} which exceeds the number of channels {self._n_channels}")
+                raise Exception(f"Invalid channel id {selected_channel_id} which exceeds the number of channels {self._n_channels}")
 
             page_ptr = self.allocate_page_ptr(page_size, channel_id=selected_channel_id)
             if page_ptr is None:
@@ -596,15 +593,15 @@ class MemoryHandle:
                 ch_id = (addr - self._base_addr) // self._channel_size
                 
                 if ch_id < 0 or ch_id >= self._n_channels:
-                    raise Exception(f"[ERROR] Address {addr} is out of range for memory handle {self}.")
+                    raise Exception(f"Address {addr} is out of range for memory handle {self}.")
                 
                 if not self._ch_trackers[ch_id].deallocate_space(addr):
-                    raise KeyError(f"[ERROR] No data element found at address {addr} in memory handle with base address {self._base_addr}.")
+                    raise KeyError(f"No data element found at address {addr} in memory handle with base address {self._base_addr}.")
             elif isinstance(ptr, BufferHandle):
                 for page_ptr in ptr.page_ptrs:
                     self.deallocate_ptr(page_ptr)
             else:
-                raise TypeError(f"[ERROR] Expected Pointer or BufferPointer, got {type(ptr)}.")
+                raise TypeError(f"Expected Pointer or BufferPointer, got {type(ptr)}.")
 
     @property
     def mem_id(self) -> str:

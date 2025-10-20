@@ -5,8 +5,6 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
-from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
 from neuromta.ip.tenstorrent import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -58,19 +56,15 @@ if __name__ == "__main__":
     l1_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))
     core_ids = core_grid.core_ids
 
-    main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device)
-    main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device)
-    main_buf_psum = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device)
-    main_buf_ofm  = MCA_TensorBuffer(shape=(M, N),    dtype=acc_dtype, layout=main_layout, device=device)
+    main_buf_ifm  = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=main_layout, device=device).allocate(initial=ifm)
+    main_buf_wgt  = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=main_layout, device=device).allocate(initial=wgt)
+    main_buf_psum = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=main_layout.overrides(page_shape=(1, 32)), device=device).allocate(initial=bias)
+    main_buf_ofm  = MCA_TensorBuffer(shape=(M, N),    dtype=acc_dtype, layout=main_layout, device=device).allocate()
     
-    l1_buf_ifm    = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
-    l1_buf_wgt    = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=l1_layout, device=device, core_ids=core_ids)
-    l1_buf_psum   = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids)
-    l1_buf_ofm    = MCA_TensorBuffer(shape=(M, N),    dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids)
-
-    main_buf_ifm.update(ifm)
-    main_buf_wgt.update(wgt)
-    main_buf_psum.update(bias)
+    l1_buf_ifm    = MCA_TensorBuffer(shape=ifm.shape,  dtype=ifm.dtype,  layout=l1_layout, device=device, core_ids=core_ids).allocate()
+    l1_buf_wgt    = MCA_TensorBuffer(shape=wgt.shape,  dtype=wgt.dtype,  layout=l1_layout, device=device, core_ids=core_ids).allocate()
+    l1_buf_psum   = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids).allocate()
+    l1_buf_ofm    = MCA_TensorBuffer(shape=(M, N),    dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids).allocate()
     
     MCA_RT_DMA_LOAD(device, src_buf=main_buf_ifm, dst_buf=l1_buf_ifm)
     MCA_RT_DMA_LOAD(device, src_buf=main_buf_wgt, dst_buf=l1_buf_wgt)
@@ -102,8 +96,6 @@ if __name__ == "__main__":
         profiler = CommandUtilizationProfiler(core)
         profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
             
-    icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
-    main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
     
     with MonitoringWindow() as monitor:
         for core_id in core_grid.core_ids:
@@ -117,21 +109,7 @@ if __name__ == "__main__":
         
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
-    icnt_core_tracer.save_traces(ICNT_CORE_TRACE_FNAME)
-    icnt_core_tracer.save_bandwidth_analysis(ICNT_CORE_BW_ANALYSIS_FNAME, bin_size=1)
-    main_mem_core_tracer.save_traces(MAIN_MEM_CORE_TRACE_FNAME)
-    main_mem_core_tracer.save_bandwidth_analysis(MAIN_MEM_CORE_BW_ANALYSIS_FNAME, bin_size=1)
     
-    try:
-        if visualizer_enabled:
-            visualize_bandwidth_utilization_graph(
-                PROFILE_DIR,
-                ICNT_CORE_TRACE_FNAME,
-                MAIN_MEM_CORE_TRACE_FNAME,
-                IMG_SAVE_FNAME
-            )
-    except Exception as e:
-        logger.warning(f"failed to visualize the bandwidth utilization graph: {e}")
 
 
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")

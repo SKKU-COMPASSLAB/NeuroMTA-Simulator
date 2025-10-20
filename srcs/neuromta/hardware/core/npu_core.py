@@ -107,7 +107,7 @@ class NPUCore(Core):
     def var_allocate(self, ptr: Pointer, initial_value: int=0):
         r = self.mem_handle.allocate_var_ptr(var_size=4, initial_value=initial_value, channel_id=0, dst_ptr=ptr)
         if r is None:
-            raise Exception(f"[ERROR] Variable allocation failed in core {self.core_id} (not enough memory)")
+            raise Exception(f"Variable allocation failed in core {self.core_id} (not enough memory)")
     
     @core_command_method
     def var_deallocate(self, ptr: Pointer):
@@ -152,7 +152,7 @@ class NPUCore(Core):
     def buf_allocate(self, ref: BufferPointer, page_size: int, n_pages: int):
         handle = self.mem_handle.allocate_buffer_ptr(page_size=page_size, n_pages=n_pages, is_circular=False, channel_id=0)
         if handle is None:
-            raise Exception(f"[ERROR] Buffer allocation failed in core {self.core_id} (not enough memory)")
+            raise Exception(f"Buffer allocation failed in core {self.core_id} (not enough memory)")
         ref.initialize(handle=handle)
     
     @core_command_method
@@ -169,7 +169,7 @@ class NPUCore(Core):
     def cb_allocate(self, ref: BufferPointer, page_size: int, n_pages: int):
         handle = self.mem_handle.allocate_buffer_ptr(page_size=page_size, n_pages=n_pages, is_circular=True, channel_id=0)
         if handle is None:
-            raise Exception(f"[ERROR] Circular buffer allocation failed in core {self.core_id} (not enough memory)")
+            raise Exception(f"Circular buffer allocation failed in core {self.core_id} (not enough memory)")
         ref.initialize(handle=handle)
     
     @core_command_method
@@ -240,7 +240,7 @@ class NPUCore(Core):
         
         if copy_layout_pattern is not None:
             if copy_layout_width is None:
-                raise Exception(f"[ERROR] 'copy_layout_width' must be specified when 'copy_layout_pattern' is given in core {self.core_id}")
+                raise Exception(f"'copy_layout_width' must be specified when 'copy_layout_pattern' is given in core {self.core_id}")
             
             dst_data = cont_data.reshape(-1, copy_layout_width)
             src_data = mem_data.reshape(-1, copy_layout_width)
@@ -286,7 +286,7 @@ class NPUCore(Core):
         
         buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
         if not len(buffer_owners) == 1:
-            raise Exception(f"[ERROR] The memory read address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
+            raise Exception(f"The memory read address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
         
         owner_id = buffer_owners[0]
         
@@ -315,7 +315,7 @@ class NPUCore(Core):
     def mem_write_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None):            
         buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
         if not len(buffer_owners) == 1:
-            raise Exception(f"[ERROR] The memory read address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
+            raise Exception(f"The memory read address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
         
         if size is None:
             size = ptr.resolve(is_read=False).size - offset
@@ -359,11 +359,11 @@ class NPUCore(Core):
         if self.cmap_context.get_mem_owner_core_id(self.core_id, dst_ptr.addr) != self.core_id:
             if dst_ref.is_circular:
                 logger.warning(f"The destination circular buffer address '{dst_ptr.addr}' does not belong to local core ID '{self.core_id}'.")
-            raise Exception(f"[ERROR] Invalid destination memory address {dst_ptr.addr} in core {self.core_id}")
+            raise Exception(f"Invalid destination memory address {dst_ptr.addr} in core {self.core_id}")
         if self.cmap_context.get_mem_owner_core_id(self.core_id, src_ptr.addr) != self.core_id:
             if src_ref.is_circular:
                 logger.warning(f"The source circular buffer address '{src_ptr.addr}' does not belong to local core ID '{self.core_id}'.")
-            raise Exception(f"[ERROR] Invalid source memory address {src_ptr.addr} in core {self.core_id}")
+            raise Exception(f"Invalid source memory address {src_ptr.addr} in core {self.core_id}")
         
         content = self.mem_handle.get_content(src_ptr)
         self.mem_handle.set_content(dst_ptr, content)
@@ -463,7 +463,7 @@ class NPUCore(Core):
                     
                 self.mxu_context.load_tile_pe_arr(psum_tile)
             elif self.mxu_context.dataflow == MXUDataflow.WS:
-                raise Exception(f"[ERROR] PSUM preload is not supported in WS dataflow")    
+                raise Exception(f"PSUM preload is not supported in WS dataflow")    
         
         if preload_wgt:
             if self.mxu_context.dataflow == MXUDataflow.OS:
@@ -547,7 +547,7 @@ class NPUCore(Core):
                 
                 self.mxu_context.load_tile_pe_arr(psum_tile)
             elif self.mxu_context.dataflow == MXUDataflow.WS:
-                raise Exception(f"[ERROR] PSUM preload is not supported in WS dataflow") 
+                raise Exception(f"PSUM preload is not supported in WS dataflow") 
         
         if self.mxu_context.dataflow == MXUDataflow.OS:
             ifm_tile = ifm_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ofm_tile_shape)
@@ -662,7 +662,7 @@ class NPUCoreCycleModel(CoreCycleModel):
             if self.core.mxu_context.dataflow == MXUDataflow.OS:
                 total_cycles += self.core.mxu_context.get_preload_pe_arr_cycles()
             elif self.core.mxu_context.dataflow == MXUDataflow.WS:
-                raise Exception(f"[ERROR] PSUM preload is not supported in WS dataflow")
+                raise Exception(f"PSUM preload is not supported in WS dataflow")
 
         if preload_wgt:
             if self.core.mxu_context.dataflow == MXUDataflow.OS:
@@ -699,7 +699,7 @@ class NPUCoreCycleModel(CoreCycleModel):
             if self.core.mxu_context.dataflow == MXUDataflow.OS:
                 total_cycles += self.core.mxu_context.get_preload_pe_arr_cycles()
             elif self.core.mxu_context.dataflow == MXUDataflow.WS:
-                raise Exception(f"[ERROR] PSUM preload is not supported in WS dataflow")
+                raise Exception(f"PSUM preload is not supported in WS dataflow")
                 
         total_cycles += self.core.mxu_context.get_execute_cycles()
 

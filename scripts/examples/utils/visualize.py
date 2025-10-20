@@ -6,8 +6,6 @@ import matplotlib.pyplot as plt
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
-from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
 from neuromta.ip.tenstorrent.architecture import TenstorrentConfig
 
 

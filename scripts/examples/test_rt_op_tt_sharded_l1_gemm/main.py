@@ -5,8 +5,6 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
-from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
 from neuromta.ip.tenstorrent import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -86,8 +84,6 @@ if __name__ == "__main__":
         profiler = CommandUtilizationProfiler(core)
         profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
             
-    icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
-    main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
 
     # with MonitoringWindow() as monitor:
     #     for core_id in core_grid.core_ids:
@@ -101,21 +97,7 @@ if __name__ == "__main__":
     
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
-    icnt_core_tracer.save_traces(ICNT_CORE_TRACE_FNAME)
-    icnt_core_tracer.save_bandwidth_analysis(ICNT_CORE_BW_ANALYSIS_FNAME, bin_size=1)
-    main_mem_core_tracer.save_traces(MAIN_MEM_CORE_TRACE_FNAME)
-    main_mem_core_tracer.save_bandwidth_analysis(MAIN_MEM_CORE_BW_ANALYSIS_FNAME, bin_size=1)
     
-    try:
-        if visualizer_enabled:
-            visualize_bandwidth_utilization_graph(
-                PROFILE_DIR,
-                ICNT_CORE_TRACE_FNAME,
-                MAIN_MEM_CORE_TRACE_FNAME,
-                IMG_SAVE_FNAME
-            )
-    except Exception as e:
-        logger.warning(f"failed to visualize the bandwidth utilization graph: {e}")
 
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

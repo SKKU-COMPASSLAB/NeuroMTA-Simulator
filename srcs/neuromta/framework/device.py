@@ -6,7 +6,6 @@ from typing import Sequence, Callable  #, Any
 from neuromta.framework.core import Core, Kernel, Command, RPCMessage
 from neuromta.framework.companion import CompanionCore
 from neuromta.framework.logger import logger
-from neuromta.framework.debug_utils import print_log_execution_time
 
 
 __all__ = [
@@ -42,7 +41,7 @@ class Device:
                     self._register_core(f"{name}[{idx}]", item)
         elif isinstance(core, Core):
             if core.core_id in self._cores.keys():
-                raise Exception(f"[ERROR] Core with ID '{core.core_id}' already exists. Please use a unique core ID.")
+                raise Exception(f"Core with ID '{core.core_id}' already exists. Please use a unique core ID.")
             self._cores[core.core_id] = core
 
     def initialize(self):

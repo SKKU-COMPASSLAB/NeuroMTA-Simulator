@@ -6,30 +6,6 @@ from neuromta.hardware import *
 from neuromta.ip.tenstorrent import *
 
 
-class CNN(torch.nn.Module):
-    def __init__(self):
-        super(CNN, self).__init__()
-        self.conv = torch.nn.Sequential(
-            torch.nn.Conv2d(1, 32, 3, padding=1, bias=True),
-            torch.nn.ReLU(),
-            torch.nn.MaxPool2d(2),
-            torch.nn.Conv2d(32, 64, 3, padding=1, bias=True),
-            torch.nn.ReLU(),
-            torch.nn.MaxPool2d(2),
-        )
-        self.fc = torch.nn.Sequential(
-            torch.nn.Flatten(),
-            torch.nn.Linear(64 * 7 * 7, 128),
-            torch.nn.ReLU(),
-            torch.nn.Linear(128, 10)
-        )
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.fc(x)
-        return x
-    
-
 if __name__ == "__main__":
     logger.set_print_options(log_level=LogLevel.DEBUG)
     torch.set_printoptions(precision=4, linewidth=1024)
@@ -37,9 +13,9 @@ if __name__ == "__main__":
     config = TenstorrentConfig.BLACKHOLE()
     device = TenstorrentDevice(**config)
     device.initialize()
-    device.set_command_debug_verbosity(verbose=True)
+    device.set_command_debug_verbosity(verbose=False)
     
-    core_grid = device.get_npu_core_grid(offset=(0 , 0), shape=(4, 4))
+    core_grid = device.get_npu_core_grid(offset=(0 , 0), shape=(8, 8))
     host_context = TT_HOST_CONTEXT(device=device, core_ids=core_grid)
 
     input_shape = (1, 3, 224, 224)
@@ -54,7 +30,7 @@ if __name__ == "__main__":
         with MonitoringWindow() as monitor:
             for core_id in core_grid.core_ids:
                 core = device.get_npu_core(core_id=core_id)
-                pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
+                pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=52)
                 pbar.bind_core(core)
 
             dummy_input = torch.randn(*input_shape)
@@ -64,3 +40,4 @@ if __name__ == "__main__":
         print(f"=== Check Integrity ===")
         print(f"reference: {reference}")
         print(f"simulated: {simulated}")
+        print(f"simulation terminated at timestamp {device.timestamp}")

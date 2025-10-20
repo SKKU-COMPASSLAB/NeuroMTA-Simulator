@@ -33,7 +33,7 @@ def parse_freq_str(expr: str) -> int:
         try:
             expr = int(expr)
         except:
-            raise Exception(f"[ERROR] Invalid frequency expression: {expr}")
+            raise Exception(f"Invalid frequency expression: {expr}")
     return expr
 
 
@@ -55,7 +55,7 @@ def parse_mem_cap_str(expr: str) -> int:
         try:
             expr = int(expr)
         except:
-            raise Exception(f"[ERROR] Invalid memory capacity expression: {expr}")
+            raise Exception(f"Invalid memory capacity expression: {expr}")
     return expr
 
 
@@ -74,7 +74,7 @@ def parse_arguments(args: list[Any], kwargs: dict[str, Any], param_names: list[s
     for k, v in kwargs.items():
         if k in param_names:
             if k in parsed_args:
-                raise Exception(f"[ERROR] Multiple values for argument '{k}'")
+                raise Exception(f"Multiple values for argument '{k}'")
             parsed_args[k] = v
             
     for pname in param_names:

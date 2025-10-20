@@ -5,7 +5,6 @@ import shutil
 from collections import deque
 
 from neuromta.framework.core import Core, Kernel, Command
-from neuromta.framework.device import Device
 from neuromta.framework.logger import logger
 
 
@@ -45,10 +44,6 @@ class Profiler(metaclass=abc.ABCMeta):
     def clear(self):
         pass
     
-    @abc.abstractmethod
-    def check_convergence(self) -> bool:
-        pass
-    
 
 class CommandUtilizationProfiler(Profiler):
     def __init__(self, core: Core, window_size: int = 8, thres: float=0.05, cmd_ids: list[str] = None):
@@ -57,59 +52,32 @@ class CommandUtilizationProfiler(Profiler):
         if window_size < 2:
             raise Exception("[ERROR] window_size must be at least 2.")
         
-        self._window_size = window_size
-        self._thres = thres
-        self._history: dict[str, deque[tuple[int, int]]] = {}
-        self._convergence_flags: dict[str, bool] = {}
-        
         if cmd_ids is None:
             cmd_ids = [cmd_id for cmd_id in dir(core) if hasattr(getattr(core, cmd_id), "_is_command_method")]
 
         if isinstance(cmd_ids, str):
             cmd_ids = [cmd_ids]
-            
-        for cmd_id in cmd_ids:
-            self._history[cmd_id] = deque(maxlen=window_size)
-            self._convergence_flags[cmd_id] = False
+        
+        self._profiles: dict[str, list[int, int]] = {cmd_id: [0, 0] for cmd_id in cmd_ids}
         
     def profile_step(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
-        if cmd.cmd_id not in self._history.keys():
+        if cmd.cmd_id not in self._profiles.keys():
             return
 
-        history = self._history[cmd.cmd_id]
-
-        if len(history):
-            _, last_duration = history[-1]
-            history.append((commit_time, last_duration + (commit_time - issue_time)))
-        else:
-            history.append((commit_time, commit_time - issue_time))
-
-        if len(history) == self._window_size:
-            util_max = -1
-            util_min = math.inf
-            
-            for i in range(1, len(history)):
-                util = history[i][1] / history[i][0]
-                
-                util_max = max(util_max, util)
-                util_min = min(util_min, util)
-            
-            self._convergence_flags[cmd.cmd_id] = ((util_max - util_min) < (util_max * self._thres))
+        history = self._profiles[cmd.cmd_id]
+        
+        history[0] = commit_time
+        history[1] += (commit_time - issue_time)
     
     def dump(self):
         content = ["command_id,last_commit_time,duration"]
-        for cmd_id, history in self._history.items():
+        for cmd_id, history in self._profiles.items():
             if len(history):
-                content.append(f"{cmd_id},{history[-1][0]},{history[-1][1]}")
+                content.append(f"{cmd_id},{history[0]},{history[1]}")
         return "\n".join(content)
 
     def clear(self):
-        self._history.clear()
-        
-    def check_convergence(self):
-        if self._core.is_idle:
-            return True
-        return all(self._convergence_flags.values())
+        self._profiles.clear()
 
 
 class ProfilerHub:
@@ -118,27 +86,13 @@ class ProfilerHub:
         
     def register_profiler(self, profiler_id: str, profiler: Profiler):
         if profiler_id in self._profilers.keys():
-            raise Exception(f"[ERROR] Profiler with name '{profiler_id}' already exists. Please use a unique name.")
+            raise Exception(f"Profiler with name '{profiler_id}' already exists. Please use a unique name.")
         self._profilers[profiler_id] = profiler
         
     def unregister_profiler(self, profiler_id: str):
         if profiler_id not in self._profilers.keys():
-            raise Exception(f"[ERROR] Profiler with name '{profiler_id}' does not exist.")
+            raise Exception(f"Profiler with name '{profiler_id}' does not exist.")
         del self._profilers[profiler_id]
-        
-    def run_profile(self, device: Device, cycle_resolution: int=1):
-        if not device.is_initialized:
-            raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
-        
-        while True:
-            if all(core.is_idle for core in device.cores.values()):
-                break
-            
-            if all(profiler.check_convergence() for profiler in self._profilers.values()):
-                logger.info("All profilers have detected convergence. Stopping simulation.")
-                break
-            
-            device.run_single_step(cycle_resolution=cycle_resolution)
 
     def save_profiles(self, save_profile_dir: str = DEFAULT_TRACE_DIR):
         if os.path.isdir(save_profile_dir):
@@ -150,4 +104,8 @@ class ProfilerHub:
             profiler.save_as_file(profile_path)
 
             logger.info(f"Profile {profiler_id} saved to \"{profile_path}\"")
+            
+    def clear_profiles(self):
+        for profiler in self._profilers.values():
+            profiler.clear()
 

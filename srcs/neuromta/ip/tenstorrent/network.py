@@ -48,15 +48,17 @@ class TT_HRT_CONV2D(HostRuntime):
         wgt = module.weight.detach().clone()
         wgt = wgt.permute(2, 3, 0, 1)
         wgt_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))  # TODO: originally, MAIN
+        wgt_buffer = MCA_TensorBuffer(shape=wgt.shape, dtype=wgt.dtype, layout=wgt_layout, device=self.host_context.device, core_ids=self.host_context.core_ids)
         
-        HostAction.alloc_buffer(self.l1_wgt_p, shape=wgt.shape, dtype=wgt.dtype, layout=wgt_layout)
+        HostAction.alloc_buffer(self.l1_wgt_p, wgt_buffer)
         HostAction.init_buffer(self.l1_wgt_p, wgt)
         
         if module.bias is not None:
             bias = module.bias.detach().clone()
             bias_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(1, 32))  # TODO: originally, MAIN
+            bias_buffer = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=bias_layout, device=self.host_context.device, core_ids=self.host_context.core_ids)
 
-            HostAction.alloc_buffer(self.l1_bias_p, shape=bias.shape, dtype=bias.dtype, layout=bias_layout)
+            HostAction.alloc_buffer(self.l1_bias_p, bias_buffer)
             HostAction.init_buffer(self.l1_bias_p, bias)
             
         ifm: torch.Tensor = self.host_context[ifm_p].detach().clone()
@@ -65,10 +67,13 @@ class TT_HRT_CONV2D(HostRuntime):
         ifm = ifm.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
         ofm = ofm.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
         
-        HostAction.alloc_buffer(ifm_p, shape=ifm.shape, dtype=ifm.dtype, layout=self.input_layouts[0])
+        ifm_buffer = MCA_TensorBuffer(shape=ifm.shape, dtype=ifm.dtype, layout=self.input_layouts[0], device=self.host_context.device, core_ids=self.host_context.core_ids)
+        ofm_buffer = MCA_TensorBuffer(shape=ofm.shape, dtype=ofm.dtype, layout=self.output_layouts[0], device=self.host_context.device, core_ids=self.host_context.core_ids)
+        
+        HostAction.alloc_buffer(ifm_p, ifm_buffer)
         HostAction.init_buffer(ifm_p, ifm)
 
-        HostAction.alloc_buffer(ofm_p, shape=ofm.shape, dtype=ofm.dtype, layout=self.output_layouts[0])
+        HostAction.alloc_buffer(ofm_p, ofm_buffer)
         HostAction.init_buffer(ofm_p, ofm)
         
         HostAction.dispatch_kernel(
@@ -119,17 +124,19 @@ class TT_HRT_LINEAR(HostRuntime):
         
         wgt = module.weight.detach().clone()
         wgt_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(32, 32))  # TODO: originally, MAIN
+        wgt_buffer = MCA_TensorBuffer(shape=wgt.shape, dtype=wgt.dtype, layout=wgt_layout, device=self.host_context.device, core_ids=self.host_context.core_ids)
         
-        HostAction.alloc_buffer(self.l1_wgt_p, shape=wgt.shape, dtype=wgt.dtype, layout=wgt_layout)
+        HostAction.alloc_buffer(self.l1_wgt_p, wgt_buffer)
         HostAction.init_buffer(self.l1_wgt_p, wgt)
         
         if module.bias is not None:
             bias = module.bias.detach().clone()
             bias_layout = MCA_TensorMemoryLayout(mem_type=MCA_TensorMemoryType.L1, page_shape=(1, 32))  # TODO: originally, MAIN
+            bias_buffer = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=bias_layout, device=self.host_context.device, core_ids=self.host_context.core_ids)
 
-            HostAction.alloc_buffer(self.l1_bias_p, shape=bias.shape, dtype=bias.dtype, layout=bias_layout)
+            HostAction.alloc_buffer(self.l1_bias_p, bias_buffer)
             HostAction.init_buffer(self.l1_bias_p, bias)
-            
+        
         ifm: torch.Tensor = self.host_context[ifm_p].detach().clone()
         ofm: torch.Tensor = self.host_context[ofm_p].detach().clone()
         
@@ -138,11 +145,14 @@ class TT_HRT_LINEAR(HostRuntime):
             ii_page_shape = (batch_size, 32)
         else:
             ii_page_shape = (32, 32)
+            
+        ifm_buffer = MCA_TensorBuffer(shape=ifm.shape, dtype=ifm.dtype, layout=self.input_layouts[0].overrides(page_shape=ii_page_shape), device=self.host_context.device, core_ids=self.host_context.core_ids)
+        ofm_buffer = MCA_TensorBuffer(shape=ofm.shape, dtype=ofm.dtype, layout=self.output_layouts[0].overrides(page_shape=ii_page_shape), device=self.host_context.device, core_ids=self.host_context.core_ids)
         
-        HostAction.alloc_buffer(ifm_p, shape=ifm.shape, dtype=ifm.dtype, layout=self.input_layouts[0].overrides(page_shape=ii_page_shape))
+        HostAction.alloc_buffer(ifm_p, ifm_buffer)
         HostAction.init_buffer(ifm_p, ifm)
 
-        HostAction.alloc_buffer(ofm_p, shape=ofm.shape, dtype=ofm.dtype, layout=self.output_layouts[0].overrides(page_shape=ii_page_shape))
+        HostAction.alloc_buffer(ofm_p, ofm_buffer)
         HostAction.init_buffer(ofm_p, ofm)
         
         HostAction.dispatch_kernel(
@@ -186,10 +196,13 @@ class TT_HRT_MAXPOOL2D(HostRuntime):
         ifm = ifm.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
         ofm = ofm.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
         
-        HostAction.alloc_buffer(ifm_p, shape=ifm.shape, dtype=ifm.dtype, layout=self.input_layouts[0])
+        ifm_buffer = MCA_TensorBuffer(shape=ifm.shape, dtype=ifm.dtype, layout=self.input_layouts[0], device=self.host_context.device, core_ids=self.host_context.core_ids)
+        ofm_buffer = MCA_TensorBuffer(shape=ofm.shape, dtype=ofm.dtype, layout=self.output_layouts[0], device=self.host_context.device, core_ids=self.host_context.core_ids)
+        
+        HostAction.alloc_buffer(ifm_p, ifm_buffer)
         HostAction.init_buffer(ifm_p, ifm)
 
-        HostAction.alloc_buffer(ofm_p, shape=ofm.shape, dtype=ofm.dtype, layout=self.output_layouts[0])
+        HostAction.alloc_buffer(ofm_p, ofm_buffer)
         HostAction.init_buffer(ofm_p, ofm)
 
         HostAction.dispatch_kernel(
@@ -235,11 +248,14 @@ class TT_HRT_RELU(HostRuntime):
             ii_page_shape = (batch_size, 32)
         else:
             ii_page_shape = (32, 32)
+            
+        ifm_buffer = MCA_TensorBuffer(shape=ifm.shape, dtype=ifm.dtype, layout=self.input_layouts[0].overrides(page_shape=ii_page_shape), device=self.host_context.device, core_ids=self.host_context.core_ids)
+        ofm_buffer = MCA_TensorBuffer(shape=ofm.shape, dtype=ofm.dtype, layout=self.output_layouts[0].overrides(page_shape=ii_page_shape), device=self.host_context.device, core_ids=self.host_context.core_ids)
         
-        HostAction.alloc_buffer(ifm_p, shape=ifm.shape, dtype=ifm.dtype, layout=self.input_layouts[0].overrides(page_shape=ii_page_shape))
+        HostAction.alloc_buffer(ifm_p, ifm_buffer)
         HostAction.init_buffer(ifm_p, ifm)
 
-        HostAction.alloc_buffer(ofm_p, shape=ofm.shape, dtype=ofm.dtype, layout=self.output_layouts[0].overrides(page_shape=ii_page_shape))
+        HostAction.alloc_buffer(ofm_p, ofm_buffer)
         HostAction.init_buffer(ofm_p, ofm)
 
         HostAction.dispatch_kernel(

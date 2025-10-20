@@ -78,7 +78,7 @@ def set_global_context(context_mode: GlobalContextMode, core: 'Core', kernel: 'K
     if isinstance(context_mode, str):
         context_mode = GlobalContextMode.__members__.get(context_mode.upper())
     if context_mode == GlobalContextMode.COMPILE and not isinstance(kernel, Kernel):
-        raise Exception(f"[ERROR] Cannot set global context to COMPILE mode with a non-Kernel object: {kernel}")
+        raise Exception(f"Cannot set global context to COMPILE mode with a non-Kernel object: {kernel}")
     
     _context_mode = context_mode
     _core_context = core
@@ -149,20 +149,20 @@ def core_command_method(_func: Callable):
     @functools.wraps(_func)
     def __core_command_method_wrapper(_core: 'Core', *_args, **_kwargs) -> Command:
         if get_global_context_mode() == GlobalContextMode.IDLE:
-            raise Exception(f"[ERROR] Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
+            raise Exception(f"Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
         if get_global_context_mode() == GlobalContextMode.EXECUTE:
             # with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
                 return _func(_core, *_args, **_kwargs)
 
         if not isinstance(_core, Core):
-            raise Exception(f"[ERROR] Command method '{_func.__name__}' can only be called on an instance of Core")
+            raise Exception(f"Command method '{_func.__name__}' can only be called on an instance of Core")
         
         kernel_context = get_global_kernel_context()
         
         if kernel_context is None:
-            raise Exception(f"[ERROR] Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function")
+            raise Exception(f"Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function")
         elif not isinstance(kernel_context, Kernel):
-            raise Exception(f"[ERROR] Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function. The current kernel context is not an instance of Kernel, but {type(kernel_context).__name__}")
+            raise Exception(f"Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function. The current kernel context is not an instance of Kernel, but {type(kernel_context).__name__}")
         
         cmd = Command(
             _func.__name__,     # the command ID is the name of the function
@@ -174,7 +174,7 @@ def core_command_method(_func: Callable):
             kernel_context.add_execution_step(cmd)
         else:
             logger.warning(f"Command method '{_func.__name__}' is called outside of the compile or idle context. It implies that the command is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
-            raise Exception(f"[ERROR] Command method '{_func.__name__}' is called outside of the compile or idle context.")
+            raise Exception(f"Command method '{_func.__name__}' is called outside of the compile or idle context.")
         
         return cmd
     
@@ -185,20 +185,20 @@ def core_command_method(_func: Callable):
 def core_conditional_command_method(_func: Callable):
     def __core_command_method_wrapper(_core: 'Core', *_args, **_kwargs) -> Command:
         if get_global_context_mode() == GlobalContextMode.IDLE:
-            raise Exception(f"[ERROR] Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
+            raise Exception(f"Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
         if get_global_context_mode() == GlobalContextMode.EXECUTE:
             # with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
                 return _func(_core, *_args, **_kwargs)
 
         if not isinstance(_core, Core):
-            raise Exception(f"[ERROR] Command method '{_func.__name__}' can only be called on an instance of Core")
+            raise Exception(f"Command method '{_func.__name__}' can only be called on an instance of Core")
         
         kernel_context = get_global_kernel_context()
         
         if kernel_context is None:
-            raise Exception(f"[ERROR] Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function")
+            raise Exception(f"Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function")
         elif not isinstance(kernel_context, Kernel):
-            raise Exception(f"[ERROR] Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function. The current kernel context is not an instance of Kernel, but {type(kernel_context).__name__}")
+            raise Exception(f"Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function. The current kernel context is not an instance of Kernel, but {type(kernel_context).__name__}")
 
         cmd = ConditionalCommand(
             _func.__name__,     # the command ID is the name of the function
@@ -210,7 +210,7 @@ def core_conditional_command_method(_func: Callable):
             kernel_context.add_execution_step(cmd)
         else:
             logger.warning(f"Command method '{_func.__name__}' is called outside of the compile or idle context. It implies that the command is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
-            raise Exception(f"[ERROR] Command method '{_func.__name__}' is called outside of the compile or idle context.")
+            raise Exception(f"Command method '{_func.__name__}' is called outside of the compile or idle context.")
         
         return cmd
     
@@ -322,7 +322,7 @@ class Command:
             self._cached_issue_time = core.timestamp
             
         if cycle_time < 0:
-            raise ValueError(f"[ERROR] Cycle time cannot be negative: {cycle_time}")
+            raise ValueError(f"Cycle time cannot be negative: {cycle_time}")
 
         self._cached_cycle_slack += cycle_time
         
@@ -330,7 +330,7 @@ class Command:
             flag = self.run_behavioral_model(core, kernel)
             
             if flag is not None:
-                raise Exception(f"[ERROR] Behavioral model for command '{self.cmd_id}' returned '{flag}' even though the command is not conditional. Use 'core_conditional_command_method' instead if you want to implement any retry operation.")
+                raise Exception(f"Behavioral model for command '{self.cmd_id}' returned '{flag}' even though the command is not conditional. Use 'core_conditional_command_method' instead if you want to implement any retry operation.")
 
         if self.is_finished(core, kernel):
             core.run_command_debug_hook(kernel=kernel, cmd=self, issue_time=self._cached_issue_time, commit_time=core.timestamp+cycle_time)
@@ -399,7 +399,7 @@ class ThreadGroup(list['Kernel']):
     
     def append(self, kernel: 'Kernel'):
         if not isinstance(kernel, Kernel):
-            raise TypeError(f"[ERROR] Cannot add kernel '{kernel}' to the parallel kernel group since it is not an instance of Kernel")
+            raise TypeError(f"Cannot add kernel '{kernel}' to the parallel kernel group since it is not an instance of Kernel")
         return super().append(kernel)
 
     def get_remaining_cycles(self, core: 'Core') -> int:
@@ -458,7 +458,7 @@ class Kernel:
         
     def __enter__(self):
         if get_global_context_mode() == GlobalContextMode.COMPILE:
-            raise Exception(f"[ERROR] Cannot enter kernel '{self.kernel_id}' since the global context mode is already COMPILE")
+            raise Exception(f"Cannot enter kernel '{self.kernel_id}' since the global context mode is already COMPILE")
         
         store_global_parent_kernel_callstack()
         set_global_context(GlobalContextMode.COMPILE, get_global_core_context(), self)
@@ -467,21 +467,21 @@ class Kernel:
         
     def __exit__(self, exc_type, exc_value, traceback):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
-            raise Exception(f"[ERROR] Cannot exit kernel '{self.kernel_id}' since the global context mode is not COMPILE")
+            raise Exception(f"Cannot exit kernel '{self.kernel_id}' since the global context mode is not COMPILE")
         
         restore_global_parent_kernel_callstack()
         
     def add_execution_step(self, step: Command | ThreadGroup | KernelPrototype):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
-            raise Exception(f"[ERROR] Cannot add execution step '{step}' to the kernel '{self.kernel_id}' since it is not in compile mode")
+            raise Exception(f"Cannot add execution step '{step}' to the kernel '{self.kernel_id}' since it is not in compile mode")
         if isinstance(step, Kernel):
-            raise Exception(f"[ERROR] Cannot add a kernel '{step.kernel_id}' as an execution step to the kernel '{self.kernel_id}'. Use 'add_parallel_kernel_step()' instead to add a parallel kernel step.")
+            raise Exception(f"Cannot add a kernel '{step.kernel_id}' as an execution step to the kernel '{self.kernel_id}'. Use 'add_parallel_kernel_step()' instead to add a parallel kernel step.")
         
         self._execution_steps.append(step)
             
     def add_parallel_kernel_step(self, p_kernel_id: str=None) -> 'Kernel':
         if get_global_context_mode() != GlobalContextMode.COMPILE:
-            raise Exception(f"[ERROR] Cannot add parallel kernel step to the kernel '{self.kernel_id}' since it is not in compile mode")
+            raise Exception(f"Cannot add parallel kernel step to the kernel '{self.kernel_id}' since it is not in compile mode")
         
         if len(self._execution_steps) == 0:
             self._execution_steps.append(ThreadGroup())
@@ -663,7 +663,7 @@ class Core:
     
     def dispatch_main_kernel(self, slot_id: Any, kernel: Kernel | KernelPrototype):
         if not isinstance(kernel, (Kernel, KernelPrototype)):
-            raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
+            raise Exception(f"Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
         
         if slot_id in self._dispatched_main_kernels:
             if slot_id not in self._suspended_main_kernels:
@@ -679,7 +679,7 @@ class Core:
 
     def dispatch_rpc_kernel(self, kernel: Kernel, msg: RPCMessage):
         if not isinstance(kernel, Kernel):
-            raise Exception(f"[ERROR] Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
+            raise Exception(f"Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
         
         kernel_name = f"{kernel.kernel_id}.0"
         i = 0
@@ -758,13 +758,13 @@ class Core:
                 self._registered_command_debug_hooks[hook_id] = hook
                 return hook_id
         
-        raise Exception(f"[ERROR] Cannot register command debug hook since the maximum number of hooks ({MAX_HOOK_NUM}) is reached. Please remove some hooks before adding new ones.")
+        raise Exception(f"Cannot register command debug hook since the maximum number of hooks ({MAX_HOOK_NUM}) is reached. Please remove some hooks before adding new ones.")
             
     def unregister_command_debug_hook(self, hook_id: str):
         if hook_id in self._registered_command_debug_hooks:
             del self._registered_command_debug_hooks[hook_id]
         else:
-            raise Exception(f"[ERROR] Hook ID '{hook_id}' is not registered")
+            raise Exception(f"Hook ID '{hook_id}' is not registered")
         
     def run_command_debug_hook(self, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
         for hook_id, hook in self._registered_command_debug_hooks.items():
@@ -786,13 +786,13 @@ class Core:
                 self._registered_kernel_debug_hooks[hook_id] = hook
                 return hook_id
         
-        raise Exception(f"[ERROR] Cannot register kernel debug hook since the maximum number of hooks ({MAX_HOOK_NUM}) is reached. Please remove some hooks before adding new ones.")
+        raise Exception(f"Cannot register kernel debug hook since the maximum number of hooks ({MAX_HOOK_NUM}) is reached. Please remove some hooks before adding new ones.")
     
     def unregister_kernel_debug_hook(self, hook_id: str):
         if hook_id in self._registered_kernel_debug_hooks:
             del self._registered_kernel_debug_hooks[hook_id]
         else:
-            raise Exception(f"[ERROR] Hook ID '{hook_id}' is not registered")
+            raise Exception(f"Hook ID '{hook_id}' is not registered")
         
     def run_kernel_debug_hook(self, kernel: Kernel, issue_time: int=None, commit_time: int=None):
         for hook_id, hook in self._registered_kernel_debug_hooks.items():
@@ -818,7 +818,7 @@ class Core:
 
     def get_behavioral_model(self, cmd_id: str) -> Callable:
         if not hasattr(self, cmd_id):
-            raise Exception(f"[ERROR] Command '{cmd_id}' is not registered in the core '{self.core_id}'")
+            raise Exception(f"Command '{cmd_id}' is not registered in the core '{self.core_id}'")
         return getattr(self, cmd_id)
     
     ###########################################################################
@@ -866,9 +866,9 @@ class Core:
         context = get_global_kernel_context()
         
         if context is None:
-            raise Exception(f"[ERROR] Cannot suspend the current kernel since there is no kernel context")
+            raise Exception(f"Cannot suspend the current kernel since there is no kernel context")
         elif not isinstance(context, Kernel):
-            raise Exception(f"[ERROR] Cannot suspend the current kernel since the current context is not an instance of Kernel, but {type(context).__name__}")
+            raise Exception(f"Cannot suspend the current kernel since the current context is not an instance of Kernel, but {type(context).__name__}")
         
         context.set_blocked(True)
         
@@ -879,14 +879,14 @@ class Core:
             msg: RPCMessage = self.rpc_req_recv_queue.pop(0)
 
             if not isinstance(msg, RPCMessage):
-                raise Exception(f"[ERROR] Received message is not an instance of RPCMessage: {type(msg).__name__}")
+                raise Exception(f"Received message is not an instance of RPCMessage: {type(msg).__name__}")
             if msg.msg_type != 0:
-                raise Exception(f"[ERROR] Received message is not a request message: {msg.msg_type}. This exception may caused by the faulty implementation of RPC.")
+                raise Exception(f"Received message is not a request message: {msg.msg_type}. This exception may caused by the faulty implementation of RPC.")
             
             func = getattr(self, msg.cmd_id, None)
             
             if func is None:
-                raise Exception(f"[ERROR] Command '{msg.cmd_id}' is not registered in the core '{type(self).__name__}(core_id={self.core_id})' for RPC processing")
+                raise Exception(f"Command '{msg.cmd_id}' is not registered in the core '{type(self).__name__}(core_id={self.core_id})' for RPC processing")
             elif hasattr(func, "_is_command_method") and func._is_command_method:
                 kernel = Kernel(f"AUTO_REMOTE")
                 with new_global_context(GlobalContextMode.COMPILE, self, kernel):

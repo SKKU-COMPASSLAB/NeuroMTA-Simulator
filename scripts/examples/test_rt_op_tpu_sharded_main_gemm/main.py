@@ -5,8 +5,6 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
-from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
 from neuromta.ip.google_tpu import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -109,19 +107,7 @@ if __name__ == "__main__":
         
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
-    main_mem_core_tracer.save_traces(MAIN_MEM_CORE_TRACE_FNAME)
-    main_mem_core_tracer.save_bandwidth_analysis(MAIN_MEM_CORE_BW_ANALYSIS_FNAME, bin_size=1)
     
-    try:
-        if visualizer_enabled:
-            visualize_bandwidth_utilization_graph(
-                PROFILE_DIR,
-                ICNT_CORE_TRACE_FNAME,
-                MAIN_MEM_CORE_TRACE_FNAME,
-                IMG_SAVE_FNAME
-            )
-    except Exception as e:
-        logger.warning(f"failed to visualize the bandwidth utilization graph: {e}")
 
 
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")

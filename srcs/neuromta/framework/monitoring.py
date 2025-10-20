@@ -28,18 +28,24 @@ class ProgressBarHandle:
     def draw(self):
         percentage = min(((self._cached_progress_kernel_num) / self._cached_total_kernel_num * 100) if self._cached_total_kernel_num and self._cached_total_kernel_num > 0 else 0.0, 100.0)
 
-        header = f"{self.desc} [{self._cached_progress_kernel_num:<3d}/{self._cached_total_kernel_num:<3d}] {percentage:6.2f}% |"
-        tail   = "|  "
+        header = f"{self.desc} [{self._cached_progress_kernel_num:<3d}/{self._cached_total_kernel_num:<3d}] {percentage:6.2f}% "
+        pbar_prefix = "|"
+        tail   = "| "
         
-        bar_width = max(10, self.ncols - len(header) - len(tail))
+        bar_width = self.ncols - len(header) - len(pbar_prefix) - len(tail)
         
-        if self._cached_total_kernel_num > 0:
-            filled_len = int(round(bar_width * percentage / 100))
-            bar = '█' * filled_len + ' ' * (bar_width - filled_len)
+        if 0 <= bar_width < 10:
+            sys.stdout.write(f"{header}")
+        elif bar_width >= 10:
+            if self._cached_total_kernel_num > 0:
+                filled_len = int(round(bar_width * percentage / 100))
+                bar = '█' * filled_len + ' ' * (bar_width - filled_len)
+            else:
+                bar = _LOG_LEVEL_COLORS[LogLevel.INFO] + "IDLE".center(bar_width, '-') + _COLOR_RESET
+            
+            sys.stdout.write(f"{header}{pbar_prefix}{bar}{tail}")
         else:
-            bar = _LOG_LEVEL_COLORS[LogLevel.INFO] + "IDLE".center(bar_width, '-') + _COLOR_RESET
-        
-        sys.stdout.write(f"{header}{bar}{tail}")
+            sys.stdout.write(f"{'NO SPACE':<{self.ncols}s}")
         
     def __getstate__(self):
         return {

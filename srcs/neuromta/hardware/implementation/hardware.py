@@ -69,7 +69,7 @@ class MCA_DeviceBase(Device):
     
     def get_npu_core(self, core_id: int=None, addr: int=None) -> NPUCore:
         if core_id is None and addr is None:
-            raise Exception(f"[ERROR] Please provide exactly one of core_id, coord, or addr to identify the NPU core.")
+            raise Exception(f"Please provide exactly one of core_id, coord, or addr to identify the NPU core.")
             
         if core_id is None:
             if addr is not None:
@@ -156,7 +156,7 @@ class MCA_DeviceBase(Device):
             elif self.cmap_context.config.check_l1_mem_addr(page_ptr.addr):
                 mem_handle = self.get_l1_mem_handle(addr=page_ptr.addr)
             else:
-                raise Exception(f"[ERROR] Unsupported address: {page_ptr.addr}")
+                raise Exception(f"Unsupported address: {page_ptr.addr}")
             
             mem_handle.deallocate_ptr(page_ptr)
     
@@ -174,19 +174,19 @@ class MCA_DeviceBase(Device):
             n_pages = ptr.n_pages
             
             if content.numel() * content.element_size() != page_size * n_pages:
-                raise ValueError(f"[ERROR] Content size {content.numel() * content.element_size()} does not match buffer size {page_size * n_pages}.")
+                raise ValueError(f"Content size {content.numel() * content.element_size()} does not match buffer size {page_size * n_pages}.")
             
             content = content.view(dtype=torch.uint8).reshape((n_pages, page_size))
             
             for page_ptr, page_content in zip(ptr.page_ptrs, content):
                 self._set_page_var_ptr_content(page_ptr, page_content)
         else:
-            raise Exception(f"[ERROR] Unsupported pointer type: {type(ptr).__name__}. Expected BufferPointer or Pointer.")
+            raise Exception(f"Unsupported pointer type: {type(ptr).__name__}. Expected BufferPointer or Pointer.")
 
     def _set_page_var_ptr_content(self, ptr: Pointer, content: Any):
         if ptr.ptr_type == PointerType.PAGE:
             if not isinstance(content, torch.Tensor):
-                raise ValueError(f"[ERROR] Content must be a torch.Tensor for PAGE pointer, got {type(content)}.")
+                raise ValueError(f"Content must be a torch.Tensor for PAGE pointer, got {type(content)}.")
             
             content = content.flatten().view(dtype=torch.uint8)
             
@@ -195,7 +195,7 @@ class MCA_DeviceBase(Device):
         elif self.cmap_context.config.check_l1_mem_addr(ptr.addr):
             mem_handle = self.get_l1_mem_handle(addr=ptr.addr)
         else:
-            raise Exception(f"[ERROR] Unsupported address: {ptr.addr}")
+            raise Exception(f"Unsupported address: {ptr.addr}")
 
         mem_handle.set_content(ptr, content)
 
@@ -224,7 +224,7 @@ class MCA_DeviceBase(Device):
 
             return content
         else:
-            raise Exception(f"[ERROR] Unsupported pointer type: {type(ptr)}. Expected BufferPointer or Pointer.")
+            raise Exception(f"Unsupported pointer type: {type(ptr)}. Expected BufferPointer or Pointer.")
 
     def _get_page_var_ptr_content(self, ptr: Pointer, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> torch.Tensor:
         if self.cmap_context.config.check_main_mem_addr(ptr.addr):
@@ -232,7 +232,7 @@ class MCA_DeviceBase(Device):
         elif self.cmap_context.config.check_l1_mem_addr(ptr.addr):
             mem_handle = self.get_l1_mem_handle(addr=ptr.addr)
         else:
-            raise Exception(f"[ERROR] Unsupported address: {ptr.addr}")
+            raise Exception(f"Unsupported address: {ptr.addr}")
         
         content = mem_handle.get_content(ptr, shape=shape, dtype=dtype)
 

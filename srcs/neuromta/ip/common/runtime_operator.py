@@ -22,11 +22,11 @@ def MCA_RT_GLOBAL_SYNC(device: MCA_DeviceBase, core_ids: list[int]):
 @MCA_RT_OPERATOR
 def MCA_RT_DMA_LOAD(device: MCA_DeviceBase, src_buf: MCA_TensorBuffer, dst_buf: MCA_TensorBuffer):
     if src_buf.layout.mem_type == MCA_TensorMemoryType.L1:
-        raise Exception(f"[ERROR] Main buffer must be allocated in MAIN memory.")
+        raise Exception(f"Main buffer must be allocated in MAIN memory.")
     if dst_buf.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] L1 buffer must be allocated in L1 memory.")
+        raise Exception(f"L1 buffer must be allocated in L1 memory.")
     if src_buf.tensor_shape != dst_buf.tensor_shape:
-        raise Exception(f"[ERROR] The shape of main buffer {src_buf.tensor_shape} does not match the shape of L1 buffer {dst_buf.tensor_shape}.")
+        raise Exception(f"The shape of main buffer {src_buf.tensor_shape} does not match the shape of L1 buffer {dst_buf.tensor_shape}.")
     
     for core_id in dst_buf.core_ids:
         core = device.get_npu_core(core_id=core_id)
@@ -42,11 +42,11 @@ def MCA_RT_DMA_LOAD(device: MCA_DeviceBase, src_buf: MCA_TensorBuffer, dst_buf: 
 @MCA_RT_OPERATOR
 def MCA_RT_DMA_STORE(device: MCA_DeviceBase, src_buf: MCA_TensorBuffer, dst_buf: MCA_TensorBuffer):
     if dst_buf.layout.mem_type == MCA_TensorMemoryType.L1:
-        raise Exception(f"[ERROR] Main buffer must be allocated in MAIN memory.")
+        raise Exception(f"Main buffer must be allocated in MAIN memory.")
     if src_buf.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] L1 buffer must be allocated in L1 memory.")
+        raise Exception(f"L1 buffer must be allocated in L1 memory.")
     if dst_buf.tensor_shape != src_buf.tensor_shape:
-        raise Exception(f"[ERROR] The shape of main buffer {dst_buf.tensor_shape} does not match the shape of L1 buffer {src_buf.tensor_shape}.")
+        raise Exception(f"The shape of main buffer {dst_buf.tensor_shape} does not match the shape of L1 buffer {src_buf.tensor_shape}.")
 
     for core_id in src_buf.core_ids:
         core = device.get_npu_core(core_id=core_id)

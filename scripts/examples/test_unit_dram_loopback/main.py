@@ -8,8 +8,6 @@ from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentD
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.hardware.analyzer.icnt_core_analyzer import IcntCoreAnalyzer
-from neuromta.hardware.analyzer.main_mem_core_analyzer import MainMemCoreAnalyzer
 from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentDevice
 
 TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces")
@@ -63,8 +61,6 @@ if __name__ == "__main__":
             profiler = CommandUtilizationProfiler(core)
             profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
             
-    icnt_core_tracer = IcntCoreAnalyzer(device.icnt_core)
-    main_mem_core_tracer = MainMemCoreAnalyzer(device.main_mem_core)
 
     # with MonitoringWindow() as monitor:
     #     for core_id, core in device.cores.items():

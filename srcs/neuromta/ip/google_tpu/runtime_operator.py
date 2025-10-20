@@ -32,11 +32,11 @@ def TPU_RT_LINEAR(
     assert N == NB, f"[ERROR] The first dimension of weight tensor (N={N}) must match the first dimension of bias tensor (NB={NB})."
     
     if buf_ifm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Input feature map buffer must be allocated in L1 memory.")
+        raise Exception(f"Input feature map buffer must be allocated in L1 memory.")
     if buf_wgt.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Weight buffer must be allocated in L1 memory.")
+        raise Exception(f"Weight buffer must be allocated in L1 memory.")
     if buf_bias is not None and buf_bias.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Bias buffer must be allocated in L1 memory.")
+        raise Exception(f"Bias buffer must be allocated in L1 memory.")
     
     k_tile_num = buf_ifm.y_n_pages
     m_tile_num = buf_ifm.x_n_pages
@@ -50,11 +50,11 @@ def TPU_RT_LINEAR(
     # buf_ofm = MCA_TensorBuffer(shape=(N, M), dtype=acc_dtype, layout=ofm_layout, device=device, core_ids=[core_id,])
     
     if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Output feature map buffer must be allocated in L1 memory.")
+        raise Exception(f"Output feature map buffer must be allocated in L1 memory.")
     if buf_ofm.tensor_shape != (N, M):
-        raise Exception(f"[ERROR] Output feature map buffer shape {buf_ofm.tensor_shape} does not match the expected shape {(N, M)}.")
+        raise Exception(f"Output feature map buffer shape {buf_ofm.tensor_shape} does not match the expected shape {(N, M)}.")
     if buf_ofm.tensor_dtype != acc_dtype:
-        raise Exception(f"[ERROR] Output feature map buffer dtype {buf_ofm.dtype} does not match the expected dtype {acc_dtype}.")
+        raise Exception(f"Output feature map buffer dtype {buf_ofm.dtype} does not match the expected dtype {acc_dtype}.")
     
     TPU_RT_KERNEL_TILED_LINEAR_BURST_NKM(
         core = device.get_npu_core(core_id=core_id),

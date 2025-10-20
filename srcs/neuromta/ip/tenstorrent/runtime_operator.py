@@ -37,11 +37,11 @@ def TT_RT_LINEAR(
     assert N == NB, f"[ERROR] The first dimension of weight tensor (N={N}) must match the first dimension of bias tensor (NB={NB})."
     
     if buf_ifm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Input feature map buffer must be allocated in L1 memory.")
+        raise Exception(f"Input feature map buffer must be allocated in L1 memory.")
     if buf_wgt.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Weight buffer must be allocated in L1 memory.")
+        raise Exception(f"Weight buffer must be allocated in L1 memory.")
     if buf_bias is not None and buf_bias.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Bias buffer must be allocated in L1 memory.")
+        raise Exception(f"Bias buffer must be allocated in L1 memory.")
     
     m_tile_num = buf_ifm.y_n_pages
     n_tile_num = buf_wgt.y_n_pages
@@ -50,11 +50,11 @@ def TT_RT_LINEAR(
     # buf_ofm = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
     
     if buf_ofm.tensor_shape != (M, N):
-        raise Exception(f"[ERROR] The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(M, N)}.")
+        raise Exception(f"The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(M, N)}.")
     if buf_ofm.tensor_dtype != acc_dtype:
-        raise Exception(f"[ERROR] The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
+        raise Exception(f"The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
     if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Output feature map buffer must be allocated in L1 memory.")
+        raise Exception(f"Output feature map buffer must be allocated in L1 memory.")
     
     for m_it in range(m_tile_num):
         for n_it in range(n_tile_num):
@@ -106,21 +106,21 @@ def TT_RT_CONV2D(
     DH, DW = dilation
     
     if buf_ifm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Input feature map buffer must be allocated in L1 memory.")
+        raise Exception(f"Input feature map buffer must be allocated in L1 memory.")
     if buf_wgt.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Weight buffer must be allocated in L1 memory.")
+        raise Exception(f"Weight buffer must be allocated in L1 memory.")
     if buf_bias is not None and buf_bias.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Bias buffer must be allocated in L1 memory.")
+        raise Exception(f"Bias buffer must be allocated in L1 memory.")
     
     OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
     OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
     
     if buf_ofm.tensor_shape != (N, OH, OW, K):
-        raise Exception(f"[ERROR] The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, K)}.")
+        raise Exception(f"The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, K)}.")
     if buf_ofm.tensor_dtype != acc_dtype:
-        raise Exception(f"[ERROR] The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
+        raise Exception(f"The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
     if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Output feature map buffer must be allocated in L1 memory.")
+        raise Exception(f"Output feature map buffer must be allocated in L1 memory.")
 
     ow_tile_size = buf_ofm.layout.y_page_size
     w_tile_size  = buf_ifm.layout.y_page_size
@@ -201,17 +201,17 @@ def TT_RT_MAXPOOL2D(
     DH, DW = dilation
     
     if buf_ifm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Input feature map buffer must be allocated in L1 memory.")
+        raise Exception(f"Input feature map buffer must be allocated in L1 memory.")
     
     OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
     OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
 
     if buf_ofm.tensor_shape != (N, OH, OW, C):
-        raise Exception(f"[ERROR] The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, C)}.")
+        raise Exception(f"The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, C)}.")
     if buf_ofm.tensor_dtype != acc_dtype:
-        raise Exception(f"[ERROR] The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
+        raise Exception(f"The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
     if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Output feature map buffer must be allocated in L1 memory.")
+        raise Exception(f"Output feature map buffer must be allocated in L1 memory.")
 
     ow_tile_size = buf_ofm.layout.y_page_size
     w_tile_size  = buf_ifm.layout.y_page_size
@@ -278,16 +278,16 @@ def TT_RT_RELU(
 ) -> MCA_TensorBuffer:
     
     if buf_src.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Source buffer must be allocated in L1 memory.")
+        raise Exception(f"Source buffer must be allocated in L1 memory.")
     if buf_dst is not None and buf_dst.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"[ERROR] Destination buffer must be allocated in L1 memory.")
+        raise Exception(f"Destination buffer must be allocated in L1 memory.")
     
     if dtype is None:
         dtype = buf_src.tensor_dtype
     
     if inplace:
         if buf_src.tensor_dtype != dtype:
-            raise Exception(f"[ERROR] In in-place operation, source and destination buffer must have the same data type.")
+            raise Exception(f"In in-place operation, source and destination buffer must have the same data type.")
         buf_dst = buf_src
     
     for core_id in core_grid.core_ids:
