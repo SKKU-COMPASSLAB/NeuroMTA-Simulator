@@ -7,7 +7,6 @@ from collections import deque, defaultdict
 from typing import Any, Callable, Dict, Iterable, List, Set, Callable
 
 from neuromta.framework import *
-from neuromta.hardware.core.npu_core import NPUCore
 from neuromta.hardware.implementation.common.software import *
 from neuromta.hardware.implementation.common.hardware import *
 from neuromta.hardware.implementation.common.tensor import *
@@ -319,11 +318,9 @@ class CompilationRecipe(metaclass=abc.ABCMeta):
             step_pbar_idx = context.monitoring_window.add_pbar(desc=f"{node_kind}")
             context.monitoring_window.pbar_handles[step_pbar_idx].update(len(self._steps), 0)
                 
-            logger.info(f"Running compiled recipe for node: {node_kind} with {len(self._steps)} steps.")
+            logger.debug(f"Running compiled recipe for node: {node_kind} with {len(self._steps)} steps.")
         else:
             step_pbar_idx = None
-            
-        logger.debug(f"total onc buffers: {sum(c.mem_handle.size for c in npu_cores)} bytes / empty onc buffers: {sum(c.mem_handle.empty_space() for c in npu_cores)} bytes.")
         
         for step_idx in range(len(self._steps)):
             self.run_step(step_idx=step_idx)

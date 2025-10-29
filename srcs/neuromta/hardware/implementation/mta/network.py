@@ -67,8 +67,6 @@ class MTA_LINEAR_RECIPE(CompilationRecipe):
         
         total_onc_mem = sum(c.mem_handle.size for c in npu_cores)
         empty_onc_mem = sum(c.mem_handle.empty_space() for c in npu_cores)
-        logger.info(f"LINEAR")
-        logger.info(f"Total ONC memory: {total_onc_mem} bytes, Empty ONC memory: {empty_onc_mem} bytes.")
         max_mem_usage = math.floor((total_onc_mem * 0.94) / 2)  # use up to 94% of total ONC memory, divide by 2 for double buffering
 
         flag = self.layouts.set_tiling_factor_with_mem_usage(max_mem_usage=max_mem_usage)
@@ -120,7 +118,6 @@ class MTA_LINEAR_RECIPE(CompilationRecipe):
                     continue  # only need one L1 buffer for ofm (TODO: no double buffering for ofm)
                 
                 full_buf_name = self._l1_buf_fmt.format(layout_name=layout_name, pingpong=pp)
-                logger.info(f"L1 Buffer: {full_buf_name}, Size: {self.buffers[full_buf_name].buffer_size} bytes, Segment: {self.buffers[full_buf_name].buffer_segment_size} (layout shape: {self.layouts[layout_name].tile_shape}).")
                 
         #########################################################################
         # STEP 3: Compilation recipe
@@ -240,7 +237,6 @@ class MTA_CONV2D_RECIPE(CompilationRecipe):
         
         total_onc_mem = sum(c.mem_handle.size for c in npu_cores)
         empty_onc_mem = sum(c.mem_handle.empty_space() for c in npu_cores)
-        logger.info(f"Total ONC memory: {total_onc_mem} bytes, Empty ONC memory: {empty_onc_mem} bytes.")
         max_mem_usage = math.floor((total_onc_mem * 0.94) / 2)  # use up to 94% of total ONC memory, divide by 2 for double buffering
 
         flag = self.layouts.set_tiling_factor_with_mem_usage(max_mem_usage=max_mem_usage)
@@ -403,7 +399,6 @@ class MTA_MAXPOOL2D_RECIPE(CompilationRecipe):
         
         total_onc_mem = sum(c.mem_handle.size for c in npu_cores)
         empty_onc_mem = sum(c.mem_handle.empty_space() for c in npu_cores)
-        logger.info(f"Total ONC memory: {total_onc_mem} bytes, Empty ONC memory: {empty_onc_mem} bytes.")
         max_mem_usage = math.floor((total_onc_mem * 0.94) / 2)  # use up to 94% of total ONC memory, divide by 2 for double buffering
 
         flag = self.layouts.set_tiling_factor_with_mem_usage(max_mem_usage=max_mem_usage)
@@ -553,7 +548,6 @@ class MTA_RELU_RECIPE(CompilationRecipe):
         
         total_onc_mem = sum(c.mem_handle.size for c in npu_cores)
         empty_onc_mem = sum(c.mem_handle.empty_space() for c in npu_cores)
-        logger.info(f"Total ONC memory: {total_onc_mem} bytes, Empty ONC memory: {empty_onc_mem} bytes.")
         max_mem_usage = math.floor((total_onc_mem * 0.94) / 2)  # use up to 94% of total ONC memory, divide by 2 for double buffering
 
         flag = self.layouts.set_tiling_factor_with_mem_usage(max_mem_usage=max_mem_usage)
