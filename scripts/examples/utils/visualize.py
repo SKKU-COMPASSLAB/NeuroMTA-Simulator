@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.tenstorrent.architecture import TenstorrentConfig
+from neuromta.ip.mta.tenstorrent import TenstorrentConfig
 
 
 class ColorMap:

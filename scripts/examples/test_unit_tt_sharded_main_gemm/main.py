@@ -4,7 +4,7 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentDevice
+from neuromta.ip.mta.tenstorrent import TenstorrentConfig, TenstorrentDevice
 
 
 TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces")
@@ -236,8 +236,8 @@ if __name__ == "__main__":
     with MonitoringWindow() as monitor:
         for core_id, core in device.cores.items():
             if isinstance(core, NPUCore) and (not core.is_idle):
-                pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
-                pbar.bind_core(core)
+                pbar_idx = monitor.add_core_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
+                monitor.pbar_handles[pbar_idx].bind_core(core)
         
         st = time.time()
         device.run_kernels()

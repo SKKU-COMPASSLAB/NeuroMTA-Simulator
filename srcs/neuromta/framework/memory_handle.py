@@ -176,6 +176,16 @@ class BufferPointer:
             
     @property
     def size(self) -> int:
+        if isinstance(self._item, int):
+            return self._handle.page_size
+        elif isinstance(self._item, slice):
+            start = self._item.start or 0
+            stop = self._item.stop or self._handle.n_pages
+            step = self._item.step or 1
+            n_pages = math.ceil((stop - start) / step)
+            return n_pages * self._handle.page_size
+        elif isinstance(self._item, tuple):
+            return len(self._item) * self._handle.page_size
         return self._handle.size
         
     @property
@@ -472,6 +482,9 @@ class MemoryHandle:
             _MemoryHandleChannelSpaceTracker(base_addr + i * self._channel_size, self._channel_size)
             for i in range(self._n_channels)
         ]
+        
+    def empty_space(self) -> int:
+        return sum(tracker.empty_space() for tracker in self._ch_trackers)
                 
     def get_data_element(self, key: Any) -> _DataElement:
         if isinstance(key, int):

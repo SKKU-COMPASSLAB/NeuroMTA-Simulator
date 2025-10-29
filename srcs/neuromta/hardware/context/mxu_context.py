@@ -6,12 +6,22 @@ __all__ = [
     "MXUDataflow",
     "MXUConfig",
     "MXUContext",
+    "MXUElementwiseOp",
 ]
 
 
 class MXUDataflow(enum.Enum):
     OS = enum.auto()  # Output Stationary
     WS = enum.auto()  # Weight Stationary
+    
+
+class MXUElementwiseOp(enum.Enum):
+    ADD = enum.auto()
+    SUB = enum.auto()
+    MUL = enum.auto()
+    DIV = enum.auto()
+    CMP_MAX = enum.auto()
+    CMP_MIN = enum.auto()
     
     
 class MXUConfig(dict):
@@ -150,6 +160,35 @@ class MXUContext:
                 raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {psum_tile.shape}.")
             
             self._acc_regs[:, :] = torch.maximum(ifm_tile.to(dtype=self._acc_dtype), psum_tile.to(dtype=self._acc_dtype))
+        else:
+            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
+
+    def execute_elemwise(self, ifm_tile: torch.Tensor, op: MXUElementwiseOp) -> torch.Tensor:
+        if ifm_tile.shape != self.ofm_tile_shape:
+            raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ofm_tile_shape}.")
+
+        if self._dataflow == MXUDataflow.OS:
+            if op == MXUElementwiseOp.ADD:
+                self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) + self._pe_arr_regs
+            elif op == MXUElementwiseOp.SUB:
+                self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) - self._pe_arr_regs
+            elif op == MXUElementwiseOp.MUL:
+                self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) * self._pe_arr_regs
+            elif op == MXUElementwiseOp.DIV:
+                self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) / self._pe_arr_regs
+            else:
+                raise Exception(f"Unsupported elementwise operation: {op}.")
+        elif self._dataflow == MXUDataflow.WS:
+            if op == MXUElementwiseOp.ADD:
+                self._acc_regs[:, :] = ifm_tile.to(dtype=self._acc_dtype) + self._acc_regs[:, :]
+            elif op == MXUElementwiseOp.SUB:
+                self._acc_regs[:, :] = ifm_tile.to(dtype=self._acc_dtype) - self._acc_regs[:, :]
+            elif op == MXUElementwiseOp.MUL:
+                self._acc_regs[:, :] = ifm_tile.to(dtype=self._acc_dtype) * self._acc_regs[:, :]
+            elif op == MXUElementwiseOp.DIV:
+                self._acc_regs[:, :] = ifm_tile.to(dtype=self._acc_dtype) / self._acc_regs[:, :]
+            else:
+                raise Exception(f"Unsupported elementwise operation: {op}.")
         else:
             raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
         

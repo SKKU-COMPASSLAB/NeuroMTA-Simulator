@@ -1,16 +1,18 @@
 import torch
 
 from neuromta.framework import *
-from neuromta.hardware import *
+from neuromta.hardware.core import *
+from neuromta.hardware.context import *
+from neuromta.hardware.implementation.common import *
 
 
 __all__ = [
-    "TPU_RT_KERNEL_TILED_LINEAR_BURST_NKM",
+    "MCA_RT_KERNEL_TILED_LINEAR_BURST_NKM",
 ]
 
 
 @MCA_RT_KERNEL
-def  TPU_RT_KERNEL_TILED_LINEAR_BURST_NKM(
+def  MCA_RT_KERNEL_TILED_LINEAR_BURST_NKM(
     core: NPUCore,
         
     buf_ifm:  BufferPointer, 

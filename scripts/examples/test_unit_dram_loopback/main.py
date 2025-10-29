@@ -4,11 +4,11 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentDevice
+from neuromta.ip.mta.tenstorrent import TenstorrentConfig, TenstorrentDevice
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.tenstorrent.architecture import TenstorrentConfig, TenstorrentDevice
+from neuromta.ip.mta.tenstorrent import TenstorrentConfig, TenstorrentDevice
 
 TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces")
 PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".profiles")

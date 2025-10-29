@@ -6,6 +6,6 @@ from neuromta.framework.parser_utils import *
 from neuromta.framework.tracer import *
 from neuromta.framework.companion import *
 from neuromta.framework.profiler import *
-from neuromta.framework.logger import logger, LogLevel
+from neuromta.framework.logger import logger, LogLevel, get_global_monitoring_window
 from neuromta.framework.monitoring import MonitoringWindow
 from neuromta.framework.debug_utils import *

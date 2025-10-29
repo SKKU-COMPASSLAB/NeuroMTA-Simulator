@@ -6,7 +6,7 @@ from neuromta.hardware.context.mem_context import MemContext
 from neuromta.hardware.context.cmap_context import CmapContext
 from neuromta.hardware.context.icnt_context import IcntContext
 from neuromta.hardware.context.vpu_context import VPUConfig, VPUOperator
-from neuromta.hardware.context.mxu_context import MXUConfig, MXUDataflow
+from neuromta.hardware.context.mxu_context import MXUConfig, MXUDataflow, MXUElementwiseOp
 
 
 __all__ = [
@@ -226,7 +226,7 @@ class NPUCore(Core):
             container.data = torch.zeros(shape, dtype=dtype)
 
     @core_command_method
-    def local_mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int]]=None):
+    def local_mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int, int, int, int]]=None):
         if isinstance(ptr, BufferPointer):
             handle = ptr.resolve(is_read=True)
 
@@ -245,12 +245,12 @@ class NPUCore(Core):
             dst_data = cont_data.reshape(-1, copy_layout_width)
             src_data = mem_data.reshape(-1, copy_layout_width)
             
-            for dst_idx, src_idx in copy_layout_pattern:
-                dst_data[dst_idx] = src_data[src_idx]
+            for dst_idx, src_idx, dst_seg_offset, src_seg_offset, seg_size in copy_layout_pattern:
+                dst_data[dst_idx][dst_seg_offset:dst_seg_offset+seg_size] = src_data[src_idx][src_seg_offset:src_seg_offset+seg_size]
                         
             cont_data = dst_data
         else:
-            cont_data = mem_data
+            cont_data[:size] = mem_data
 
         container.data = cont_data
         
@@ -277,13 +277,7 @@ class NPUCore(Core):
         self.mem_handle.set_content(wr_handle, raw_data)
     
     @jit_prototype
-    def mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int]]=None):
-        if isinstance(ptr, BufferPointer):
-            handle = ptr.resolve(is_read=True)
-
-        if size is None:
-            size = handle.size - offset
-        
+    def mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int, int, int, int]]=None):
         buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
         if not len(buffer_owners) == 1:
             raise Exception(f"The memory read address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
@@ -301,7 +295,7 @@ class NPUCore(Core):
                 self.core_id, 
                 self.cmap_context.icnt_core_id, 
                 cmd_id="noc_create_data_read_transaction"
-            ).with_args(src_id=owner_id, dst_id=self.core_id, data_size=size)
+            ).with_args(src_id=owner_id, dst_id=self.core_id, data_size=ptr.size)
             
             self.async_rpc_send_req_msg(mem_read_msg)
             self.async_rpc_wait_rsp_msg(mem_read_msg)
@@ -316,9 +310,6 @@ class NPUCore(Core):
         buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
         if not len(buffer_owners) == 1:
             raise Exception(f"The memory read address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
-        
-        if size is None:
-            size = ptr.resolve(is_read=False).size - offset
 
         owner_id = buffer_owners[0]
         
@@ -327,7 +318,7 @@ class NPUCore(Core):
                 self.core_id, 
                 self.cmap_context.icnt_core_id, 
                 cmd_id="noc_create_data_write_transaction"
-            ).with_args(src_id=self.core_id, dst_id=owner_id, data_size=size)
+            ).with_args(src_id=self.core_id, dst_id=owner_id, data_size=ptr.size)
             
             mem_write_msg = RPCMessage(
                 src_core_id=self.core_id,
@@ -382,7 +373,7 @@ class NPUCore(Core):
             self.local_mem_page_copy(dst_ptr, src_ptr, page_offset=page_offset)
         else:
             if self.cmap_context.config.check_l1_mem_addr(src_page_ptr.addr):
-                src_read_msg = RPCMessage(self.core_id, src_page_owner_id, cmd_id="local_mem_read_with_container").with_args(ptr=src_ptr[page_offset], container=container, offset=0, size=src_ptr.size)
+                src_read_msg = RPCMessage(self.core_id, src_page_owner_id, cmd_id="local_mem_read_with_container").with_args(ptr=src_ptr[page_offset], container=container, offset=0, size=src_ptr.page_size)
             elif self.cmap_context.config.check_main_mem_addr(src_page_ptr.addr):
                 src_read_msg = RPCMessage(self.core_id, src_page_owner_id, cmd_id="mem_page_read").with_args(ptr=src_ptr[page_offset], container=container)
             
@@ -572,6 +563,33 @@ class NPUCore(Core):
 
             ofm_cont.data = ofm_tile
             
+    @core_command_method
+    def mxu_tiled_elemwise(
+        self,
+
+        op: MXUElementwiseOp,
+        src:  DataContainer[torch.Tensor],
+        dst:  DataContainer[torch.Tensor],
+        
+        flush_ofm:     bool=False,
+        ifm_transposed: bool=False,
+    ):
+        if not self.use_functional_model:
+            return  # Terminate the command to reduce the simulation time without actual MXU functional unit (do not return anything to make sure that the command is executed only once)
+        
+        ifm_tile = src.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ifm_tile_shape)
+        if ifm_transposed: ifm_tile = ifm_tile.T
+        
+        self.mxu_context.execute_elemwise(ifm_tile=ifm_tile, op=op)
+        
+        if flush_ofm:
+            if self.mxu_context.dataflow == MXUDataflow.OS:
+                ofm_tile = self.mxu_context.get_pe_arr_regs()   
+            elif self.mxu_context.dataflow == MXUDataflow.WS:
+                ofm_tile = self.mxu_context.get_acc_regs()
+
+            dst.data = ofm_tile
+            
     #############################################################
     # VPU Commands
     #############################################################
@@ -701,6 +719,28 @@ class NPUCoreCycleModel(CoreCycleModel):
             elif self.core.mxu_context.dataflow == MXUDataflow.WS:
                 raise Exception(f"PSUM preload is not supported in WS dataflow")
                 
+        total_cycles += self.core.mxu_context.get_execute_cycles()
+
+        if flush_ofm:
+            if self.core.mxu_context.dataflow == MXUDataflow.OS:
+                total_cycles += self.core.mxu_context.get_flush_pe_arr_cycles()
+            elif self.core.mxu_context.dataflow == MXUDataflow.WS:
+                total_cycles += self.core.mxu_context.get_flush_acc_regs_cycles()
+                    
+        return total_cycles
+    
+    def mxu_tiled_elemwise(
+        self,
+        
+        op: MXUElementwiseOp,
+        src:  DataContainer[torch.Tensor],
+        dst:  DataContainer[torch.Tensor],
+
+        flush_ofm:     bool=False,
+        ifm_transposed: bool=False,
+    ):
+        total_cycles = 0
+        
         total_cycles += self.core.mxu_context.get_execute_cycles()
 
         if flush_ofm:

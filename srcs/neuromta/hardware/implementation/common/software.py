@@ -8,7 +8,7 @@ from typing import Sequence, Callable
 
 from neuromta.framework import *
 from neuromta.hardware.core.npu_core import NPUCore
-from neuromta.hardware.implementation.hardware import MCA_DeviceBase, MTA_DeviceBase
+from neuromta.hardware.implementation.common.hardware import MCA_DeviceBase, MTA_DeviceBase
 
 
 __all__ = [
@@ -16,6 +16,8 @@ __all__ = [
     "MCA_TensorMemoryLayout",
     "MCA_TensorBuffer",
     
+    "RuntimeOperator",
+    "MCA_RT_OP_AUTO_DISPATCH_REGION",
     "MCA_RT_JIT_COMPILE_REGION",
     "MCA_RT_KERNEL",
     "MCA_RT_OPERATOR",
@@ -44,9 +46,6 @@ class MCA_TensorMemoryLayout:
                 raise Exception("[ERROR] Invalid page_shape: page_shape must be a tuple of (y, x).")
         
         self.y_page_size, self.x_page_size = page_shape
-                
-    def copy(self):
-        return copy.deepcopy(self)
 
     def overrides(
         self, 
@@ -64,11 +63,11 @@ class MCA_TensorMemoryLayout:
 
 
 class MCA_TensorBuffer:
-    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype, layout: MCA_TensorMemoryLayout, device: MCA_DeviceBase, core_ids: list[int] | int=None):
+    def __init__(self, shape: tuple[int, ...], dtype: torch.dtype, layout: MCA_TensorMemoryLayout, device: MCA_DeviceBase, core_ids: list[int] | int=None, contiguous_n_pages: int=None):
         # STEP 1: Setup
         self.tensor_shape   = tuple(shape)  # (iter, y, x)
         self.tensor_dtype   = dtype
-        self.layout         = layout.copy()
+        self.layout         = layout.overrides()
         self.device         = device
         self.core_ids       = core_ids
         
@@ -90,6 +89,22 @@ class MCA_TensorBuffer:
         
         self._reference: BufferPointer = None  # type: BufferPointer (will be set in allocate())
         
+        if self.layout.mem_type == MCA_TensorMemoryType.L1:
+            if self.core_ids is None:
+                raise Exception("[ERROR] core_ids must be specified when the memory type is L1.")
+            elif isinstance(self.core_ids, int):
+                self.core_ids = [self.core_ids,]
+                
+            if len(self.core_ids) == 0:
+                raise Exception("[ERROR] core_ids must contain at least one core ID when the memory type is L1.")
+                
+            if contiguous_n_pages is None:
+                self._contiguous_n_pages = max(1, math.ceil(self.n_pages / len(self.core_ids)))
+            else:
+                self._contiguous_n_pages = max(1, min(contiguous_n_pages, math.ceil(self.n_pages / len(self.core_ids))))
+        else:
+            self._contiguous_n_pages = None
+                    
         self._n_pages = self.i_dim * self.y_n_pages * self.x_n_pages
         self._page_size = self.y_page * self.x_page * self.tensor_dtype.itemsize
     
@@ -108,19 +123,11 @@ class MCA_TensorBuffer:
 
     def allocate(self, initial: torch.Tensor=None):
         if self.layout.mem_type == MCA_TensorMemoryType.L1:
-            if self.core_ids is None:
-                raise Exception("[ERROR] core_ids must be specified when the memory type is L1.")
-            elif isinstance(self.core_ids, int):
-                self.core_ids = [self.core_ids,]
-                
-            if len(self.core_ids) == 0:
-                raise Exception("[ERROR] core_ids must contain at least one core ID when the memory type is L1.")
-            
             if len(self.core_ids) > 1:
                 if not isinstance(self.device, MTA_DeviceBase):
                     raise Exception("[ERROR] The device must be a MTA_DeviceBase when allocating sharded L1 buffer.")
 
-                self._reference: BufferPointer = self.device.create_sharded_l1_buffer(page_size=self._page_size, n_pages=self._n_pages, core_ids=self.core_ids, contiguous_n_pages=1)
+                self._reference: BufferPointer = self.device.create_sharded_l1_buffer(page_size=self._page_size, n_pages=self._n_pages, core_ids=self.core_ids, contiguous_n_pages=self._contiguous_n_pages)
             else:
                 self._reference: BufferPointer = self.device.create_local_l1_buffer(page_size=self._page_size, n_pages=self._n_pages, core_ids=self.core_ids)
         else:
@@ -138,7 +145,7 @@ class MCA_TensorBuffer:
         if not self.is_allocated:
             raise Exception("Cannot deallocate the tensor buffer since it is not allocated yet.")
         
-        self.device.remove_buffer(self.reference)
+        self.device.remove_buffer(self._reference)  # TODO: 'reference' and '_reference' may have different number of pages in channel-interleaved buffer case
         self._reference = None
         
         return self
@@ -233,25 +240,66 @@ class MCA_TensorBuffer:
         return f"MCA_TensorBuffer(mem_type={self.layout.mem_type}, shape={self.tensor_shape}, dtype={self.tensor_dtype}, page_shape=({self.y_page}, {self.x_page}), page_grid=({self.i_dim}, {self.y_n_pages}, {self.x_n_pages}), device={type(self.device).__name__}, core_ids={self.core_ids})"
 
 
-_global_mca_rt_op_id: str = None
+_global_mca_rt_op_auto_dispatch: bool = False
+_global_mca_rt_op: 'RuntimeOperator' = None
 
 def activate_global_mca_rt_op(rt_op_id: str):
-    global _global_mca_rt_op_id
-    if _global_mca_rt_op_id is not None:
-        raise Exception("[ERROR] The global MCA runtime operator has already been activated. This exception is mainly caused by the recursive call of MCA_RT_OPERATOR. Note that MCA_RT_OPERATOR cannot be called inside another MCA_RT_OPERATOR.")
-    _global_mca_rt_op_id = rt_op_id
+    global _global_mca_rt_op
+    if _global_mca_rt_op is not None:
+        raise Exception("A global MCA runtime operator is already active.")
+    _global_mca_rt_op = RuntimeOperator(rt_op_id=rt_op_id)
     
 def deactivate_global_mca_rt_op():
-    global _global_mca_rt_op_id
-    _global_mca_rt_op_id = None
+    global _global_mca_rt_op
+    _global_mca_rt_op = None
     
 def check_global_mca_rt_op_active() -> bool:
-    global _global_mca_rt_op_id
-    return _global_mca_rt_op_id is not None
+    global _global_mca_rt_op
+    return _global_mca_rt_op is not None
 
-def get_global_mca_rt_op_id() -> str:
-    global _global_mca_rt_op_id
-    return _global_mca_rt_op_id
+def get_global_mca_rt_op() -> 'RuntimeOperator':
+    global _global_mca_rt_op
+    return _global_mca_rt_op
+
+def activate_mca_rt_op_auto_dispatch():
+    global _global_mca_rt_op_auto_dispatch
+    _global_mca_rt_op_auto_dispatch = True
+    
+def deactivate_mca_rt_op_auto_dispatch():
+    global _global_mca_rt_op_auto_dispatch
+    _global_mca_rt_op_auto_dispatch = False
+    
+def check_mca_rt_op_auto_dispatch() -> bool:
+    global _global_mca_rt_op_auto_dispatch
+    return _global_mca_rt_op_auto_dispatch
+
+class RuntimeOperator:
+    def __init__(self, rt_op_id: str):
+        self.rt_op_id = rt_op_id
+        self._kernels: dict[int, tuple[Core, list[KernelPrototype]]] = {}
+        
+    def add_kernel(self, core: Core, kernel: KernelPrototype):
+        if check_mca_rt_op_auto_dispatch():
+            core.dispatch_main_kernel(slot_id="RT", kernel=kernel)
+            return
+        
+        if core.core_id not in self._kernels:
+            self._kernels[core.core_id] = (core, [])
+        self._kernels[core.core_id][1].append(kernel)
+        
+    def dispatch(self, slot_id: str="RT"):
+        for core_id, (core, kernels) in self._kernels.items():
+            for kernel in kernels:
+                core.dispatch_main_kernel(slot_id=slot_id, kernel=kernel)
+
+class MCA_RT_OP_AUTO_DISPATCH_REGION:
+    def __enter__(self):
+        activate_mca_rt_op_auto_dispatch()
+        
+    def __exit__(self, exc_type, exc_value, traceback):
+        deactivate_mca_rt_op_auto_dispatch()
+        return False  # Do not suppress exceptions
+
 
 class MCA_RT_JIT_COMPILE_REGION:
     def __init__(self, core: NPUCore, kernel_id: str=None):
@@ -263,7 +311,7 @@ class MCA_RT_JIT_COMPILE_REGION:
         self._history_kernel_context = None
         
         if not isinstance(core, NPUCore):
-            raise Exception(f"The argument of MCA_RT_JIT_REGION_AUTO_DISPATCH must be a NPUCore instance, but got {type(core)}.")
+            raise Exception(f"The argument of MCA_RT_JIT_COMPILE_REGION must be a NPUCore instance, but got {type(core)}.")
 
     def __enter__(self):
         self._history_context_mode   = get_global_context_mode()
@@ -271,18 +319,19 @@ class MCA_RT_JIT_COMPILE_REGION:
         self._history_kernel_context = get_global_kernel_context()
         
         if self._history_context_mode == GlobalContextMode.COMPILE:
-            logger.warning(f"Calling MCA_RT_JIT_REGION_AUTO_DISPATCH with COMPILE context may cause unexpected behavior.")
+            logger.warning(f"Calling MCA_RT_JIT_COMPILE_REGION with COMPILE context may cause unexpected behavior.")
             if self._history_core_context.core_id != self._core.core_id:
-                raise Exception(f"Nested MCA_RT_JIT_REGION_AUTO_DISPATCH with different core context is not allowed. (current core: {self._core.core_id}, history core: {self._history_core_context.core_id})")
+                raise Exception(f"Nested MCA_RT_JIT_COMPILE_REGION with different core context is not allowed. (current core: {self._core.core_id}, history core: {self._history_core_context.core_id})")
         
         set_global_context(GlobalContextMode.COMPILE, self._core, kernel=self._kernel)
         
     def __exit__(self, exc_type, exc_value, traceback):
         set_global_context(self._history_context_mode, self._history_core_context, kernel=self._history_kernel_context)
 
-        if self._history_context_mode == GlobalContextMode.IDLE and check_global_mca_rt_op_active():
-            self._kernel.kernel_id = f"{get_global_mca_rt_op_id()}::{self._kernel.kernel_id}"
-            self._core.dispatch_main_kernel(slot_id="RT", kernel=self._kernel)
+        if self._history_context_mode == GlobalContextMode.IDLE and check_global_mca_rt_op_active():            
+            rt_op = get_global_mca_rt_op()
+            self._kernel.kernel_id = f"{rt_op.rt_op_id}::{self._kernel.kernel_id}"
+            rt_op.add_kernel(core=self._core, kernel=self._kernel)
         elif self._history_context_mode == GlobalContextMode.COMPILE:
             for step in self._kernel._execution_steps:
                 self._history_kernel_context.add_execution_step(step)
@@ -293,33 +342,37 @@ def MCA_RT_KERNEL(func: Callable):
     @functools.wraps(func)
     def __wrapper(*args, **kwargs):
         pargs = parse_arguments(args, kwargs, ["core"])
-        core: NPUCore = pargs["core"]
+        core: Core = pargs["core"]
         
-        if not isinstance(core, NPUCore):
-            raise Exception(f"The first argument of the MCA_RT_KERNEL-decorated function or the keyword argument 'core' must be a NPUCore instance, but got {type(core)}.")
+        if not isinstance(core, Core):
+            raise Exception(f"The first argument of the MCA_RT_KERNEL-decorated function or the keyword argument 'core' must be a Core instance, but got {type(core)}.")
         
         rt_kernel = KernelPrototype(func=func, args=args, kwargs=kwargs)
         rt_kernel.compiled_kernel_id = func.__name__
 
         if check_global_mca_rt_op_active():
-            rt_kernel.compiled_kernel_id = f"{get_global_mca_rt_op_id()}::{rt_kernel.compiled_kernel_id}"
-        
-        core.dispatch_main_kernel(slot_id="RT", kernel=rt_kernel)  # TODO: currently, all runtime kernels are dispatched to the "RT" slot (inter-dependency between consecutive runtime kernels are determined by the order of the kernel calls)
+            rt_op = get_global_mca_rt_op()
+            rt_kernel.compiled_kernel_id = f"{rt_op.rt_op_id}::{rt_kernel.compiled_kernel_id}"
+            rt_op.add_kernel(core=core, kernel=rt_kernel)
+        else:
+            core.dispatch_main_kernel(slot_id="RT", kernel=rt_kernel)  # TODO: currently, all runtime kernels are dispatched to the "RT" slot (inter-dependency between consecutive runtime kernels are determined by the order of the kernel calls)
         
         return rt_kernel
     return __wrapper
 
 def MCA_RT_OPERATOR(func: Callable):
     @functools.wraps(func)
-    def __wrapper(*args, **kwargs) -> None:
+    def __wrapper(*args, **kwargs) -> RuntimeOperator:
         try:
             activate_global_mca_rt_op(rt_op_id=func.__name__)
             
-            pargs = parse_arguments(args, kwargs, ["device"])
-            device: MCA_DeviceBase = pargs["device"]
+            rt_op = get_global_mca_rt_op()
             
-            if not isinstance(device, MCA_DeviceBase):
-                raise Exception(f"The first argument of the MCA_RT_OPERATOR-decorated function or the keyword argument 'device' must be a MCA_DeviceBase instance, but got {type(device)}.")
+            pargs = parse_arguments(args, kwargs, ["device"])
+            device: Device = pargs["device"]
+            
+            if not isinstance(device, Device):
+                raise Exception(f"The first argument of the MCA_RT_OPERATOR-decorated function or the keyword argument 'device' must be a Device instance, but got {type(device)}.")
             
             ret = func(*args, **kwargs)
         finally:
@@ -327,5 +380,6 @@ def MCA_RT_OPERATOR(func: Callable):
         
         if ret is not None:
             raise Exception(f"The MCA_RT_OPERATOR-decorated function must return None, but got {type(ret)}.")
-        return ret
+        
+        return rt_op
     return __wrapper

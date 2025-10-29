@@ -92,8 +92,6 @@ class Device:
         
         remaining_cycles = None
         
-        # with print_log_execution_time("1) RUN SINGLE STEP"):
-        #     with print_log_execution_time(f" 1-1) Remaining Cycles Estimation"):     
         for core_id, core in self.cores.items():
             c = core.get_remaining_cycles()
             
@@ -102,11 +100,9 @@ class Device:
             elif c is not None:
                 remaining_cycles = min(remaining_cycles, c)
             
-            # with print_log_execution_time(f" 1-2) Update RPC Core Routine"):                    
         for core_id, core in self.cores.items():
             core.rpc_update_routine()
 
-            # with print_log_execution_time(f" 1-3) Update Companion Core Cycle Time"):
         if remaining_cycles == 0 or remaining_cycles is None:
             remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
         
@@ -115,7 +111,6 @@ class Device:
         else:
             self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
 
-            # with print_log_execution_time(f" 1-4) Update Core Cycle Time (remaining cycles: {remaining_cycles})"):
         for core_id, core in self.cores.items():
             core.update_cycle_time(cycle_time=remaining_cycles)
 
@@ -124,23 +119,27 @@ class Device:
         cycle_resolution:   int  = 1,   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
         max_steps:          int  = -1,  # the maximum number of steps to run
         max_timestamp:      int  = -1,  # the maximum timestamp to run
+        sync_target_cores:  Sequence[int] = None,  # the target cores to synchronize after each step; if None, all cores are synchronized
     ):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
         
+        core_ids = list(self._cores.keys()) if sync_target_cores is None else sync_target_cores
         step_cnt = 0
 
-        while not all(core.is_idle for core in self._cores.values()):  
+        while not all(self.cores[core_id].is_idle for core_id in core_ids):
+            self.run_single_step(cycle_resolution=cycle_resolution)
+            
+            # break condition: step count  
             step_cnt += 1
             if step_cnt >= max_steps > 0:
                 logger.info(f"Reached maximum steps: {max_steps}. Stopping simulation.")
                 break
             
+            # break condition: timestamp
             if self.timestamp >= max_timestamp > 0:
                 logger.info(f"Reached maximum timestamp: {max_timestamp}. Stopping simulation.")
                 break
-
-            self.run_single_step(cycle_resolution=cycle_resolution)
 
     def register_command_debug_hook(self, hook: Callable):
         if not self.is_initialized:

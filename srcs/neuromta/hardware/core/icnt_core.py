@@ -43,7 +43,6 @@ class IcntCore(Core):
                 self.cmap_context.config.booksim_module_id,
                 src_id, dst_id, 
                 subnet=(src_id + dst_id) % self.icnt_context.config.booksim2_config._subnets, n_flits=n_flits, 
-                # subnet=0, n_flits=n_flits, 
                 is_write=False, is_response=False
             )
             
@@ -58,7 +57,6 @@ class IcntCore(Core):
                 self.cmap_context.config.booksim_module_id,
                 dst_id, src_id, 
                 subnet=(src_id + dst_id) % self.icnt_context.config.booksim2_config._subnets, n_flits=n_flits, 
-                # subnet=0, n_flits=n_flits, 
                 is_write=False, is_response=True
             )
             

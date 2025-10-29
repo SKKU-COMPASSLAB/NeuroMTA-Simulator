@@ -5,7 +5,7 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.tenstorrent import *
+from neuromta.ip.mta import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 

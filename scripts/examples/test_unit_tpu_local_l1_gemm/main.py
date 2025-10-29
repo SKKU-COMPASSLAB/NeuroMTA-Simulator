@@ -4,7 +4,7 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.google_tpu.architecture import GoogleTPUConfig, GoogleTPUDevice
+from neuromta.ip.mca.google_tpu import GoogleTPUConfig, GoogleTPUDevice
 
 
 TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces")

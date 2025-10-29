@@ -5,7 +5,7 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.tenstorrent import *
+from neuromta.ip.mta import *
 from neuromta.hardware.companions.booksim import BookSim2
 from neuromta.hardware.companions.dramsim import DRAMSim3
 
@@ -72,32 +72,30 @@ if __name__ == "__main__":
     l1_buf_bias = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids).allocate()
     l1_buf_ofm  = MCA_TensorBuffer(shape=(N, H, W, K), dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids).allocate()
     
-    MCA_RT_DMA_LOAD(device, src_buf=main_buf_ifm, dst_buf=l1_buf_ifm)
-    MCA_RT_DMA_LOAD(device, src_buf=main_buf_wgt, dst_buf=l1_buf_wgt)
-    MCA_RT_DMA_LOAD(device, src_buf=main_buf_bias, dst_buf=l1_buf_bias)
+    with MCA_RT_OP_AUTO_DISPATCH_REGION():
+        MCA_RT_DMA_LOAD(device, src_buf=main_buf_ifm, dst_buf=l1_buf_ifm)
+        MCA_RT_DMA_LOAD(device, src_buf=main_buf_wgt, dst_buf=l1_buf_wgt)
+        MCA_RT_DMA_LOAD(device, src_buf=main_buf_bias, dst_buf=l1_buf_bias)
 
-    MCA_RT_GLOBAL_SYNC(device, core_ids=core_ids)
-    
-    TT_RT_CONV2D(
-        device = device,
-        core_grid = core_grid,
-
-        buf_ifm  = l1_buf_ifm,
-        buf_wgt  = l1_buf_wgt,
-        buf_bias = l1_buf_bias,
-        buf_ofm  = l1_buf_ofm,
-
-        stride   = (SH, SW),
-        padding  = (PH, PW),
-        dilation = (DH, DW),
+        MCA_RT_GLOBAL_SYNC(device, core_ids=core_ids)
         
-        dtype = dtype,
-        acc_dtype = acc_dtype,
-    )
-    
-    MCA_RT_GLOBAL_SYNC(device, core_ids=core_ids)
-    
-    MCA_RT_DMA_STORE(device, src_buf=l1_buf_ofm, dst_buf=main_buf_ofm)
+        TT_RT_CONV2D(
+            device = device,
+            core_grid = core_grid,
+
+            buf_ifm  = l1_buf_ifm,
+            buf_wgt  = l1_buf_wgt,
+            buf_bias = l1_buf_bias,
+            buf_ofm  = l1_buf_ofm,
+
+            stride   = (SH, SW),
+            padding  = (PH, PW),
+            dilation = (DH, DW),
+        )
+        
+        MCA_RT_GLOBAL_SYNC(device, core_ids=core_ids)
+        
+        MCA_RT_DMA_STORE(device, src_buf=l1_buf_ofm, dst_buf=main_buf_ofm)
     
     tracer_hub = TracerHub()
     profiler_hub = ProfilerHub()
@@ -120,8 +118,8 @@ if __name__ == "__main__":
     with MonitoringWindow() as monitor:
         for core_id in core_grid.core_ids:
             core = device.get_npu_core(core_id=core_id)
-            pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
-            pbar.bind_core(core)
+            pbar_idx = monitor.add_core_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
+            monitor.pbar_handles[pbar_idx].bind_core(core)
         
         st = time.time()
         device.run_kernels()

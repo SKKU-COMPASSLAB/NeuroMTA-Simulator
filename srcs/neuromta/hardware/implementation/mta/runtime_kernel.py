@@ -2,20 +2,21 @@ import math
 import torch
 
 from neuromta.framework import *
-from neuromta.hardware import *
-from neuromta.ip.tenstorrent.architecture import *
+from neuromta.hardware.core import *
+from neuromta.hardware.context import *
+from neuromta.hardware.implementation.common import *
 
 
 __all__ = [
-    "TT_RT_KERNEL_TILED_LINEAR_BURST_K",
-    "TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C",
-    "TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C",
-    "TT_RT_KERNEL_TILED_RELU",
+    "MTA_RT_KERNEL_TILED_LINEAR_BURST_K",
+    "MTA_RT_KERNEL_TILED_CONV2D_BURST_FHW_C",
+    "MTA_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C",
+    "MTA_RT_KERNEL_TILED_RELU",
 ]
 
 
 @MCA_RT_KERNEL
-def TT_RT_KERNEL_TILED_LINEAR_BURST_K(
+def MTA_RT_KERNEL_TILED_LINEAR_BURST_K(
     core: NPUCore,
     
     buf_ifm:  BufferPointer, 
@@ -31,6 +32,7 @@ def TT_RT_KERNEL_TILED_LINEAR_BURST_K(
     n_it: int,
 
     dtype: torch.dtype, acc_dtype: torch.dtype,
+    accumulate_psum: bool=False
 ):  
     containers = [DataContainer() for _ in range(4)]
     
@@ -39,17 +41,19 @@ def TT_RT_KERNEL_TILED_LINEAR_BURST_K(
     bias_page_idx = n_it
     ofm_page_idx = (m_it * n_tile_num) + n_it
 
-    core.mem_read_with_container(buf_bias[bias_page_idx], containers[2])
+    if buf_bias is not None:
+        core.mem_read_with_container(buf_bias[bias_page_idx], containers[2])
 
     for k_it in range(k_tile_num):
         ifm_page_idx = (m_it * k_tile_num) + k_it
         wgt_page_idx = (n_it * k_tile_num) + k_it
         
-        core.mem_read_with_container(buf_ifm[ifm_page_idx], containers[0])
+        core.mem_container_init(containers[0], shape=core.mxu_context.ifm_tile_shape, dtype=dtype)
+        core.mem_read_with_container(buf_ifm[ifm_page_idx], containers[0], offset=0)
         core.mem_read_with_container(buf_wgt[wgt_page_idx], containers[1])
 
         preload_psum = True if k_it == 0 else False
-        flush_ofm    = True if (k_it == (k_tile_num - 1)) else False
+        flush_ofm    = True if ((k_it == (k_tile_num - 1)) and not accumulate_psum) else False
         
         core.mxu_tiled_gemm(
             *containers,
@@ -59,11 +63,21 @@ def TT_RT_KERNEL_TILED_LINEAR_BURST_K(
             psum_vectored=True,     # TODO: assume taht the psum is a bias vector, not the partial sum matrix
         )
     
+    if accumulate_psum:
+        core.mem_container_init(containers[0], shape=core.mxu_context.ofm_tile_shape, dtype=acc_dtype)
+        core.mem_read_with_container(buf_ofm[ofm_page_idx], containers[0])
+        core.mxu_tiled_elemwise(
+            op=MXUElementwiseOp.ADD,
+            src=containers[0],
+            dst=containers[3],
+            flush_ofm=True,
+        )
+    
     core.mem_write_with_container(buf_ofm[ofm_page_idx], containers[3])
     
     
 @MCA_RT_KERNEL
-def TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
+def MTA_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
     core: NPUCore,
     
     buf_ifm:  BufferPointer,            # memory layout: ROW_MAJOR_REFERENCE / shape=(N*H*W, C)
@@ -93,6 +107,7 @@ def TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
 
     dtype: torch.dtype,
     acc_dtype: torch.dtype,
+    accumulate_psum: bool=False,
 ):
     _, H, W, _ = ifm_shape
     FH, FW, _, _ = wgt_shape
@@ -112,7 +127,9 @@ def TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
     containers = [DataContainer() for _ in range(4)]
         
     core.mxu_reconfigure(dtype=dtype, acc_dtype=acc_dtype)
-    core.mem_read_with_container(buf_bias[bias_page_idx], containers[2])
+    
+    if buf_bias is not None:
+        core.mem_read_with_container(buf_bias[bias_page_idx], containers[2])
     
     for fh_it in range(fh_min, fh_max, 1):
         for fw_it in range(FW):
@@ -140,7 +157,7 @@ def TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
                         dst_seg_id = ow_intra_tile_it
                         src_seg_id = (w_it % w_tile_size)
                         
-                        copy_layout_pattern[ifm_page_idx].append((dst_seg_id, src_seg_id))
+                        copy_layout_pattern[ifm_page_idx].append((dst_seg_id, src_seg_id, 0, 0, c_tile_size * dtype.itemsize))
                         
                 for ifm_page_idx, pattern in copy_layout_pattern.items():
                     core.mem_read_with_container(
@@ -151,7 +168,7 @@ def TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
                     )
                 
                 preload_psum = (fh_it == fh_min and fw_it == 0 and c_tile_it == 0)
-                flush_ofm    = (fh_it == (fh_max - 1) and fw_it == (FW - 1) and c_tile_it == (c_tile_num - 1))
+                flush_ofm    = (fh_it == (fh_max - 1) and fw_it == (FW - 1) and c_tile_it == (c_tile_num - 1)) and not accumulate_psum
                 
                 core.mxu_tiled_gemm(
                     *containers,
@@ -160,12 +177,22 @@ def TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
                     wgt_transposed=True,    # TODO: assume that the weight matrix is transposed (for contiguous memory access)
                     psum_vectored=True,     # TODO: assume taht the psum is a bias vector, not the partial sum matrix
                 )
+                
+    if accumulate_psum:
+        core.mem_container_init(containers[0], shape=core.mxu_context.ifm_tile_shape, dtype=dtype)
+        core.mem_read_with_container(buf_ofm[ofm_page_idx], containers[0])
+        core.mxu_tiled_elemwise(
+            op=MXUElementwiseOp.ADD,
+            src=containers[0],
+            dst=containers[3],
+            flush_ofm=True,
+        )
     
     core.mem_write_with_container(buf_ofm[ofm_page_idx], containers[3])
     
     
 @MCA_RT_KERNEL
-def TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
+def MTA_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
     core: NPUCore,
     
     buf_ifm:  BufferPointer,            # memory layout: ROW_MAJOR_REFERENCE / shape=(N*H*W, C)
@@ -192,6 +219,7 @@ def TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
 
     dtype: torch.dtype,
     acc_dtype: torch.dtype,
+    accumulate_psum: bool=False,
 ):
     _, H, W, _ = ifm_shape
     FH, FW = kernel_shape
@@ -234,7 +262,7 @@ def TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
                     dst_seg_id = ow_intra_tile_it
                     src_seg_id = (w_it % w_tile_size)
                     
-                    copy_layout_pattern[ifm_page_idx].append((dst_seg_id, src_seg_id))
+                    copy_layout_pattern[ifm_page_idx].append((dst_seg_id, src_seg_id, 0, 0, c_tile_size * dtype.itemsize))
                     
             for ifm_page_idx, pattern in copy_layout_pattern.items():
                 core.mem_read_with_container(
@@ -245,19 +273,29 @@ def TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
                 )
             
             preload_psum = (fh_it == fh_min and fw_it == 0)
-            flush_ofm    = (fh_it == (fh_max - 1) and fw_it == (FW - 1))
+            flush_ofm    = (fh_it == (fh_max - 1) and fw_it == (FW - 1)) and not accumulate_psum
             
             core.mxu_tiled_maxpool(
                 *containers,
                 preload_psum=preload_psum,
                 flush_ofm=flush_ofm,
             )
+            
+    if accumulate_psum:
+        core.mem_container_init(containers[0], shape=core.mxu_context.ifm_tile_shape, dtype=dtype)
+        core.mem_read_with_container(buf_ofm[ofm_page_idx], containers[0])
+        core.mxu_tiled_elemwise(
+            op=MXUElementwiseOp.CMP_MAX,
+            src=containers[0],
+            dst=containers[1],
+            flush_ofm=True,
+        )
     
     core.mem_write_with_container(buf_ofm[ofm_page_idx], containers[2])
                     
     
 @MCA_RT_KERNEL
-def TT_RT_KERNEL_TILED_RELU(
+def MTA_RT_KERNEL_TILED_RELU(
     core: NPUCore,
     
     buf_src:  BufferPointer,
@@ -295,4 +333,49 @@ def TT_RT_KERNEL_TILED_RELU(
             core.vpu_store_reg(container, 0, burst_len=burst_len, offset=offset)
             
         core.mem_write_with_container(buf_dst[page_idx], container)
+        
+
+@MCA_RT_KERNEL
+def MTA_RT_KERNEL_TILED_FLATTEN_4D(
+    core: NPUCore,
+    
+    buf_src:  BufferPointer,
+    buf_dst:  BufferPointer,
+    
+    dtype: torch.dtype,
+    
+    src_shape: tuple[int, int, int, int],  # (N, H, W, C)
+    dst_shape: tuple[int, int],            # (COL, ROW)
+    page_shape: tuple[int, int],           # (COL, ROW)
+    
+    target_dst_page_indice: list[int]
+):
+    SN, SH, SW, SC = src_shape
+    DC, DR = dst_shape
+    PC, PR = page_shape
+    
+    if SC % PR != 0:
+        raise Exception(f"Flatten operation requires that the source C dimension ({SC}) is divisible by the page ROW size ({PR}).")
+    if DR % PR != 0:
+        raise Exception(f"Flatten operation requires that the destination ROW dimension ({DR}) is divisible by the page ROW size ({PR}).")
+    
+    n_sw_tiles = math.ceil(SW / PC)
+    n_sc_tiles = math.ceil(SC / PR)
+    
+    sw_pad = (n_sw_tiles * PC) - SW
+    
+    n_dc_tiles = math.ceil(DC / PC)
+    n_dr_tiles = math.ceil(DR / PR)
+    
+    dc_pad = (n_dc_tiles * PC) - DC
+    
+    container = DataContainer()
+    
+    for dst_page_idx in target_dst_page_indice:
+        dc_tile_it = (dst_page_idx // n_dr_tiles)
+        dr_tile_it = (dst_page_idx % n_dr_tiles)
+        
+        core.mem_container_init(container, shape=(PC, PR), dtype=dtype)
+        
+        src_page_idx_offset = (dc_tile_it * PC * n_sw_tiles * n_sc_tiles) + dr_tile_it
         

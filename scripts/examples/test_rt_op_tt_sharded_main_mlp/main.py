@@ -5,7 +5,7 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.tenstorrent import *
+from neuromta.ip.mta import *
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
@@ -108,8 +108,8 @@ if __name__ == "__main__":
     with MonitoringWindow() as monitor:
         for core_id in core_grid.core_ids:
             core = device.get_npu_core(core_id=core_id)
-            pbar = monitor.add_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
-            pbar.bind_core(core)
+            pbar_idx = monitor.add_core_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
+            monitor.pbar_handles[pbar_idx].bind_core(core)
         
         st = time.time()
         device.run_kernels()

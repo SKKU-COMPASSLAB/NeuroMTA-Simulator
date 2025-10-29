@@ -19,16 +19,13 @@ class ProgressBarHandle:
         self.desc = desc
         self.ncols = ncols
         
-        self._hook_id = None
-        self._binded_core = None
+        self._cached_total    = 0
+        self._cached_progress = 0
         
-        self._cached_total_kernel_num = 0
-        self._cached_progress_kernel_num = 0
-
     def draw(self):
-        percentage = min(((self._cached_progress_kernel_num) / self._cached_total_kernel_num * 100) if self._cached_total_kernel_num and self._cached_total_kernel_num > 0 else 0.0, 100.0)
+        percentage = min(((self._cached_progress) / self._cached_total * 100) if self._cached_total and self._cached_total > 0 else 0.0, 100.0)
 
-        header = f"{self.desc} [{self._cached_progress_kernel_num:<3d}/{self._cached_total_kernel_num:<3d}] {percentage:6.2f}% "
+        header = f"{self.desc} [{self._cached_progress:<3d}/{self._cached_total:<3d}] {percentage:6.2f}% "
         pbar_prefix = "|"
         tail   = "| "
         
@@ -37,7 +34,7 @@ class ProgressBarHandle:
         if 0 <= bar_width < 10:
             sys.stdout.write(f"{header}")
         elif bar_width >= 10:
-            if self._cached_total_kernel_num > 0:
+            if self._cached_total > 0:
                 filled_len = int(round(bar_width * percentage / 100))
                 bar = '█' * filled_len + ' ' * (bar_width - filled_len)
             else:
@@ -46,20 +43,32 @@ class ProgressBarHandle:
             sys.stdout.write(f"{header}{pbar_prefix}{bar}{tail}")
         else:
             sys.stdout.write(f"{'NO SPACE':<{self.ncols}s}")
-        
+            
     def __getstate__(self):
         return {
             'desc': self.desc,
             'ncols': self.ncols,
-            "_cached_total": self._cached_total_kernel_num,
-            "_cached_progress": self._cached_progress_kernel_num,
+            "_cached_total": self._cached_total,
+            "_cached_progress": self._cached_progress,
         }
         
     def __setstate__(self, state):
         self.desc = state['desc']
         self.ncols = state['ncols']
-        self._cached_total_kernel_num = state["_cached_total"]
-        self._cached_progress_kernel_num = state["_cached_progress"]
+        self._cached_total = state["_cached_total"]
+        self._cached_progress = state["_cached_progress"]
+        
+    def update(self, total: int, progress: int):
+        self._cached_total = total
+        self._cached_progress = progress
+
+
+class CoreProgressBarHandle(ProgressBarHandle):
+    def __init__(self, desc: str="", ncols: int=80):
+        super().__init__(desc, ncols)
+        
+        self._hook_id = None
+        self._binded_core = None
         
     def bind_core(self, core: Core):
         self._binded_core = core
@@ -72,21 +81,21 @@ class ProgressBarHandle:
             
             self._hook_id = None
             self._binded_core = None
-            self._cached_total_kernel_num = None
+            self._cached_total = None
     
     def _update_pbar_kernel_status(self, core: Core, kernel: Kernel=None, issue_time: int=None, commit_time: int=None):
         if core.is_idle:
-            self._cached_total_kernel_num = 0
-            self._cached_progress_kernel_num = 0
+            self._cached_total = 0
+            self._cached_progress = 0
             return
         
         if issue_time is not None:
-            self._cached_total_kernel_num += 1
+            self._cached_total += 1
         if commit_time is not None:
-            self._cached_progress_kernel_num += 1
+            self._cached_progress += 1
             
-        if self._cached_total_kernel_num < core.n_dispatched_main_kernels:
-            self._cached_total_kernel_num = core.n_dispatched_main_kernels
+        if self._cached_total < core.n_dispatched_main_kernels:
+            self._cached_total = core.n_dispatched_main_kernels
         
         
 class LogEntryHandle:
@@ -150,7 +159,7 @@ class MWDrawingProcess(mp.Process):
         sys.stdout.write("\033[?25h") # show cursor again
         sys.stdout.flush()
         
-    def draw(self, log_messages: list[LogEntryHandle], pbar_handles: list[ProgressBarHandle], term_width: int, term_height: int):
+    def draw(self, log_messages: list[LogEntryHandle], pbar_handles: list[CoreProgressBarHandle], term_width: int, term_height: int):
         PROMPT_LINES = 1 if self._enable_prompt else 0
         
         sys.stdout.write("\033[2;1H")  # move cursor to (2, 1)
@@ -289,7 +298,20 @@ class MonitoringWindow:
         while len(self._log_messages) > term_height:
             self._log_messages.pop(0)
 
-    def add_pbar(self, desc: str, ncols: int) -> ProgressBarHandle:
+    def add_core_pbar(self, desc: str, ncols: int) -> int:
+        if ncols <= 0:
+            try:
+                term_width, _ = os.get_terminal_size()
+                ncols = term_width
+            except OSError:
+                ncols = 160 if self.default_term_height <= 0 else 100
+        
+        pbar = CoreProgressBarHandle(desc, ncols)
+        self._pbar_handles.append(pbar)
+        
+        return len(self._pbar_handles) - 1  # return index of the pbar
+    
+    def add_pbar(self, desc: str, ncols: int=-1) -> int:
         if ncols <= 0:
             try:
                 term_width, _ = os.get_terminal_size()
@@ -300,11 +322,15 @@ class MonitoringWindow:
         pbar = ProgressBarHandle(desc, ncols)
         self._pbar_handles.append(pbar)
         
-        return pbar
+        return len(self._pbar_handles) - 1  # return index of the pbar
+    
+    def remove_pbar(self, pbar_index: int):
+        pbar = self._pbar_handles[pbar_index]
+        if isinstance(pbar, CoreProgressBarHandle):
+            pbar.unbind_core()
+        self._pbar_handles.pop(pbar_index)
         
     def close(self):
-        # global _global_monitoring_window
-        
         self.send_mw_draw_command()  # final draw before closing
     
         self.mw_drawing_process_cmd_queue.put(MWCommand(MWCommand.CLOSE))
@@ -313,15 +339,14 @@ class MonitoringWindow:
         self.mw_timer_stop_event.set()
         self.mw_timer_process.join()
 
-        # _global_monitoring_window = None
-        
         if not self.leave:
             sys.stdout.write("\033[2J")   # erase the entire screen
             sys.stdout.write("\033[2;1H")
             
         for pbar in self._pbar_handles:
-            pbar.unbind_core()
-            
+            if isinstance(pbar, CoreProgressBarHandle):
+                pbar.unbind_core()
+
         unset_global_monitoring_window()
 
     def __enter__(self):
@@ -329,3 +354,7 @@ class MonitoringWindow:
     
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
+        
+    @property
+    def pbar_handles(self) -> list[ProgressBarHandle | CoreProgressBarHandle]:
+        return self._pbar_handles

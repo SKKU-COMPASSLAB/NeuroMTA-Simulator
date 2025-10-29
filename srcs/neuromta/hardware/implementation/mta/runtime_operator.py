@@ -2,22 +2,21 @@ import torch
 import math
 
 from neuromta.framework import *
-from neuromta.hardware import *
-from neuromta.ip.tenstorrent.architecture import *
-from neuromta.ip.tenstorrent.runtime_kernel import *
+from neuromta.hardware.implementation.common import *
+from neuromta.hardware.implementation.mta.runtime_kernel import *
 
 
 __all__ = [
-    "TT_RT_LINEAR",
-    "TT_RT_RELU",
-    "TT_RT_CONV2D",
-    "TT_RT_MAXPOOL2D",
+    "MTA_RT_LINEAR",
+    "MTA_RT_RELU",
+    "MTA_RT_CONV2D",
+    "MTA_RT_MAXPOOL2D",
 ]
 
 
 @MCA_RT_OPERATOR
-def TT_RT_LINEAR(
-    device: TenstorrentDevice, 
+def MTA_RT_LINEAR(
+    device: MTA_DeviceBase, 
     core_grid: MTA_CoreGrid,
     
     buf_ifm:  MCA_TensorBuffer,
@@ -25,13 +24,15 @@ def TT_RT_LINEAR(
     buf_bias: MCA_TensorBuffer | None,
     buf_ofm:  MCA_TensorBuffer,
     
-    dtype:      torch.dtype = torch.float32,
-    acc_dtype:  torch.dtype = torch.float32,
+    accumulate_psum: bool = False
 ) -> MCA_TensorBuffer:
     
     M, K = buf_ifm.tensor_shape
     N, KW = buf_wgt.tensor_shape
     NB = buf_bias.tensor_shape[0] if buf_bias is not None else N
+    
+    dtype = buf_ifm.tensor_dtype
+    acc_dtype = buf_ofm.tensor_dtype
     
     assert K == KW, f"[ERROR] The second dimension of input tensor (K={K}) must match the second dimension of weight tensor (KW={KW})."
     assert N == NB, f"[ERROR] The first dimension of weight tensor (N={N}) must match the first dimension of bias tensor (NB={NB})."
@@ -43,25 +44,25 @@ def TT_RT_LINEAR(
     if buf_bias is not None and buf_bias.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"Bias buffer must be allocated in L1 memory.")
     
+    if buf_wgt.tensor_dtype != dtype:
+        raise Exception(f"The data type of weight buffer {buf_wgt.tensor_dtype} does not match the expected data type {dtype}.")
+    if buf_bias is not None and buf_bias.tensor_dtype != acc_dtype:
+        raise Exception(f"The data type of bias buffer {buf_bias.tensor_dtype} does not match the expected data type {acc_dtype}.")
+    if buf_ofm.tensor_shape != (M, N):
+        raise Exception(f"The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(M, N)}.")
+    if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
+        raise Exception(f"Output feature map buffer must be allocated in L1 memory.")
+    
     m_tile_num = buf_ifm.y_n_pages
     n_tile_num = buf_wgt.y_n_pages
     k_tile_num = buf_ifm.x_n_pages
-    
-    # buf_ofm = MCA_TensorBuffer(shape=(M, N), dtype=acc_dtype, layout=buf_ifm.layout, device=device, core_ids=core_grid.core_ids)
-    
-    if buf_ofm.tensor_shape != (M, N):
-        raise Exception(f"The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(M, N)}.")
-    if buf_ofm.tensor_dtype != acc_dtype:
-        raise Exception(f"The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
-    if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"Output feature map buffer must be allocated in L1 memory.")
     
     for m_it in range(m_tile_num):
         for n_it in range(n_tile_num):
             core_id = core_grid[m_it % core_grid.shape[0], n_it % core_grid.shape[1]]
             core = device.get_npu_core(core_id=core_id)
 
-            TT_RT_KERNEL_TILED_LINEAR_BURST_K(
+            MTA_RT_KERNEL_TILED_LINEAR_BURST_K(
                 core,
 
                 buf_ifm  = buf_ifm.reference, 
@@ -78,13 +79,14 @@ def TT_RT_LINEAR(
                 
                 dtype = dtype, 
                 acc_dtype = acc_dtype,
+                accumulate_psum = accumulate_psum,
             )
 
     # return buf_ofm
 
 @MCA_RT_OPERATOR
-def TT_RT_CONV2D(
-    device: TenstorrentDevice, 
+def MTA_RT_CONV2D(
+    device: MTA_DeviceBase, 
     core_grid: MTA_CoreGrid,
     
     buf_ifm:  MCA_TensorBuffer,
@@ -96,14 +98,19 @@ def TT_RT_CONV2D(
     padding:   tuple[int, int] = (0, 0),
     dilation:  tuple[int, int] = (1, 1),
     
-    dtype:      torch.dtype = torch.float32,
-    acc_dtype:  torch.dtype = torch.float32,
+    accumulate_psum: bool = False,
 ) -> MCA_TensorBuffer:
     N, H, W, C   = buf_ifm.tensor_shape
     FH, FW, K, C = buf_wgt.tensor_shape
     SH, SW = stride
     PH, PW = padding
     DH, DW = dilation
+    
+    OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
+    OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
+    
+    dtype = buf_ifm.tensor_dtype
+    acc_dtype = buf_ofm.tensor_dtype
     
     if buf_ifm.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"Input feature map buffer must be allocated in L1 memory.")
@@ -112,13 +119,12 @@ def TT_RT_CONV2D(
     if buf_bias is not None and buf_bias.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"Bias buffer must be allocated in L1 memory.")
     
-    OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
-    OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
-    
+    if buf_wgt.tensor_dtype != dtype:
+        raise Exception(f"The data type of weight buffer {buf_wgt.tensor_dtype} does not match the expected data type {dtype}.")
+    if buf_bias is not None and buf_bias.tensor_dtype != acc_dtype:
+        raise Exception(f"The data type of bias buffer {buf_bias.tensor_dtype} does not match the expected data type {acc_dtype}.")
     if buf_ofm.tensor_shape != (N, OH, OW, K):
         raise Exception(f"The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, K)}.")
-    if buf_ofm.tensor_dtype != acc_dtype:
-        raise Exception(f"The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
     if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"Output feature map buffer must be allocated in L1 memory.")
 
@@ -144,7 +150,7 @@ def TT_RT_CONV2D(
                     core_idx = ofm_tile_cnt // n_ofm_pages_per_core
                     core_id  = core_grid.core_ids[core_idx]
                     
-                    TT_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
+                    MTA_RT_KERNEL_TILED_CONV2D_BURST_FHW_C(
                         core = device.get_core_from_id(core_id=core_id),
             
                         buf_ifm = buf_ifm.reference,
@@ -174,13 +180,14 @@ def TT_RT_CONV2D(
 
                         dtype = dtype,
                         acc_dtype = acc_dtype,
+                        accumulate_psum = accumulate_psum,
                     )
                     
                     ofm_tile_cnt += 1
 
 @MCA_RT_OPERATOR
-def TT_RT_MAXPOOL2D(
-    device: TenstorrentDevice, 
+def MTA_RT_MAXPOOL2D(
+    device: MTA_DeviceBase, 
     core_grid: MTA_CoreGrid,
     
     buf_ifm:  MCA_TensorBuffer,
@@ -191,8 +198,7 @@ def TT_RT_MAXPOOL2D(
     padding:   tuple[int, int] = (0, 0),
     dilation:  tuple[int, int] = (1, 1),
     
-    dtype:      torch.dtype = torch.float32,
-    acc_dtype:  torch.dtype = torch.float32,
+    accumulate_psum: bool = False
 ) -> MCA_TensorBuffer:
     N, H, W, C   = buf_ifm.tensor_shape
     FH, FW = kernel
@@ -200,16 +206,16 @@ def TT_RT_MAXPOOL2D(
     PH, PW = padding
     DH, DW = dilation
     
-    if buf_ifm.layout.mem_type == MCA_TensorMemoryType.MAIN:
-        raise Exception(f"Input feature map buffer must be allocated in L1 memory.")
-    
     OH = (H + 2 * PH - DH * (FH-1) - 1) // SH + 1
     OW = (W + 2 * PW - DW * (FW-1) - 1) // SW + 1
-
+    
+    dtype = buf_ifm.tensor_dtype
+    acc_dtype = buf_ofm.tensor_dtype
+    
+    if buf_ifm.layout.mem_type == MCA_TensorMemoryType.MAIN:
+        raise Exception(f"Input feature map buffer must be allocated in L1 memory.")
     if buf_ofm.tensor_shape != (N, OH, OW, C):
         raise Exception(f"The shape of output feature map buffer {buf_ofm.tensor_shape} does not match the expected shape {(N, OH, OW, C)}.")
-    if buf_ofm.tensor_dtype != acc_dtype:
-        raise Exception(f"The data type of output feature map buffer {buf_ofm.tensor_dtype} does not match the expected data type {acc_dtype}.")
     if buf_ofm.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"Output feature map buffer must be allocated in L1 memory.")
 
@@ -233,7 +239,7 @@ def TT_RT_MAXPOOL2D(
                     core_idx = ofm_tile_cnt // n_ofm_pages_per_core
                     core_id  = core_grid.core_ids[core_idx]
                     
-                    TT_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
+                    MTA_RT_KERNEL_TILED_MAXPOOL2D_BURST_FHW_C(
                         core = device.get_core_from_id(core_id=core_id),
             
                         buf_ifm = buf_ifm.reference,
@@ -255,25 +261,24 @@ def TT_RT_MAXPOOL2D(
                         
                         n_it = n_it,
                         oh_it = oh_it,
-                        
                         ow_tile_it = ow_tile_it,
                         c_tile_it = c_tile_it,
 
                         dtype = dtype,
                         acc_dtype = acc_dtype,
+                        accumulate_psum = accumulate_psum,
                     )
                     
                     ofm_tile_cnt += 1
 
 @MCA_RT_OPERATOR
-def TT_RT_RELU(
-    device: TenstorrentDevice, 
+def MTA_RT_RELU(
+    device: MTA_DeviceBase, 
     core_grid: MTA_CoreGrid,
     
     buf_src:  MCA_TensorBuffer,
     buf_dst:  MCA_TensorBuffer | None = None,
     
-    dtype:    torch.dtype = None, 
     inplace:  bool = False,
 ) -> MCA_TensorBuffer:
     
@@ -282,8 +287,7 @@ def TT_RT_RELU(
     if buf_dst is not None and buf_dst.layout.mem_type == MCA_TensorMemoryType.MAIN:
         raise Exception(f"Destination buffer must be allocated in L1 memory.")
     
-    if dtype is None:
-        dtype = buf_src.tensor_dtype
+    dtype = buf_src.tensor_dtype
     
     if inplace:
         if buf_src.tensor_dtype != dtype:
@@ -297,7 +301,7 @@ def TT_RT_RELU(
         if len(page_indice) == 0:
             continue
         
-        TT_RT_KERNEL_TILED_RELU(
+        MTA_RT_KERNEL_TILED_RELU(
             core,
             
             buf_src = buf_src.get_reference_by_page_idx(*page_indice),
