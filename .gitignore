@@ -212,6 +212,7 @@ __marimo__/
 .traces/
 .profiles/
 .analysis/
+.visualize/
 scripts/*/.logs/
 scripts/*experiments/*/.archive/
 
