@@ -15,7 +15,6 @@ __all__ = [
     "Pointer",
     "BufferPointer",
     "BufferHandle",
-    "CircularBufferHandle",
     "MemoryHandle",
     
     "create_var_ptr",
@@ -190,19 +189,27 @@ class BufferPointer:
         
     @property
     def raw_handle(self) -> 'BufferHandle':
-        if self._item != slice(0, self._handle.n_pages, 1) and self._item != slice(0, self._handle.n_pages, None):
-            if self.is_circular:
-                raise Exception(f"Cannot access raw_handle of a CircularBufferPointer that is not pointing to the entire buffer. The current item is {self._item}. Use 'resolve' method instead.")
-            return self.resolve(is_read=True)
-        return self._handle
-    
-    @property
-    def is_circular(self) -> bool:
-        return isinstance(self._handle, CircularBufferHandle)
+        page_ptrs = self._handle.page_ptrs
+        
+        if isinstance(self._item, int):
+            idx  = self._item % self._handle.n_pages
+            page_ptrs = [page_ptrs[idx]]
+        elif isinstance(self._item, slice):
+            start = self._item.start % self._handle.n_pages
+            stop = self._item.stop % self._handle.n_pages
+            
+            if start < stop:
+                page_ptrs = page_ptrs[start:stop]
+            else:
+                page_ptrs = page_ptrs[start:] + page_ptrs[:stop]
+        elif isinstance(self._item, tuple):
+            page_ptrs = [page_ptrs[i % self._handle.n_pages] for i in self._item]
+        
+        return BufferHandle(page_size=self._handle.page_size, n_pages=len(page_ptrs), page_ptrs=page_ptrs)
     
     @property
     def n_pages(self) -> int:
-        return self.resolve(is_read=True).n_pages
+        return self.raw_handle.n_pages
     
     @property
     def page_size(self) -> int:
@@ -233,35 +240,6 @@ class BufferPointer:
                 elif isinstance(new_item, tuple):
                     return BufferPointer(handle=self._handle, item=tuple(self._item[i] for i in new_item))
         return super().__getitem__(new_item)
-
-    def resolve(self, is_read: bool=None) -> 'BufferHandle':
-        if isinstance(self._handle, CircularBufferHandle):
-            if is_read is None:
-                raise ValueError(f"Cannot resolve the reference since is_read is not specified for CircularBufferHandle.")
-            elif is_read:
-                offset = self._handle._rd_ptr
-            else:
-                offset = self._handle._wr_ptr
-        else:
-            offset = 0
-        
-        page_ptrs = self._handle.page_ptrs
-        
-        if isinstance(self._item, int):
-            idx  = (self._item + offset) % self._handle.n_pages
-            page_ptrs = [page_ptrs[idx]]
-        elif isinstance(self._item, slice):
-            start = (self._item.start + offset) % self._handle.n_pages
-            stop = (self._item.stop + offset) % self._handle.n_pages
-            
-            if start < stop:
-                page_ptrs = page_ptrs[start:stop]
-            else:
-                page_ptrs = page_ptrs[start:] + page_ptrs[:stop]
-        elif isinstance(self._item, tuple):
-            page_ptrs = [page_ptrs[(i + offset) % self._handle.n_pages] for i in self._item]
-        
-        return BufferHandle(page_size=self._handle.page_size, n_pages=len(page_ptrs), page_ptrs=page_ptrs)
 
 
 class BufferHandle:
@@ -302,67 +280,6 @@ class BufferHandle:
     @property
     def size(self) -> int:
         return self._page_size * self._n_pages
-    
-    
-class CircularBufferHandle(BufferHandle):
-    def __init__(self, page_size: int, n_pages: int, page_ptrs: list[Pointer]):
-        super().__init__(page_size, n_pages, page_ptrs)
-        
-        self._rd_ptr    = 0
-        self._wr_ptr    = 0
-        self._rsvd_ptr  = 0
-        
-        self._rd_ptr_phase = False
-        self._wr_ptr_phase = False
-        self._rsvd_ptr_phase = False
-
-    def __getitem__(self, item) -> BufferHandle:
-        raise Exception(f"Cannot create reference for CircularBufferPointer with slicing. Use specialized reference methods 'rd_ref' or 'wr_ref' instead.")
-
-    @property
-    def _alloc_space(self) -> int:
-        if self._rsvd_ptr == self._rd_ptr:
-            if self._rd_ptr_phase == self._rsvd_ptr_phase:
-                return 0
-            else:
-                return self._n_pages
-        elif self._rsvd_ptr > self._rd_ptr:
-            return self._rsvd_ptr - self._rd_ptr
-        else:
-            return self._n_pages - (self._rd_ptr - self._rsvd_ptr)
-        
-    @property
-    def _real_space(self) -> int:
-        if self._wr_ptr == self._rd_ptr:
-            if self._rd_ptr_phase == self._wr_ptr_phase:
-                return 0
-            else:
-                return self._n_pages
-        elif self._wr_ptr > self._rd_ptr:
-            return self._wr_ptr - self._rd_ptr
-        else:
-            return self._n_pages - (self._rd_ptr - self._wr_ptr)
-        
-    def check_vacancy(self, n_pages: int) -> bool:
-        return self._alloc_space + n_pages <= self._n_pages
-    
-    def check_occupancy(self, n_pages: int) -> bool:
-        return self._real_space >= n_pages
-    
-    def allocate_cb_space(self, n_pages: int):
-        if self._rsvd_ptr + n_pages >= self._n_pages:
-            self._rsvd_ptr_phase = not self._rsvd_ptr_phase
-        self._rsvd_ptr = (self._rsvd_ptr + n_pages) % self._n_pages
-        
-    def occupy_cb_space(self, n_pages: int):
-        if self._wr_ptr + n_pages >= self._n_pages:
-            self._wr_ptr_phase = not self._wr_ptr_phase
-        self._wr_ptr = (self._wr_ptr + n_pages) % self._n_pages
-        
-    def deallocate_cb_space(self, n_pages: int):
-        if self._rd_ptr + n_pages >= self._n_pages:
-            self._rd_ptr_phase = not self._rd_ptr_phase
-        self._rd_ptr = (self._rd_ptr + n_pages) % self._n_pages
 
 
 class _MemoryHandleDataEntry:
@@ -502,7 +419,7 @@ class MemoryHandle:
         
     def get_content(self, key: Any, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> Any:
         if isinstance(key, BufferPointer):
-            key = key.resolve(is_read=True)
+            key = key.raw_handle
 
         if isinstance(key, int):
             content = self.get_data_element(key).content
@@ -527,7 +444,7 @@ class MemoryHandle:
     
     def set_content(self, key: Any, value: Any, page_offset: int=0):
         if isinstance(key, BufferPointer):
-            key = key.resolve(is_read=False)
+            key = key.raw_handle
         
         if isinstance(key, int):
             self.get_data_element(key).content = value
@@ -574,7 +491,7 @@ class MemoryHandle:
             return dst_ptr
         return Pointer(data_element=elem)
 
-    def allocate_buffer_ptr(self, page_size: int, n_pages: int, is_circular: bool, channel_id: int | tuple[int]=0) -> CircularBufferHandle | BufferHandle | None:
+    def allocate_buffer_ptr(self, page_size: int, n_pages: int, channel_id: int | tuple[int]=0) -> BufferHandle | None:
         is_channel_sharded = isinstance(channel_id, Sequence)
         page_ptrs = []
 
@@ -594,10 +511,7 @@ class MemoryHandle:
                 return None
             page_ptrs.append(page_ptr)
 
-        if is_circular:
-            return CircularBufferHandle(page_size=page_size, n_pages=n_pages, page_ptrs=page_ptrs)
-        else:
-            return BufferHandle(page_size=page_size, n_pages=n_pages, page_ptrs=page_ptrs)
+        return BufferHandle(page_size=page_size, n_pages=n_pages, page_ptrs=page_ptrs)
 
     def deallocate_ptr(self, *ptrs: Pointer | BufferHandle):
         for ptr in ptrs:
@@ -638,8 +552,8 @@ def create_var_ptr(mem_handle: MemoryHandle, var_size: int, initial_value: Any) 
 def create_page_ptr(mem_handle: MemoryHandle, page_size: int) -> Pointer | None:
     return mem_handle.allocate_page_ptr(page_size)
 
-def create_uniform_buffer(mem_handle: MemoryHandle, page_size: int, n_pages: int, is_circular: bool, channel_id: int | Sequence[int]=0) -> BufferPointer | None:
-    bf_handle = mem_handle.allocate_buffer_ptr(page_size, n_pages, is_circular=is_circular, channel_id=channel_id)
+def create_uniform_buffer(mem_handle: MemoryHandle, page_size: int, n_pages: int, channel_id: int | Sequence[int]=0) -> BufferPointer | None:
+    bf_handle = mem_handle.allocate_buffer_ptr(page_size, n_pages, channel_id=channel_id)
     if bf_handle is None:
         return None
     return BufferPointer(handle=bf_handle, item=None)

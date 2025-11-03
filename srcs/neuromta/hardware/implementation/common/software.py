@@ -157,7 +157,7 @@ class MCA_TensorBuffer:
         tensor = tensor.permute(0, 1, 3, 2, 4)
         tensor = tensor.reshape(self.i_dim * self.y_n_pages * self.x_n_pages, self.y_page * self.x_page)
         
-        buffer_handle = self.reference.resolve(is_read=False)
+        buffer_handle = self.reference.raw_handle
         
         for page_idx in range(self.n_pages):
             page_ptr = buffer_handle.page_ptrs[page_idx]
@@ -166,7 +166,7 @@ class MCA_TensorBuffer:
         return self
             
     def restore(self) -> torch.Tensor:
-        tensor = self.device.get_ptr_content(self.reference.resolve(is_read=True), shape=(-1,), dtype=self.tensor_dtype)
+        tensor = self.device.get_ptr_content(self.reference.raw_handle, shape=(-1,), dtype=self.tensor_dtype)
         tensor = tensor.reshape(self.i_dim, self.y_n_pages, self.x_n_pages, self.y_page, self.x_page)
         tensor = tensor.permute(0, 1, 3, 2, 4)
         tensor = tensor.reshape(self.i_dim, self.y_n_pages * self.y_page, self.x_n_pages * self.x_page)
@@ -188,14 +188,14 @@ class MCA_TensorBuffer:
         return [i for i in range(self.n_pages) if (i % len(self.core_ids)) == self.core_ids.index(core_id)]
     
     def get_reference_by_page_idx(self, *page_idx: int) -> BufferPointer:
-        buffer_handle = self.reference.resolve(is_read=True)
+        buffer_handle = self.reference.raw_handle
         page_ptrs = [buffer_handle.page_ptrs[i] for i in page_idx]
         new_buffer_handle = BufferHandle(page_size=buffer_handle.page_size, n_pages=len(page_ptrs), page_ptrs=page_ptrs)
         
         return BufferPointer(new_buffer_handle)
     
     def get_row_contiguous_reference(self, i_page_idx: int, y_page_idx: int) -> BufferPointer:
-        buffer_handle = self.reference.resolve(is_read=True)
+        buffer_handle = self.reference.raw_handle
         
         offset = i_page_idx * self.y_n_pages * self.x_n_pages
         st = offset + y_page_idx * self.x_n_pages
@@ -207,7 +207,7 @@ class MCA_TensorBuffer:
         return BufferPointer(new_buffer_handle)
     
     def get_page_reference(self, i_page_idx: int, y_page_idx: int, x_page_idx: int) -> BufferPointer:
-        buffer_handle = self.reference.resolve(is_read=True)
+        buffer_handle = self.reference.raw_handle
         
         offset = i_page_idx * self.y_n_pages * self.x_n_pages + y_page_idx * self.x_n_pages + x_page_idx
         page_ptrs = [buffer_handle.page_ptrs[offset],]
@@ -300,9 +300,11 @@ class MCA_RT_OP_AUTO_DISPATCH_REGION:
         deactivate_mca_rt_op_auto_dispatch()
         return False  # Do not suppress exceptions
 
-
 class MCA_RT_JIT_COMPILE_REGION:
     def __init__(self, core: NPUCore, kernel_id: str=None):
+        if kernel_id is None:
+            kernel_id = "UNKNOWN_JIT_REGION"
+        
         self._core = core
         self._kernel = Kernel(kernel_id=kernel_id)
         
@@ -328,7 +330,7 @@ class MCA_RT_JIT_COMPILE_REGION:
     def __exit__(self, exc_type, exc_value, traceback):
         set_global_context(self._history_context_mode, self._history_core_context, kernel=self._history_kernel_context)
 
-        if self._history_context_mode == GlobalContextMode.IDLE and check_global_mca_rt_op_active():            
+        if self._history_context_mode == GlobalContextMode.IDLE and check_global_mca_rt_op_active():
             rt_op = get_global_mca_rt_op()
             self._kernel.kernel_id = f"{rt_op.rt_op_id}::{self._kernel.kernel_id}"
             rt_op.add_kernel(core=self._core, kernel=self._kernel)

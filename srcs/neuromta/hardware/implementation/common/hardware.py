@@ -103,23 +103,6 @@ class MCA_DeviceBase(Device):
         if len(core_ids) == 1:
             return ptrs[0]
         return ptrs
-
-    def create_local_l1_circular_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> BufferPointer | list[BufferPointer]:
-        if core_ids is None:
-            core_ids = self.npu_core_ids
-        if not isinstance(core_ids, Sequence):
-            core_ids = [core_ids]
-
-        ptrs: list[BufferHandle] = []
-
-        for core_id in core_ids:
-            mem_handle = self.get_l1_mem_handle(core_id=core_id)
-            ptr = create_uniform_buffer(mem_handle=mem_handle, page_size=page_size, n_pages=n_pages, is_circular=True)
-            ptrs.append(ptr)
-
-        if len(core_ids) == 1:
-            return ptrs[0]
-        return ptrs
     
     def create_local_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> BufferPointer | list[BufferPointer]:
         if core_ids is None:
@@ -131,7 +114,7 @@ class MCA_DeviceBase(Device):
 
         for core_id in core_ids:
             mem_handle = self.get_l1_mem_handle(core_id=core_id)
-            ptr = create_uniform_buffer(mem_handle=mem_handle, page_size=page_size, n_pages=n_pages, is_circular=False)
+            ptr = create_uniform_buffer(mem_handle=mem_handle, page_size=page_size, n_pages=n_pages)
             ptrs.append(ptr)
         
         if len(core_ids) == 1:
@@ -144,7 +127,7 @@ class MCA_DeviceBase(Device):
         
         mem_handle = self.get_main_mem_handle()
         
-        ptr = create_uniform_buffer(mem_handle=mem_handle, page_size=page_size, n_pages=n_pages, is_circular=False, channel_id=channel_id)
+        ptr = create_uniform_buffer(mem_handle=mem_handle, page_size=page_size, n_pages=n_pages, channel_id=channel_id)
         return ptr
     
     def remove_buffer(self, ptr: BufferPointer):
@@ -162,7 +145,7 @@ class MCA_DeviceBase(Device):
     
     def set_ptr_content(self, ptr: BufferPointer | Pointer | BufferHandle, content: torch.Tensor):
         if isinstance(ptr, BufferPointer):
-            ptr = ptr.resolve(is_read=False)
+            ptr = ptr.raw_handle
         
         if isinstance(ptr, Pointer):
             if ptr.ptr_type == PointerType.PAGE:
@@ -201,7 +184,7 @@ class MCA_DeviceBase(Device):
 
     def get_ptr_content(self, ptr: BufferPointer | Pointer | BufferHandle, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> torch.Tensor:
         if isinstance(ptr, BufferPointer):
-            ptr = ptr.resolve(is_read=True)
+            ptr = ptr.raw_handle
             
         if isinstance(ptr, Pointer):
             if ptr.ptr_type == PointerType.PAGE:

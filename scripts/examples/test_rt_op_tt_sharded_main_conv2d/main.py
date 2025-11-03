@@ -5,7 +5,7 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.mta import *
+from neuromta.ip.mta.tenstorrent import *
 from neuromta.hardware.companions.booksim import BookSim2
 from neuromta.hardware.companions.dramsim import DRAMSim3
 
@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
         MCA_RT_GLOBAL_SYNC(device, core_ids=core_ids)
         
-        TT_RT_CONV2D(
+        MTA_RT_CONV2D(
             device = device,
             core_grid = core_grid,
 

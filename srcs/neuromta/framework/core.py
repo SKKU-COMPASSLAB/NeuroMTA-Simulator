@@ -597,6 +597,12 @@ class Kernel:
             return self.kernel_id
         return f"{self.root_callstack}::{self.kernel_id}"
     
+    @property
+    def slot_id(self) -> str | None:
+        if self.root_callstack is None:
+            return None
+        return self.root_callstack.split("::")[0]
+
 
 class CoreCycleModel:
     def __init__(self):

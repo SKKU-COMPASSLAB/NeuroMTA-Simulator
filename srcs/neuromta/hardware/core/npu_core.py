@@ -43,6 +43,7 @@ class NPUCore(Core):
         # synchronization variables
         self.ongoing_core_sync_msg: list[int] = []
         
+        
     #############################################################
     # Inter-Core Synchronization
     #############################################################
@@ -150,7 +151,7 @@ class NPUCore(Core):
       
     @core_command_method
     def buf_allocate(self, ref: BufferPointer, page_size: int, n_pages: int):
-        handle = self.mem_handle.allocate_buffer_ptr(page_size=page_size, n_pages=n_pages, is_circular=False, channel_id=0)
+        handle = self.mem_handle.allocate_buffer_ptr(page_size=page_size, n_pages=n_pages, channel_id=0)
         if handle is None:
             raise Exception(f"Buffer allocation failed in core {self.core_id} (not enough memory)")
         ref.initialize(handle=handle)
@@ -160,56 +161,6 @@ class NPUCore(Core):
         handle: BufferHandle = ref.raw_handle
         self.mem_handle.deallocate_ptr(handle)
         ref.initialize()
-        
-    #############################################################
-    # Circular Buffer Management (Intra-Core Control Management)
-    #############################################################
-    
-    @core_command_method
-    def cb_allocate(self, ref: BufferPointer, page_size: int, n_pages: int):
-        handle = self.mem_handle.allocate_buffer_ptr(page_size=page_size, n_pages=n_pages, is_circular=True, channel_id=0)
-        if handle is None:
-            raise Exception(f"Circular buffer allocation failed in core {self.core_id} (not enough memory)")
-        ref.initialize(handle=handle)
-    
-    @core_command_method
-    def cb_deallocate(self, ref: BufferPointer):
-        handle: CircularBufferHandle = ref.raw_handle
-        self.mem_handle.deallocate_ptr(handle)
-        ref.initialize()
-        
-    @core_conditional_command_method
-    def cb_reserve_back(self, ref: BufferPointer, n_pages: int):
-        handle: CircularBufferHandle = ref.raw_handle
-        if not handle.check_vacancy(n_pages):
-            return False
-        handle.allocate_cb_space(n_pages)
-        return True
-        
-    @core_command_method
-    def cb_push_back(self, ref: BufferPointer, n_pages: int):
-        handle: CircularBufferHandle = ref.raw_handle
-        handle.occupy_cb_space(n_pages)
-        
-    @core_conditional_command_method
-    def cb_wait_front(self, ref: BufferPointer, n_pages: int):
-        handle: CircularBufferHandle = ref.raw_handle
-        return handle.check_occupancy(n_pages)
-    
-    @core_command_method
-    def cb_pop_front(self, ref: BufferPointer, n_pages: int):
-        handle: CircularBufferHandle = ref.raw_handle
-        handle.deallocate_cb_space(n_pages)
-        
-    @core_conditional_command_method
-    def cb_check_full(self, ref: BufferPointer):
-        handle: CircularBufferHandle = ref.raw_handle
-        return handle.check_occupancy(handle.n_pages)
-    
-    @core_conditional_command_method
-    def cb_check_empty(self, ref: BufferPointer):
-        handle: CircularBufferHandle = ref.raw_handle
-        return handle.check_vacancy(handle.n_pages)
         
     #############################################################
     # Memory Copy Commands
@@ -226,9 +177,9 @@ class NPUCore(Core):
             container.data = torch.zeros(shape, dtype=dtype)
 
     @core_command_method
-    def local_mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int, int, int, int]]=None):
+    def local_mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer[torch.Tensor], offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int, int, int, int]]=None):
         if isinstance(ptr, BufferPointer):
-            handle = ptr.resolve(is_read=True)
+            handle = ptr.raw_handle
 
         if size is None:
             size = handle.size - offset
@@ -255,26 +206,24 @@ class NPUCore(Core):
         container.data = cont_data
         
     @core_command_method
-    def local_mem_write_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None):
+    def local_mem_write_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer[torch.Tensor], offset: int=0, size: int=None):
         if isinstance(ptr, BufferPointer):
-            rd_handle = ptr.resolve(is_read=True)
-            wr_handle = ptr.resolve(is_read=False)
+            handle = ptr.raw_handle
         else:
-            rd_handle = ptr
-            wr_handle = ptr
+            handle = ptr
             
         if size is None:
-            size = rd_handle.size - offset
+            size = handle.size - offset
         if container.data is None:
             self.mem_container_init(container, shape=size, dtype=torch.uint8)
         
-        raw_data: torch.Tensor = self.mem_handle.get_content(rd_handle, shape=(-1,), dtype=torch.uint8)
+        raw_data: torch.Tensor = self.mem_handle.get_content(handle, shape=(-1,), dtype=torch.uint8)
         wr_data:  torch.Tensor = container.data.reshape(-1).view(torch.uint8)
         
         wr_data = wr_data[:size]
     
         raw_data[offset:offset+wr_data.numel()] = wr_data
-        self.mem_handle.set_content(wr_handle, raw_data)
+        self.mem_handle.set_content(handle, raw_data)
     
     @jit_prototype
     def mem_read_with_container(self, ptr: BufferPointer | Pointer, container: DataContainer, offset: int=0, size: int=None, copy_layout_width: int=None, copy_layout_pattern: list[tuple[int, int, int, int, int]]=None):
@@ -341,19 +290,15 @@ class NPUCore(Core):
         
     @core_command_method
     def local_mem_page_copy(self, dst_ref: BufferPointer, src_ref: BufferPointer, page_offset: int=0):
-        dst_handle = dst_ref.resolve(is_read=False)
-        src_handle = src_ref.resolve(is_read=True)
+        dst_handle = dst_ref.raw_handle
+        src_handle = src_ref.raw_handle
         
         dst_ptr = dst_handle.page_ptrs[page_offset]
         src_ptr = src_handle.page_ptrs[page_offset]
         
         if self.cmap_context.get_mem_owner_core_id(self.core_id, dst_ptr.addr) != self.core_id:
-            if dst_ref.is_circular:
-                logger.warning(f"The destination circular buffer address '{dst_ptr.addr}' does not belong to local core ID '{self.core_id}'.")
             raise Exception(f"Invalid destination memory address {dst_ptr.addr} in core {self.core_id}")
         if self.cmap_context.get_mem_owner_core_id(self.core_id, src_ptr.addr) != self.core_id:
-            if src_ref.is_circular:
-                logger.warning(f"The source circular buffer address '{src_ptr.addr}' does not belong to local core ID '{self.core_id}'.")
             raise Exception(f"Invalid source memory address {src_ptr.addr} in core {self.core_id}")
         
         content = self.mem_handle.get_content(src_ptr)
@@ -363,10 +308,10 @@ class NPUCore(Core):
     def mem_page_copy(self, dst_ptr: BufferPointer, src_ptr: BufferPointer, page_offset: int=0):
         container = DataContainer()
         
-        dst_page_ptr = dst_ptr.resolve(is_read=False).page_ptrs[page_offset]
+        dst_page_ptr = dst_ptr.raw_handle.page_ptrs[page_offset]
         dst_page_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, dst_page_ptr.addr)
         
-        src_page_ptr = src_ptr.resolve(is_read=True).page_ptrs[page_offset]
+        src_page_ptr = src_ptr.raw_handle.page_ptrs[page_offset]
         src_page_owner_id = self.cmap_context.get_mem_owner_core_id(self.core_id, src_page_ptr.addr)
         
         if src_page_owner_id == dst_page_owner_id == self.core_id:
@@ -571,12 +516,24 @@ class NPUCore(Core):
         src:  DataContainer[torch.Tensor],
         dst:  DataContainer[torch.Tensor],
         
+        preload_psum:  bool=False,
         flush_ofm:     bool=False,
         ifm_transposed: bool=False,
     ):
         if not self.use_functional_model:
             return  # Terminate the command to reduce the simulation time without actual MXU functional unit (do not return anything to make sure that the command is executed only once)
         
+        if preload_psum:
+            if dst.data is None:
+                psum_tile = torch.zeros(self.mxu_context.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
+            else:
+                psum_tile = dst.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ofm_tile_shape)
+                    
+            if self.mxu_context.dataflow == MXUDataflow.OS:
+                self.mxu_context.load_tile_pe_arr(psum_tile)
+            elif self.mxu_context.dataflow == MXUDataflow.WS:
+                self.mxu_context.load_tile_acc_regs(psum_tile) 
+
         ifm_tile = src.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.ifm_tile_shape)
         if ifm_transposed: ifm_tile = ifm_tile.T
         
@@ -736,7 +693,8 @@ class NPUCoreCycleModel(CoreCycleModel):
         src:  DataContainer[torch.Tensor],
         dst:  DataContainer[torch.Tensor],
 
-        flush_ofm:     bool=False,
+        preload_psum:   bool=False,
+        flush_ofm:      bool=False,
         ifm_transposed: bool=False,
     ):
         total_cycles = 0

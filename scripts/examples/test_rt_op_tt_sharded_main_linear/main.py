@@ -5,7 +5,9 @@ import torch
 
 from neuromta.framework import *
 from neuromta.hardware import *
-from neuromta.ip.mta import *
+from neuromta.ip.mta.tenstorrent import *
+from neuromta.hardware.companions.booksim import BookSim2
+from neuromta.hardware.companions.dramsim import DRAMSim3
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
@@ -66,21 +68,21 @@ if __name__ == "__main__":
     l1_buf_psum   = MCA_TensorBuffer(shape=bias.shape, dtype=bias.dtype, layout=l1_layout.overrides(page_shape=(1, 32)), device=device, core_ids=core_ids).allocate()
     l1_buf_ofm    = MCA_TensorBuffer(shape=(M, N),    dtype=acc_dtype, layout=l1_layout, device=device, core_ids=core_ids).allocate()
     
-    MCA_RT_DMA_LOAD(device, src_buf=main_buf_ifm, dst_buf=l1_buf_ifm)
-    MCA_RT_DMA_LOAD(device, src_buf=main_buf_wgt, dst_buf=l1_buf_wgt)
-    MCA_RT_DMA_LOAD(device, src_buf=main_buf_psum, dst_buf=l1_buf_psum)
-    
-    MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
+    with MCA_RT_OP_AUTO_DISPATCH_REGION():
+        MCA_RT_DMA_LOAD(device, src_buf=main_buf_ifm, dst_buf=l1_buf_ifm)
+        MCA_RT_DMA_LOAD(device, src_buf=main_buf_wgt, dst_buf=l1_buf_wgt)
+        MCA_RT_DMA_LOAD(device, src_buf=main_buf_psum, dst_buf=l1_buf_psum)
+        
+        MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
 
-    TT_RT_LINEAR(
-        device=device, core_grid=core_grid,
-        buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum, buf_ofm=l1_buf_ofm,
-        dtype=dtype, acc_dtype=acc_dtype,
-    )
-    
-    MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
-    
-    MCA_RT_DMA_STORE(device, src_buf=l1_buf_ofm, dst_buf=main_buf_ofm)
+        MTA_RT_LINEAR(
+            device=device, core_grid=core_grid,
+            buf_ifm=l1_buf_ifm, buf_wgt=l1_buf_wgt, buf_bias=l1_buf_psum, buf_ofm=l1_buf_ofm,
+        )
+        
+        MCA_RT_GLOBAL_SYNC(device, core_grid.core_ids)
+        
+        MCA_RT_DMA_STORE(device, src_buf=l1_buf_ofm, dst_buf=main_buf_ofm)
     
     
     tracer_hub = TracerHub()
@@ -95,8 +97,12 @@ if __name__ == "__main__":
         core = device.get_npu_core(core_id=core_id)
         profiler = CommandUtilizationProfiler(core)
         profiler_hub.register_profiler(f"{type(core).__name__}_{core.core_id}", profiler)
-            
-    
+        
+    booksim_module: BookSim2 = device.companion_core.get_companion_module(device.cmap_context.config.booksim_module_id)
+    dramsim_module: DRAMSim3 = device.companion_core.get_companion_module(device.cmap_context.config.dramsim_module_id)
+    booksim_module.enable_bandwidth_profiling(resolution=10)
+    dramsim_module.enable_bandwidth_profiling(resolution=10)
+
     with MonitoringWindow() as monitor:
         for core_id in core_grid.core_ids:
             core = device.get_npu_core(core_id=core_id)
@@ -106,12 +112,12 @@ if __name__ == "__main__":
         st = time.time()
         device.run_kernels()
         ed = time.time()
-        
+    
     tracer_hub.save_traces(TRACE_DIR)
     profiler_hub.save_profiles(PROFILE_DIR)
+    booksim_module.save_bandwidth_profiles_as_file(os.path.join(ANALYSIS_DIR, "booksim2"))
+    dramsim_module.save_bandwidth_profiles_as_file(os.path.join(ANALYSIS_DIR, "dramsim3"))
     
-
-
     print(f"\nkernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
     

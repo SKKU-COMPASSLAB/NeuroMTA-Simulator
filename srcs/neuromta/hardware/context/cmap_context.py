@@ -226,7 +226,7 @@ class CmapContext:
         if isinstance(buffer, Pointer):
             addrs = [buffer.addr]
         elif isinstance(buffer, BufferPointer):
-            handle = buffer.resolve(is_read=True)
+            handle = buffer.raw_handle
             addrs = [page_ptr.addr for page_ptr in handle.page_ptrs]
         else:
             raise TypeError(f"Buffer must be a Pointer or BufferPointer, but got {type(buffer).__name__}.")

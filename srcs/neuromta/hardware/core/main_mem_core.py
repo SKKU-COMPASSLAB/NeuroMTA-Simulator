@@ -42,7 +42,7 @@ class MainMemoryCore(Core):
                 addr = ptr.addr
                 size = ptr.size
             elif isinstance(ptr, BufferPointer):
-                handle = ptr.resolve(is_read=True)
+                handle = ptr.raw_handle
                 
                 if handle.n_pages != 1:
                     raise ValueError("[ERROR] DRAMSim3 memory access supports only single page pointer.")
@@ -72,7 +72,7 @@ class MainMemoryCore(Core):
                 addr = ptr.addr
                 size = ptr.size
             elif isinstance(ptr, BufferPointer):
-                handle = ptr.resolve(is_read=False)
+                handle = ptr.raw_handle
                 
                 if handle.n_pages != 1:
                     raise ValueError("[ERROR] DRAMSim3 memory access supports only single page pointer.")
