@@ -5,8 +5,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from neuromta.framework import *
-from neuromta.hardware import *
-from neuromta.ip.mta.tenstorrent import TenstorrentConfig
+from neuromta.component import *
+from neuromta.system.mta.tenstorrent import TenstorrentConfig
 
 
 class ColorMap:

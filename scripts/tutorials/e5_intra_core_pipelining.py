@@ -1,8 +1,8 @@
 import torch
 
 from neuromta.framework import *
-from neuromta.hardware import *
-from neuromta.ip.mta.tenstorrent import *
+from neuromta.component import *
+from neuromta.system.mta.tenstorrent import *
 
 
 @jit_prototype

@@ -1,27 +1,32 @@
+import enum
 import os
-import sys
+import json
+import argparse
 import time
 import torch
 
 from neuromta.framework import *
-from neuromta.hardware import *
-from neuromta.ip.mta.tenstorrent import *
-from neuromta.hardware.companions.booksim import BookSim2
-from neuromta.hardware.companions.dramsim import DRAMSim3
-
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-
-visualizer_enabled = False
-try:
-    from scripts.examples.utils.visualize import visualize_bandwidth_utilization_graph
-    visualizer_enabled = True
-except ImportError as e:
-    logger.warning(f"failed to import visualize module: {e}")
+from neuromta.component import *
+from neuromta.system.mta.tenstorrent import *
+from neuromta.component.companions.booksim import BookSim2
+from neuromta.component.companions.dramsim import DRAMSim3
 
 
-TRACE_DIR = os.path.join(os.path.dirname(__file__), ".traces")
-PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".profiles")
-ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), ".analysis")
+parser = argparse.ArgumentParser(description="Test Tenstorrent RT_OP Linear with Sharded Main Memory")
+parser.add_argument("--log-dir", type=str, default=None, dest="log_dir", help="Directory to save logs")
+parser.add_argument("--noc-flit-size", type=str, default="64B", dest="noc_flit_size", help="Interconnect flit size")
+args = parser.parse_args()
+
+log_dir = args.log_dir
+noc_flit_size = parse_mem_cap_str(args.noc_flit_size)
+
+
+ROOT_DIR = os.path.join(os.path.dirname(__file__))
+if log_dir is not None:
+    ROOT_DIR = os.path.join(ROOT_DIR, log_dir)
+TRACE_DIR = os.path.join(ROOT_DIR, ".traces")
+PROFILE_DIR = os.path.join(ROOT_DIR, ".profiles")
+ANALYSIS_DIR = os.path.join(ROOT_DIR, ".analysis")
 ICNT_CORE_TRACE_FNAME = os.path.join(ANALYSIS_DIR, "icnt_core_trace.csv")
 ICNT_CORE_BW_ANALYSIS_FNAME = os.path.join(ANALYSIS_DIR, "icnt_core_bandwidth_analysis.csv")
 MAIN_MEM_CORE_TRACE_FNAME = os.path.join(ANALYSIS_DIR, "main_mem_core_trace.csv")
@@ -36,6 +41,7 @@ if __name__ == "__main__":
     torch.set_printoptions(linewidth=1024, sci_mode=False)
     
     config = TenstorrentConfig.BLACKHOLE()
+    config["icnt_config"].flit_size = noc_flit_size
 
     device = TenstorrentDevice(**config)
     device.initialize()
@@ -129,14 +135,31 @@ if __name__ == "__main__":
     print(f"\nnumber of mismatched elements: {torch.sum(reference != simulated)} / {torch.numel(reference)}")
     print(f"simulation terminated with valid result: {torch.allclose(reference, simulated)}")
     
-    for core_id, core in device.cores.items():
-        if isinstance(core, NPUCore) and (not core.is_idle):
-            print(f"\n=== NPUCore {core_id} RUNNING CONTEXT (EXCEPTION CAUSED BY PRETERMINATION)")
-            for slot_id, kernel in core._dispatched_main_kernels.items():
-                print(f"Slot {slot_id}: {kernel.callstack}")
-                for cmd in kernel.recursive_current_commands(core):
-                    print(f"  - {cmd}")
-            for slot_id, kernel in core._dispatched_rpc_kernels.items():
-                print(f"Slot {slot_id}: {kernel.callstack}")
-                for cmd in kernel.recursive_current_commands(core):
-                    print(f"  - {cmd}")
+    summary_path = os.path.join(PROFILE_DIR, "summary.json")
+    
+    with open(summary_path, "wt") as file:
+        class SummaryEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, torch.Tensor):
+                    return obj.tolist()
+                if isinstance(obj, torch.dtype):
+                    return str(obj)
+                if isinstance(obj, enum.Enum):
+                    return obj.name
+                return super().default(obj)
+        
+        summary = {
+            "device_summary": device.summary(),
+            "simulation_summary": {
+                "kernel_simulation_time_ms": (ed - st) * 1000,
+                "total_cycles": device.timestamp,
+                "num_mismatched_elements": int(torch.sum(reference != simulated)),
+                "num_total_elements": int(torch.numel(reference)),
+                "is_simulation_valid": bool(torch.allclose(reference, simulated)),
+            }
+        }
+        
+        content = json.dumps(summary, cls=SummaryEncoder, indent=4)
+
+        file.write(content)
+        print(f"saved simulation summary to: {summary_path}")

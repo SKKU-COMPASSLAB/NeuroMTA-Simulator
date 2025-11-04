@@ -1,7 +1,7 @@
 import torch
 
 from neuromta.framework import *
-from neuromta.hardware import *
+from neuromta.component import *
 
 
 class SimpleNPUCore(Core):
