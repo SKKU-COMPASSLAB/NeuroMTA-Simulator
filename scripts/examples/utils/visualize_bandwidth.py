@@ -48,7 +48,7 @@ def visualize_booksim2_trace(trace_dir: str, output_dir: str, rolling_avg_window
         tx_trace_file = f"{i}_tx.csv"
         output_path = os.path.join(output_dir, f"router_{i}_bandwidth.png")
         
-        fig, axs = plt.subplots(1, 1, figsize=(10, 4))
+        fig, axs = plt.subplots(1, 1, figsize=(8, 3.4))
         create_bandwidth_graph(axs, os.path.join(trace_dir, rx_trace_file), label=f"RX Bandwidth", color=ColorMap.blue, rolling_avg_window=rolling_avg_window)
         create_bandwidth_graph(axs, os.path.join(trace_dir, tx_trace_file), label=f"TX Bandwidth", color=ColorMap.red,  rolling_avg_window=rolling_avg_window)
 
@@ -73,7 +73,7 @@ def visualize_dramsim3_trace(trace_dir: str, output_dir: str, rolling_avg_window
         write_trace_file = f"{i}_write.csv"
         output_path = os.path.join(output_dir, f"channel_{i}_bandwidth.png")
         
-        fig, axs = plt.subplots(1, 1, figsize=(10, 4))
+        fig, axs = plt.subplots(1, 1, figsize=(8, 3.4))
         create_bandwidth_graph(axs, os.path.join(trace_dir, read_trace_file),  label=f"Read Bandwidth",  color=ColorMap.blue, rolling_avg_window=rolling_avg_window)
         create_bandwidth_graph(axs, os.path.join(trace_dir, write_trace_file), label=f"Write Bandwidth", color=ColorMap.red,  rolling_avg_window=rolling_avg_window)
 

@@ -858,6 +858,11 @@ class Core:
 
         req_msg.msg_id = msg_id
         
+        if req_msg.src_core_id != self.core_id:
+            logger.warning(f"Mismatch between the source core ID of the RPC request message '{req_msg.src_core_id}' and the current core ID '{self.core_id}'")
+            logger.warning(f"  - This may caused by the faulty dispatch of the kernel to the incorrect core.")
+            raise Exception(f"Source core ID of the RPC request message '{req_msg}' does not match the current core ID '{self.core_id}'")
+        
         self._rpc_req_send_inbox[req_msg.dst_core_id].append(req_msg)
         self._suspended_rpc_req_msg[msg_id] = req_msg
         self._suspended_rpc_to_main_kernels_mapping[msg_id] = get_global_kernel_context().root_kernel_id
@@ -914,7 +919,6 @@ class Core:
         while len(self.rpc_rsp_recv_queue):
             rsp_msg: RPCMessage = self.rpc_rsp_recv_queue.pop(0)
             msg_id = rsp_msg.msg_id
-
             req_msg = self._suspended_rpc_req_msg[msg_id]
             req_msg.copy_args_from_rsp(rsp_msg)
 

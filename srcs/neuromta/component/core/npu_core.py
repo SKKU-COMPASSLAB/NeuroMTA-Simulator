@@ -116,7 +116,7 @@ class NPUCore(Core):
         ptr.initialize()
         
     @core_conditional_command_method
-    def var_compare_and_swap(self, ptr: Pointer, cmp_value: int | Pointer, new_value: int | Pointer):
+    def local_var_compare_and_swap(self, ptr: Pointer, cmp_value: int | Pointer, new_value: int | Pointer):
         if isinstance(cmp_value, Pointer):
             cmp_value = self.mem_handle.get_data_element(cmp_value).content
         if isinstance(new_value, Pointer):
@@ -130,7 +130,7 @@ class NPUCore(Core):
             return False
         
     @core_command_method
-    def var_atomic_increase(self, ptr: Pointer, value: int | Pointer=1):
+    def local_var_atomic_increase(self, ptr: Pointer, value: int | Pointer=1):
         if isinstance(value, Pointer):
             value = self.mem_handle.get_data_element(value).content
 
@@ -138,12 +138,72 @@ class NPUCore(Core):
         var.content += value
         
     @core_conditional_command_method
-    def var_wait_value(self, ptr: Pointer, value: int | Pointer):
+    def local_var_wait_value(self, ptr: Pointer, value: int | Pointer):
         if isinstance(value, Pointer):
             value = self.mem_handle.get_data_element(value).content
 
         var: Variable = self.mem_handle.get_data_element(ptr)
         return var.content == value
+    
+    @jit_prototype
+    def var_compare_and_swap(self, ptr: Pointer, cmp_value: int | Pointer, new_value: int | Pointer):
+        buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
+        if not len(buffer_owners) == 1:
+            raise Exception(f"The variable address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
+        
+        owner_id = buffer_owners[0]
+        
+        if owner_id != self.core_id:
+            var_cas_msg = RPCMessage(
+                src_core_id=self.core_id,
+                dst_core_id=owner_id,
+                cmd_id="local_var_compare_and_swap"
+            ).with_args(ptr=ptr, cmp_value=cmp_value, new_value=new_value)
+            
+            self.async_rpc_send_req_msg(var_cas_msg)
+            self.async_rpc_wait_rsp_msg(var_cas_msg)
+        else:
+            self.local_var_compare_and_swap(ptr, cmp_value=cmp_value, new_value=new_value)
+    
+    @jit_prototype
+    def var_atomic_increase(self, ptr: Pointer, value: int | Pointer=1):
+        buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
+        if not len(buffer_owners) == 1:
+            raise Exception(f"The variable address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
+        
+        owner_id = buffer_owners[0]
+        
+        if owner_id != self.core_id:
+            var_inc_msg = RPCMessage(
+                src_core_id=self.core_id,
+                dst_core_id=owner_id,
+                cmd_id="local_var_atomic_increase"
+            ).with_args(ptr=ptr, value=value)
+            
+            self.async_rpc_send_req_msg(var_inc_msg)
+            self.async_rpc_wait_rsp_msg(var_inc_msg)
+        else:
+            self.local_var_atomic_increase(ptr, value=value)
+            
+    @jit_prototype
+    def var_wait_value(self, ptr: Pointer, value: int | Pointer):
+        buffer_owners = self.cmap_context.get_buffer_owner_core_ids(self.core_id, ptr)
+        if not len(buffer_owners) == 1:
+            raise Exception(f"The variable address {ptr} is not owned by a single core (owners: {buffer_owners}) in core {self.core_id}")
+        
+        owner_id = buffer_owners[0]
+        
+        if owner_id != self.core_id:
+            var_wait_msg = RPCMessage(
+                src_core_id=self.core_id,
+                dst_core_id=owner_id,
+                cmd_id="local_var_wait_value"
+            ).with_args(ptr=ptr, value=value)
+            
+            self.async_rpc_send_req_msg(var_wait_msg)
+            self.async_rpc_wait_rsp_msg(var_wait_msg)
+        else:
+            self.local_var_wait_value(ptr, value=value)
         
     #############################################################
     # Buffer Management
