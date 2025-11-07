@@ -135,8 +135,8 @@ def get_global_current_parent_kernel_callstack() -> tuple[GlobalContextMode, 'Co
 
 def jit_prototype(_func: Callable):
     @functools.wraps(_func)
-    def __jit_prototype_wrapper(*_args, **_kwargs) -> KernelPrototype:
-        prototype = KernelPrototype(func=_func, args=_args, kwargs=_kwargs)
+    def __jit_prototype_wrapper(core: 'Core', *_args, **_kwargs) -> KernelPrototype:
+        prototype = KernelPrototype(core=core, func=_func, args=_args, kwargs=_kwargs)
 
         if get_global_context_mode() == GlobalContextMode.COMPILE:  # the jit prototype is called inside another kernel function
             kernel_context = get_global_kernel_context()
@@ -421,16 +421,20 @@ class ThreadGroup(list['Kernel']):
     
     
 class KernelPrototype:
-    def __init__(self, func: Callable, args: Sequence[Any], kwargs: dict[str, Any]):
+    def __init__(self, core: 'Core', func: Callable, args: Sequence[Any], kwargs: dict[str, Any]):
+        self.core = core
         self.func = func
         self.args = args
         self.kwargs = kwargs
         self.compiled_kernel_id = func.__name__
         
+    def dispatch(self, slot_id: str):
+        self.core.dispatch_main_kernel(slot_id, self)
+        
     def compile(self) -> 'Kernel':
         with Kernel(kernel_id=self.compiled_kernel_id) as kernel:
             try:
-                self.func(*self.args, **self.kwargs)
+                self.func(self.core, *self.args, **self.kwargs)
             except Exception as e:
                 logger.error(f"Exception occurred while compiling kernel '{kernel.kernel_id}': {e}")
                 logger.error(f"  - args: {self.args} | kwargs: {self.kwargs}")
@@ -902,9 +906,9 @@ class Core:
                 kernel = Kernel(f"AUTO_REMOTE")
                 with new_global_context(GlobalContextMode.COMPILE, self, kernel):
                     if func._is_conditional:
-                        cmd = ConditionalCommand(cmd_id=msg.cmd_id, *msg.args, **msg.kwargs)
+                        cmd = ConditionalCommand(msg.cmd_id, *msg.args, **msg.kwargs)
                     else:
-                        cmd = Command(cmd_id=msg.cmd_id, *msg.args, **msg.kwargs)
+                        cmd = Command(msg.cmd_id, *msg.args, **msg.kwargs)
                     kernel.add_execution_step(cmd)  # Add the command as an execution step
                 kernel.root_kernel_id = f"RPC<{msg.src_core_id}>"
             else:

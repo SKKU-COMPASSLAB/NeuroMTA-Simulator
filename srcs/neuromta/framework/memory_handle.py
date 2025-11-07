@@ -449,8 +449,11 @@ class MemoryHandle:
         if isinstance(key, int):
             self.get_data_element(key).content = value
         elif isinstance(key, Pointer):
-            page: Page = self.get_data_element(key)
-            page.set_content(value=value, offset=0)
+            elem = self.get_data_element(key)
+            if isinstance(elem, Page): 
+                elem.set_content(value=value, offset=0)
+            else:
+                elem.content = value
         elif isinstance(key, BufferHandle):
             if not isinstance(value, torch.Tensor):
                 raise TypeError(f"Buffer content must be a torch.Tensor, got {type(value)}.")
@@ -491,7 +494,7 @@ class MemoryHandle:
             return dst_ptr
         return Pointer(data_element=elem)
 
-    def allocate_buffer_ptr(self, page_size: int, n_pages: int, channel_id: int | tuple[int]=0) -> BufferHandle | None:
+    def allocate_buffer_ptr(self, page_size: int, n_pages: int, channel_id: int | tuple[int]=0) -> BufferPointer | None:
         is_channel_sharded = isinstance(channel_id, Sequence)
         page_ptrs = []
 
@@ -511,9 +514,10 @@ class MemoryHandle:
                 return None
             page_ptrs.append(page_ptr)
 
-        return BufferHandle(page_size=page_size, n_pages=n_pages, page_ptrs=page_ptrs)
+        handle = BufferHandle(page_size=page_size, n_pages=n_pages, page_ptrs=page_ptrs)
+        return BufferPointer(handle=handle)
 
-    def deallocate_ptr(self, *ptrs: Pointer | BufferHandle):
+    def deallocate_ptr(self, *ptrs: Pointer | BufferPointer):
         for ptr in ptrs:
             if isinstance(ptr, Pointer):
                 addr = ptr.addr
@@ -524,8 +528,8 @@ class MemoryHandle:
                 
                 if not self._ch_trackers[ch_id].deallocate_space(addr):
                     raise KeyError(f"No data element found at address {addr} in memory handle with base address {self._base_addr}.")
-            elif isinstance(ptr, BufferHandle):
-                for page_ptr in ptr.page_ptrs:
+            elif isinstance(ptr, BufferPointer):
+                for page_ptr in ptr.raw_handle.page_ptrs:
                     self.deallocate_ptr(page_ptr)
             else:
                 raise TypeError(f"Expected Pointer or BufferPointer, got {type(ptr)}.")
@@ -553,10 +557,7 @@ def create_page_ptr(mem_handle: MemoryHandle, page_size: int) -> Pointer | None:
     return mem_handle.allocate_page_ptr(page_size)
 
 def create_uniform_buffer(mem_handle: MemoryHandle, page_size: int, n_pages: int, channel_id: int | Sequence[int]=0) -> BufferPointer | None:
-    bf_handle = mem_handle.allocate_buffer_ptr(page_size, n_pages, channel_id=channel_id)
-    if bf_handle is None:
-        return None
-    return BufferPointer(handle=bf_handle, item=None)
+    return mem_handle.allocate_buffer_ptr(page_size, n_pages, channel_id=channel_id)
 
 def create_distributed_buffer(mem_handles: list[MemoryHandle], page_size: int, n_pages: int, channel_id: int=0, contiguous_n_pages: int=1) -> BufferPointer | None:
     if n_pages % (len(mem_handles) * contiguous_n_pages) != 0:

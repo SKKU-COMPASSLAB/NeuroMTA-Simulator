@@ -81,10 +81,10 @@ if __name__ == "__main__":
     kernel3 = core_1_compute(npu_core_1, n_pages, core1_l1_in_sem,  core1_l1_out_sem,   core1_l1_in, core1_l1_out)
     kernel4 = core_1_write  (npu_core_1, n_pages, core1_l1_out_sem, core1_l1_out,       main_out)
     
-    npu_core_0.dispatch_main_kernel("dma_load",  kernel1)
-    npu_core_1.dispatch_main_kernel("memcopy",   kernel2)
-    npu_core_1.dispatch_main_kernel("compute",   kernel3)
-    npu_core_1.dispatch_main_kernel("dma_store", kernel4)
+    kernel1.dispatch(slot_id="dma_load")
+    kernel2.dispatch(slot_id="dma_load")
+    kernel3.dispatch(slot_id="compute")
+    kernel4.dispatch(slot_id="dma_store")
 
     device.run_kernels()
     

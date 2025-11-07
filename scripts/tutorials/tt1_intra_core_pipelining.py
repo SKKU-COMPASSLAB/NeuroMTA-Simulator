@@ -71,9 +71,9 @@ if __name__ == "__main__":
     kernel2 = compute_kernel(npu_core, n_pages, load_var, store_var, l1_in, l1_out)
     kernel3 = dma_store_kernel(npu_core, n_pages, store_var, l1_out, main_out)
     
-    npu_core.dispatch_main_kernel("dma_load", kernel1)
-    npu_core.dispatch_main_kernel("compute", kernel2)
-    npu_core.dispatch_main_kernel("dma_store", kernel3)
+    kernel1.dispatch(slot_id="dma_load")
+    kernel2.dispatch(slot_id="compute")
+    kernel3.dispatch(slot_id="dma_store")
     
     device.run_kernels()
     

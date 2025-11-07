@@ -92,7 +92,7 @@ class Device:
         
         remaining_cycles = None
         
-        for core_id, core in self.cores.items():
+        for core_id, core in self.initialized_cores.items():
             c = core.get_remaining_cycles()
             
             if remaining_cycles is None:
@@ -100,7 +100,7 @@ class Device:
             elif c is not None:
                 remaining_cycles = min(remaining_cycles, c)
             
-        for core_id, core in self.cores.items():
+        for core_id, core in self.initialized_cores.items():
             core.rpc_update_routine()
 
         if remaining_cycles == 0 or remaining_cycles is None:
@@ -111,7 +111,7 @@ class Device:
         else:
             self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
 
-        for core_id, core in self.cores.items():
+        for core_id, core in self.initialized_cores.items():
             core.update_cycle_time(cycle_time=remaining_cycles)
 
     def run_kernels(
@@ -127,7 +127,7 @@ class Device:
         core_ids = list(self._cores.keys()) if sync_target_cores is None else sync_target_cores
         step_cnt = 0
 
-        while not all(self.cores[core_id].is_idle for core_id in core_ids):
+        while not all(self.initialized_cores[core_id].is_idle for core_id in core_ids):
             self.run_single_step(cycle_resolution=cycle_resolution)
             
             # break condition: step count  
@@ -162,5 +162,5 @@ class Device:
         return all(core.is_idle for core in self._cores.values())
     
     @property
-    def cores(self) -> dict[str, Core]:
+    def initialized_cores(self) -> dict[str, Core]:
         return self._cores

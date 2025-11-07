@@ -94,7 +94,7 @@ if __name__ == "__main__":
     tracer_hub = TracerHub()
     profiler_hub = ProfilerHub()
     
-    for core_id, core in device.cores.items():
+    for core_id, core in device.initialized_cores.items():
         tracer = Tracer()
         tracer.register_core(core)
         tracer_hub.register_tracer(f"{type(core).__name__}_{core.core_id}", tracer)

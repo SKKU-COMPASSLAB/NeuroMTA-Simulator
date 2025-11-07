@@ -342,14 +342,8 @@ class MCA_RT_JIT_COMPILE_REGION:
 
 def MCA_RT_KERNEL(func: Callable):
     @functools.wraps(func)
-    def __wrapper(*args, **kwargs):
-        pargs = parse_arguments(args, kwargs, ["core"])
-        core: Core = pargs["core"]
-        
-        if not isinstance(core, Core):
-            raise Exception(f"The first argument of the MCA_RT_KERNEL-decorated function or the keyword argument 'core' must be a Core instance, but got {type(core)}.")
-        
-        rt_kernel = KernelPrototype(func=func, args=args, kwargs=kwargs)
+    def __wrapper(core: Core, *args, **kwargs):
+        rt_kernel = KernelPrototype(core=core, func=func, args=args, kwargs=kwargs)
         rt_kernel.compiled_kernel_id = func.__name__
 
         if check_global_mca_rt_op_active():
