@@ -57,7 +57,7 @@ class TenstorrentConfig(dict):
         #   - 32B channel width (2 flits per cycle)
         #   - 2 subnets (randomized duplex network)
         #   - peak bandwidth per router: 2 * 32B * 1GHz * 2 = 128GB/s
-        icnt_ch_width = parse_mem_cap_str("32B") * 5  # 2 flits per cycle
+        icnt_ch_width = parse_mem_cap_str("32B")  # 2 flits per cycle
         icnt_subnet_num = 2  # randomized duplex network
         
         icnt_config = IcntConfig(

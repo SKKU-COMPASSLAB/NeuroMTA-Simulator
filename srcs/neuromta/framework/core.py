@@ -875,6 +875,9 @@ class Core:
     def async_rpc_wait_rsp_msg(self, req_msg: RPCMessage):
         msg_id = req_msg.msg_id
         
+        if msg_id not in self._suspended_rpc_req_msg:
+            return  # the response message is already received before the wait command is issued
+        
         if msg_id not in self._suspended_rpc_kernel_blocking_condition:
             self._suspended_rpc_kernel_blocking_condition[msg_id] = []
             

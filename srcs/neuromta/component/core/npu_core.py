@@ -402,6 +402,7 @@ class NPUCore(Core):
             
             for msg in noc_transaction_msgs:
                 self.async_rpc_send_req_msg(msg)
+            for msg in noc_transaction_msgs:
                 self.async_rpc_wait_rsp_msg(msg)
                 
             self.async_rpc_send_req_msg(dst_write_msg)
