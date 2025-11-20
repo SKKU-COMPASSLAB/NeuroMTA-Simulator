@@ -26,15 +26,13 @@ class TenstorrentConfig(dict):
         
         processor_clock_freq: int,
         icnt_config: IcntConfig, 
-        cmap_config: CmapConfig,
-        mem_config: MemConfig,
+        global_config: GlobalContextConfig,
         mxu_config: MXUConfig,
         vpu_config: VPUConfig, 
     ):
         self["processor_clock_freq"] = processor_clock_freq
         self["icnt_config"] = icnt_config
-        self["cmap_config"] = cmap_config
-        self["mem_config"] = mem_config
+        self["global_config"] = global_config
         self["mxu_config"] = mxu_config
         self["vpu_config"] = vpu_config
         
@@ -51,54 +49,6 @@ class TenstorrentConfig(dict):
         n_dma_core = 12 * 2
         n_dma_core_per_channel = 3
         n_main_mem_channels = math.ceil(n_dma_core / n_dma_core_per_channel)
-        
-        # Interconnect Configuration
-        #   - 12x16 torus network
-        #   - 32B channel width
-        #   - 2 subnets (randomized duplex)
-        #   - Theoretical Peak Bandwidth: 1GHz * 32B * 2 = 64GB/s per direction
-        icnt_ch_width = parse_mem_cap_str("32B")    # TODO: verify actual channel width
-        icnt_subnet_num = 2  # randomized duplex network
-        
-        icnt_config = IcntConfig(
-            shape=icnt_shape,
-            subnets=icnt_subnet_num,
-            flit_size=icnt_ch_width,
-            booksim2_enable=PYBOOKSIM2_AVAILABLE,
-        )
-        
-        cmap_config = CmapConfig(
-            n_l1_spm_bank=n_npu_core,
-            n_main_mem_channels=n_main_mem_channels,
-            l1_spm_bank_size=l1_mem_bank_size,
-            main_mem_channel_size=main_mem_channel_size,
-        )
-        
-        dma_core_group: dict[int, list[int]] = {}
-
-        for row in range(12):
-            inter_ch_idx = row // n_dma_core_per_channel
-            intra_ch_idx = row % n_dma_core_per_channel
-            
-            dma_core_ch_col_0_id = icnt_config.coord_to_core_id((row, 0))
-            dma_core_ch_col_1_id = icnt_config.coord_to_core_id((row, 8))
-            
-            cmap_config.add_dma_core(core_id=dma_core_ch_col_0_id, mem_bank_idx=inter_ch_idx * 2)
-            cmap_config.add_dma_core(core_id=dma_core_ch_col_1_id, mem_bank_idx=inter_ch_idx * 2 + 1)
-            
-            dma_core_group[intra_ch_idx] = dma_core_group.get(intra_ch_idx, []) + [dma_core_ch_col_0_id, dma_core_ch_col_1_id]
-        
-        for row in range(12):
-            intra_ch_idx = row % n_dma_core_per_channel
-            
-            for i in range(7):
-                cmap_config.add_npu_core(core_id=icnt_config.coord_to_core_id((row, 1 + i)), mem_bank_idx=(row * 14) + i,     nxt_level_mem_core_ids=dma_core_group[intra_ch_idx])
-                cmap_config.add_npu_core(core_id=icnt_config.coord_to_core_id((row, 9 + i)), mem_bank_idx=(row * 14) + i + 7, nxt_level_mem_core_ids=dma_core_group[intra_ch_idx])
-
-
-        l1_mem_config = L1MemoryConfig(
-            access_gran=parse_mem_cap_str("512B"),
-        )
 
         if PYDRAMSIM3_AVAILABLE:
             dramsim3_config_path    = TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name)
@@ -138,10 +88,48 @@ class TenstorrentConfig(dict):
             dramsim3_config=dramsim3_config,
         )
         
-        mem_config = MemConfig(
-            l1_config=l1_mem_config,
-            main_config=main_mem_config,
+        icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
+            shape=icnt_shape,                       # - 12x16 torus
+            subnets=2,                              # - 2 subnets (full-duplex)
+            flit_size=parse_mem_cap_str("32B"),     # - 32B flit size (the unit of flow control)
+            max_payload_size=256,                   # - 256 in flits in maximum as a payload = 8KB
+            booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 32B * 2 * 1GHz = 64GB/s
         )
+        
+        global_config = GlobalContextConfig(
+            n_npu_core=n_npu_core,
+            n_main_mem_channel=n_main_mem_channels,
+            n_dma_core=n_dma_core,
+            l1_mem_bank_size=l1_mem_bank_size,
+            main_mem_bank_size=main_mem_channel_size,
+            main_mem_config=main_mem_config,
+        )
+
+        dma_core_to_coord_map: dict[int, list[tuple[int, int]]] = {}
+        dma_ch_col = [0, 8]
+        npu_core_to_coord_map: dict[int, tuple[int, int]] = {}
+        
+        for ch_idx in range(n_main_mem_channels):
+            c = dma_ch_col[ch_idx % 2]
+            for dma_engine_idx in range(n_dma_core_per_channel):
+                r = ch_idx // 2 * n_dma_core_per_channel + dma_engine_idx
+                d = global_config.dma_core_ids[ch_idx * n_dma_core_per_channel + dma_engine_idx]
+                dma_core_to_coord_map[d] = (r, c)
+        
+        cnt = 0
+        for r in range(icnt_shape[0]):
+            for c in range(icnt_shape[1]):
+                if c in dma_ch_col:
+                    continue
+                
+                n = global_config.npu_core_ids[cnt]
+                npu_core_to_coord_map[n] = (r, c)
+                cnt += 1
+                
+        for d, coord in dma_core_to_coord_map.items():
+            icnt_config.update_core_map(coord, d)
+        for n, coord in npu_core_to_coord_map.items():
+            icnt_config.update_core_map(coord, n)
         
         mxu_config = MXUConfig(
             pe_arr_height=32,
@@ -167,16 +155,15 @@ class TenstorrentConfig(dict):
         
         return cls(
             processor_clock_freq=processor_clock_freq,
-            cmap_config=cmap_config,
+            global_config=global_config,
             icnt_config=icnt_config,
-            mem_config=mem_config,
             mxu_config=mxu_config,
             vpu_config=vpu_config,
         )
 
 
 class TenstorrentDevice(MTA_DeviceBase):
-    def __init__(self, processor_clock_freq, cmap_config, icnt_config, mem_config, mxu_config, vpu_config):
-        super().__init__(cmap_config, icnt_config, mem_config, mxu_config, vpu_config)
+    def __init__(self, processor_clock_freq, global_config, icnt_config, mxu_config, vpu_config):
+        super().__init__(global_config, icnt_config, mxu_config, vpu_config)
         
         self.processor_clock_freq = processor_clock_freq

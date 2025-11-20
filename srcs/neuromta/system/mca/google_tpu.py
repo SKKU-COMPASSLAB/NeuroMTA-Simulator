@@ -26,14 +26,12 @@ class GoogleTPUConfig(dict):
         self,
         
         processor_clock_freq: int,
-        cmap_config: CmapConfig,
-        mem_config: MemConfig,
+        global_config: GlobalContextConfig,
         mxu_config: MXUConfig,
         vpu_config: VPUConfig, 
     ):
         self["processor_clock_freq"] = processor_clock_freq
-        self["cmap_config"] = cmap_config
-        self["mem_config"] = mem_config
+        self["global_config"] = global_config
         self["mxu_config"] = mxu_config
         self["vpu_config"] = vpu_config
         
@@ -49,23 +47,6 @@ class GoogleTPUConfig(dict):
         n_dma_core = n_main_mem_channels
         n_npu_core = 2
         
-        cmap_config = CmapConfig(
-            n_l1_spm_bank=n_npu_core,
-            n_main_mem_channels=n_main_mem_channels,
-            l1_spm_bank_size=l1_mem_bank_size,
-            main_mem_channel_size=main_mem_channel_size,
-        )
-        
-        for i in range(n_dma_core):
-            cmap_config.add_dma_core(i, mem_bank_idx=i)
-            
-        for i in range(n_npu_core):
-            cmap_config.add_npu_core(i+n_dma_core, mem_bank_idx=i, nxt_level_mem_core_ids=list(range(n_dma_core)))
-
-        l1_mem_config = L1MemoryConfig(
-            access_gran=parse_mem_cap_str("512B"),
-        )
-
         if PYDRAMSIM3_AVAILABLE:
             dramsim3_config_path    = GOOGLE_TPU_IP_DRAMSIM_CONFIG_FMT(config_name=config_name)
             dramsim3_channel_size   = main_mem_channel_size // (1024 * 1024)    # GB -> MB
@@ -101,9 +82,13 @@ class GoogleTPUConfig(dict):
             dramsim3_config=dramsim3_config,
         )
         
-        mem_config = MemConfig(
-            l1_config=l1_mem_config,
-            main_config=main_mem_config,
+        global_config = GlobalContextConfig(
+            n_npu_core=n_npu_core,
+            n_main_mem_channel=n_main_mem_channels,
+            n_dma_core=n_dma_core,
+            l1_mem_bank_size=l1_mem_bank_size,
+            main_mem_bank_size=main_mem_channel_size,
+            main_mem_config=main_mem_config,
         )
         
         mxu_config = MXUConfig(
@@ -130,14 +115,13 @@ class GoogleTPUConfig(dict):
         
         return cls(
             processor_clock_freq=processor_clock_freq,
-            cmap_config=cmap_config,
-            mem_config=mem_config,
+            global_config=global_config,
             mxu_config=mxu_config,
             vpu_config=vpu_config,
         )
 
 class GoogleTPUDevice(MCA_DeviceBase):
-    def __init__(self, processor_clock_freq, cmap_config, mem_config, mxu_config, vpu_config):
-        super().__init__(cmap_config, mem_config, mxu_config, vpu_config)
+    def __init__(self, processor_clock_freq, global_config, mxu_config, vpu_config):
+        super().__init__(global_config, None, mxu_config, vpu_config)
         
         self.processor_clock_freq = processor_clock_freq

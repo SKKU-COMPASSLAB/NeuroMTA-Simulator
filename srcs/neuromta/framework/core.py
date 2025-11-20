@@ -5,8 +5,7 @@ from typing import Callable, Sequence, Any
 
 from neuromta.framework.logger import logger
 from neuromta.framework.debug_utils import *
-from neuromta.framework.memory_handle import *
-from neuromta.framework.parser_utils import parse_arguments
+from neuromta.framework.synchronizer import LockHandle, VariableHandle
 
 
 __all__ = [
@@ -428,7 +427,7 @@ class KernelPrototype:
         self.kwargs = kwargs
         self.compiled_kernel_id = func.__name__
         
-    def dispatch(self, slot_id: str):
+    def dispatch(self, slot_id: str="MAIN"):
         self.core.dispatch_main_kernel(slot_id, self)
         
     def compile(self) -> 'Kernel':
@@ -451,14 +450,17 @@ class Kernel:
         self._execution_steps: list[Command | ThreadGroup | KernelPrototype] = []
         self._execution_cursor: int = 0
         
-        self._is_blocked: bool = False
-        
+        self._n_blocked_cnt: int = 0
+    
     def set_blocked(self, flag: bool=True):
-        self._is_blocked = flag
+        if flag:
+            self._n_blocked_cnt += 1
+        else:
+            self._n_blocked_cnt = max(0, self._n_blocked_cnt - 1)
         
     @property
     def is_blocked(self) -> bool:
-        return self._is_blocked
+        return self._n_blocked_cnt > 0
         
     def __enter__(self):
         if get_global_context_mode() == GlobalContextMode.COMPILE:
@@ -871,6 +873,8 @@ class Core:
         self._suspended_rpc_req_msg[msg_id] = req_msg
         self._suspended_rpc_to_main_kernels_mapping[msg_id] = get_global_kernel_context().root_kernel_id
         
+        # logger.info(f"[RPC] [{self.timestamp}] SEND REQUEST: '{msg_id}'")
+        
     @core_command_method
     def async_rpc_wait_rsp_msg(self, req_msg: RPCMessage):
         msg_id = req_msg.msg_id
@@ -888,9 +892,26 @@ class Core:
         elif not isinstance(context, Kernel):
             raise Exception(f"Cannot suspend the current kernel since the current context is not an instance of Kernel, but {type(context).__name__}")
         
+        self._suspended_rpc_kernel_blocking_condition[msg_id].append(context)
+        
         context.set_blocked(True)
         
-        self._suspended_rpc_kernel_blocking_condition[msg_id].append(context)
+    @core_command_method
+    def async_rpc_wait_all(self):
+        context = get_global_kernel_context()
+        
+        for msg_id, req_msg in self._suspended_rpc_req_msg.items():
+            if context is None:
+                raise Exception(f"Cannot suspend the current kernel since there is no kernel context")
+            elif not isinstance(context, Kernel):
+                raise Exception(f"Cannot suspend the current kernel since the current context is not an instance of Kernel, but {type(context).__name__}")
+            
+            if msg_id not in self._suspended_rpc_kernel_blocking_condition:
+                self._suspended_rpc_kernel_blocking_condition[msg_id] = []
+            
+            self._suspended_rpc_kernel_blocking_condition[msg_id].append(context)
+            
+            context.set_blocked(True)
 
     def _rpc_req_kernel_dispatch_routine(self):
         while len(self.rpc_req_recv_queue):
@@ -936,6 +957,8 @@ class Core:
                 for kernel in self._suspended_rpc_kernel_blocking_condition[msg_id]:
                     kernel.set_blocked(False)  # unblock the RPC kernel
                 self._suspended_rpc_kernel_blocking_condition.pop(msg_id)
+                
+            # logger.info(f"[RPC] [{self.timestamp}] RECEIVED RESPONSE: '{msg_id}'")
         
     def _rpc_req_kernel_remove_and_rsp_send_routine(self, slot_id: str):
         kernel = self._dispatched_rpc_kernels[slot_id]
@@ -946,6 +969,46 @@ class Core:
 
         self._dispatched_rpc_kernels.pop(slot_id)       # remove the kernel from the dispatched RPC kernels
         self._dispatched_rpc_msg_mappings.pop(slot_id)  # remove the message
+        
+    ###########################################################################
+    # Synchronization (Lock and Atomic Variable Update)
+    ###########################################################################
+    
+    @staticmethod
+    def _SYNCHRONIZER_CALLBACK_PRIM(context: Kernel):
+        context.set_blocked(False)
+    
+    @core_command_method
+    def lock_acquire(self, lock: LockHandle):
+        context = get_global_kernel_context()
+        context.set_blocked(True)
+        lock.acquire(owner=self.core_id, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+        
+    @core_command_method
+    def lock_release(self, lock: LockHandle):
+        lock.release(owner=self.core_id)
+        
+    @core_command_method
+    def var_atomic_update(self, var: VariableHandle, value: int):
+        var.atomic_update(value)
+        
+    @core_command_method
+    def var_atomic_compare_and_swap(self, var: VariableHandle, cmp_value: int, new_value: int) -> bool:
+        context = get_global_kernel_context()
+        context.set_blocked(True)
+        var.atomic_compare_and_swap(cmp_value, new_value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+        
+    @core_command_method
+    def var_atomic_wait(self, var: VariableHandle, expected_value: int):
+        context = get_global_kernel_context()
+        context.set_blocked(True)
+        var.atomic_wait(expected_value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+        
+    @core_command_method
+    def var_atomic_increase(self, var: VariableHandle, increment: int=1) -> int:
+        context = get_global_kernel_context()
+        context.set_blocked(True)
+        var.atomic_increase(increment, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
     
     ###########################################################################
     # Properties

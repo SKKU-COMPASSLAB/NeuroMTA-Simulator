@@ -4,229 +4,266 @@ from typing import Any, Sequence
 
 from neuromta.framework import *
 
-from neuromta.component.context.mem_context import *
 from neuromta.component.context.icnt_context import *
-from neuromta.component.context.cmap_context import *
+from neuromta.component.context.global_context import *
 from neuromta.component.context.mxu_context import *
 from neuromta.component.context.vpu_context import *
 
 from neuromta.component.core.npu_core import *
 from neuromta.component.core.dma_core import *
-from neuromta.component.core.icnt_core import *
-from neuromta.component.core.main_mem_core import *
 
 from neuromta.component.companions.booksim import BookSim2
 from neuromta.component.companions.dramsim import DRAMSim3
 
 
 __all__ = [
+    "MCA_CoreGroup",
+    "MCA_MemorySpace",
+    "MCA_MainMemorySpace",
+    "MCA_L1MemorySpace",
     "MCA_DeviceBase",
-    "MTA_DeviceBase",
+    
     "MTA_CoreGrid",
+    "MTA_DeviceBase",
 ]
+
+
+class MCA_CoreGroup(list):
+    def __init__(self, core_ids: Sequence[int]):
+        super().__init__(core_ids)
+        
+    def __eq__(self, value):
+        if not isinstance(value, MCA_CoreGroup):
+            return False
+        
+        c1 = sorted(list(self))
+        c2 = sorted(list(value))
+        return c1 == c2
+    
+    def __getitem__(self, idx: int) -> int:
+        item = super().__getitem__(idx)
+        if isinstance(item, list):
+            return MCA_CoreGroup(item)
+        return item
+        
+    @property
+    def core_ids(self) -> Sequence[int]:
+        return list(self)
+    
+    
+class MCA_MemorySpace:
+    def __init__(self, device: 'MCA_DeviceBase', mem_type: GlobalContextMemType, size_per_owner: int, owner_ids: Sequence[int]):
+        self._device = device
+        self._mem_type = mem_type
+        self._owner_ids = owner_ids
+        self._owner_id_to_mem_id_mappings: dict[int, int] = {}
+        self._mem_id_to_stack_id_mappings: dict[int, int] = {}
+        
+        if self.mem_type == GlobalContextMemType.MAIN:
+            for owner_id in self._owner_ids:
+                self._owner_id_to_mem_id_mappings[owner_id] = owner_id
+        elif self.mem_type == GlobalContextMemType.L1:
+            for core_id in self._owner_ids:
+                core_info = device.global_context.get_core_info(core_type=GlobalContextCoreType.NPU, core_id=core_id)
+                mem_info = core_info.owned_mem_info
+                self._owner_id_to_mem_id_mappings[core_id] = mem_info.mem_id
+        
+        for owner_id, mem_id in self._owner_id_to_mem_id_mappings.items():
+            mem_info = device.global_context.get_mem_info(mem_type=self._mem_type, mem_id=mem_id)
+            stack_id = mem_info.create_stack(stack_size=size_per_owner)
+            self._mem_id_to_stack_id_mappings[mem_id] = stack_id
+            
+    def empty_space(self, owner_id: int) -> int:
+        if owner_id not in self._owner_ids:
+            raise ValueError(f"Owner ID {owner_id} is not part of this MCA_MainMemorySpace.")
+        
+        mem_id = self._owner_id_to_mem_id_mappings[owner_id]
+        mem_info = self._device.global_context.get_mem_info(mem_type=self._mem_type, mem_id=mem_id)
+        stack_id = self._mem_id_to_stack_id_mappings[mem_id]
+        return mem_info.empty_space(stack_id=stack_id)
+    
+    def allocate(self, owner_id: int, size: int) -> Pointer:
+        mem_id = self._owner_id_to_mem_id_mappings[owner_id]
+        mem_info = self._device.global_context.get_mem_info(mem_type=self._mem_type, mem_id=mem_id)
+        stack_id = self._mem_id_to_stack_id_mappings[mem_id]
+        return mem_info.allocate_data(size=size, stack_id=stack_id)
+            
+    def remove(self):
+        for owner_id in self._owner_ids:
+            mem_id = self._owner_id_to_mem_id_mappings[owner_id]
+            mem_info = self._device.global_context.get_mem_info(mem_type=self._mem_type, mem_id=mem_id)
+            stack_id = self._mem_id_to_stack_id_mappings[mem_id]
+            mem_info.remove_stack(stack_id=stack_id)
+            
+    def override_owner_ids(self, owner_ids: Sequence[int]) -> 'MCA_MemorySpace':
+        new_space = MCA_MemorySpace(device=self._device, mem_type=self._mem_type, size_per_owner=0, owner_ids=owner_ids)
+        for owner_id in owner_ids:
+            mem_id = self._owner_id_to_mem_id_mappings[owner_id]
+            new_space._owner_id_to_mem_id_mappings[owner_id] = self._owner_id_to_mem_id_mappings[owner_id]
+            new_space._mem_id_to_stack_id_mappings[mem_id] = self._mem_id_to_stack_id_mappings[mem_id]
+        return new_space
+            
+    @property
+    def device(self) -> 'MCA_DeviceBase':
+        return self._device
+    
+    @property
+    def mem_type(self) -> GlobalContextMemType:
+        return self._mem_type
+    
+    @property
+    def owner_ids(self) -> Sequence[int] | MCA_CoreGroup:
+        return self._owner_ids
+
+class MCA_MainMemorySpace(MCA_MemorySpace):
+    def __init__(self, device: 'MCA_DeviceBase', size_per_channel: int, channel_ids: Sequence[int]=None,):
+        if channel_ids is None:
+            channel_ids = list(range(device.global_context.n_main_mem_channels))
+        super().__init__(device=device, mem_type=GlobalContextMemType.MAIN, size_per_owner=size_per_channel, owner_ids=channel_ids)
+        
+    def empty_space(self, channel_id):
+        return super().empty_space(channel_id)
+    
+    def allocate(self, channel_id, size):
+        return super().allocate(channel_id, size)
+    
+    def override_owner_ids(self, channel_ids: Sequence[int]) -> 'MCA_MainMemorySpace':
+        return super().override_owner_ids(channel_ids)
+            
+class MCA_L1MemorySpace(MCA_MemorySpace):
+    def __init__(self, device: 'MCA_DeviceBase', size_per_bank: int, core_group: MCA_CoreGroup):
+        super().__init__(device=device, mem_type=GlobalContextMemType.L1, size_per_owner=size_per_bank, owner_ids=core_group)
+        
+    def empty_space(self, core_id):
+        return super().empty_space(core_id)
+    
+    def allocate(self, core_id, size):
+        return super().allocate(core_id, size)
+    
+    def override_owner_ids(self, core_group: MCA_CoreGroup):
+        return super().override_owner_ids(core_group)
 
 
 class MCA_DeviceBase(Device):
     def __init__(
         self, 
         
-        cmap_config: CmapConfig,
-        mem_config: MemConfig,
+        global_config: GlobalContextConfig,
+        icnt_config: IcntConfig,
         mxu_config: MXUConfig,
         vpu_config: VPUConfig,
     ):
         super().__init__()
         
-        self.cmap_context = CmapContext(config=cmap_config)
-        self.mem_context  = MemContext(config=mem_config)
+        self.global_context = GlobalContext(config=global_config)
+        
+        if icnt_config is not None:
+            self.icnt_context = IcntContext(config=icnt_config)
+            
+            if self.icnt_context.booksim2_enable:
+                self.companion_core.register_companion_module(
+                    self.global_context.config.booksim_module_id,
+                    module=BookSim2(config=self.icnt_context.config.booksim2_config)
+                )
+        else:
+            self.icnt_context = None
         
         self.mxu_config = mxu_config
         self.vpu_config = vpu_config
         
-        self.npu_core_ids = self.cmap_context.npu_core_ids
-        self.dma_core_ids = self.cmap_context.dma_core_ids
+        self.npu_core_ids = MCA_CoreGroup(self.global_context.npu_core_ids)
+        self.dma_core_ids = MCA_CoreGroup(self.global_context.dma_core_ids)
 
         self.npu_core_id_to_idx_mappings = {core_id: idx for idx, core_id in enumerate(self.npu_core_ids)}
         self.dma_core_id_to_idx_mappings = {core_id: idx for idx, core_id in enumerate(self.dma_core_ids)}
 
         self.npu_cores: list[NPUCore] = [
-            NPUCore(core_id=core_id, mem_context=self.mem_context, cmap_context=self.cmap_context, mxu_config=self.mxu_config, vpu_config=self.vpu_config)
+            NPUCore(core_id=core_id, global_context=self.global_context, icnt_context=self.icnt_context, mxu_config=self.mxu_config, vpu_config=self.vpu_config)
             for core_id in self.npu_core_ids
         ]
         
         self.dma_cores: list[DMACore] = [
-            DMACore(core_id=core_id, mem_context=self.mem_context, cmap_context=self.cmap_context)
+            DMACore(core_id=core_id, global_context=self.global_context)
             for core_id in self.dma_core_ids
         ]
         
-        self.main_mem_core = MainMemoryCore(mem_context=self.mem_context, cmap_context=self.cmap_context)
-        
-        if self.mem_context.main_config.dramsim3_enable:
+        if self.global_context.config.main_mem_config.dramsim3_enable:
             self.companion_core.register_companion_module(
-                self.cmap_context.config.dramsim_module_id,
-                module=DRAMSim3(config=self.mem_context.main_config.dramsim3_config)
+                self.global_context.config.dramsim_module_id,
+                module=DRAMSim3(config=self.global_context.config.main_mem_config.dramsim3_config)
             )
-    
-    def get_npu_core(self, core_id: int=None, addr: int=None) -> NPUCore:
-        if core_id is None and addr is None:
-            raise Exception(f"Please provide exactly one of core_id, coord, or addr to identify the NPU core.")
             
-        if core_id is None:
-            if addr is not None:
-                addr_space_entry = self.cmap_context.get_addr_space_entry_from_address(addr)
-                core_id = addr_space_entry.core_ids[0]  # TODO: only one?
-
+        self._main_mem_spaces: list[MCA_MainMemorySpace] = []
+        self._l1_mem_spaces: list[MCA_L1MemorySpace] = []
+    
+    ################################################################
+    # NPU Hardware Resource Access API
+    ################################################################
+    
+    def get_npu_core(self, core_id: int) -> NPUCore:
         core_idx = self.npu_core_id_to_idx_mappings[core_id]
-
         return self.npu_cores[core_idx]
-
-    def get_l1_mem_handle(self, core_id: int=None, addr: int=None) -> MemoryHandle:
-        core = self.get_npu_core(core_id=core_id, addr=addr)
-        return core.mem_handle
     
-    def get_main_mem_handle(self) -> MemoryHandle:
-        return self.main_mem_core.mem_handle
+    def get_npu_core_group(self, offset: int=None, n_cores: int=None) -> MCA_CoreGroup:
+        if offset is None:
+            offset = 0
+        if n_cores is None:
+            n_cores = len(self.npu_core_ids) - offset
+        core_ids = self.npu_core_ids[offset:offset+n_cores]
+        return MCA_CoreGroup(core_ids)
     
-    def create_local_variable(self, size: int, initial_value: int, core_ids: int | list[int]=None) -> Pointer | list[Pointer]:
-        if core_ids is None:
-            core_ids = self.npu_core_ids
-        if not isinstance(core_ids, Sequence):
-            core_ids = [core_ids]
-        
-        ptrs: list[Pointer] = []
-        
-        for core_id in core_ids:
-            mem_handle = self.get_l1_mem_handle(core_id=core_id)
-            ptr = create_var_ptr(mem_handle=mem_handle, var_size=size, initial_value=initial_value)
-            ptrs.append(ptr)
-        
-        if len(core_ids) == 1:
-            return ptrs[0]
-        return ptrs
+    ################################################################
+    # Wrapper API: Global Context Memory Space Management
+    ################################################################
     
-    def create_local_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None) -> BufferPointer | list[BufferPointer]:
-        if core_ids is None:
-            core_ids = self.npu_core_ids
-        if not isinstance(core_ids, Sequence):
-            core_ids = [core_ids]
+    def create_main_mem_space(self, size_per_channel: int, channel_ids: Sequence[int]=None) -> MCA_MainMemorySpace:
+        if size_per_channel <= 0:
+            raise ValueError("Main memory space size per channel must be greater than 0.")
+        mem_space = MCA_MainMemorySpace(device=self, size_per_channel=size_per_channel, channel_ids=channel_ids)
+        self._main_mem_spaces.append(mem_space)
+        return mem_space
+    
+    def create_l1_mem_space(self, size_per_bank: int, core_group: MCA_CoreGroup) -> MCA_L1MemorySpace:
+        if size_per_bank <= 0:
+            raise ValueError("L1 memory space size per bank must be greater than 0.")
+        mem_space = MCA_L1MemorySpace(device=self, size_per_bank=size_per_bank, core_group=core_group)
+        self._l1_mem_spaces.append(mem_space)
+        return mem_space
+    
+    def remove_all_main_mem_space(self):
+        for i in range(len(self._main_mem_spaces)-1, -1, -1):
+            self._main_mem_spaces[i].remove()
+            self._main_mem_spaces.pop(i)
+    
+    def remove_all_l1_mem_space(self):
+        for i in range(len(self._l1_mem_spaces)-1, -1, -1):
+            self._l1_mem_spaces[i].remove()
+            self._l1_mem_spaces.pop(i)
             
-        ptrs: list[BufferHandle] = []
-
-        for core_id in core_ids:
-            mem_handle = self.get_l1_mem_handle(core_id=core_id)
-            ptr = create_uniform_buffer(mem_handle=mem_handle, page_size=page_size, n_pages=n_pages)
-            ptrs.append(ptr)
-        
-        if len(core_ids) == 1:
-            return ptrs[0]
-        return ptrs
-
-    def create_sharded_main_buffer(self, page_size: int, n_pages: int, channel_id: int | Sequence[int]=None) -> BufferPointer:        
-        if channel_id is None:
-            channel_id = list(range(self.cmap_context.config.n_main_mem_channels))
-        
-        mem_handle = self.get_main_mem_handle()
-        
-        ptr = create_uniform_buffer(mem_handle=mem_handle, page_size=page_size, n_pages=n_pages, channel_id=channel_id)
-        return ptr
+    def clear_all_mem_spaces(self):
+        self.remove_all_l1_mem_space()
+        self.remove_all_main_mem_space()
     
-    def remove_buffer(self, ptr: BufferPointer):
-        handle = ptr.raw_handle
-        
-        for page_ptr in handle.page_ptrs:
-            if self.cmap_context.config.check_main_mem_addr(page_ptr.addr):
-                mem_handle = self.get_main_mem_handle()
-            elif self.cmap_context.config.check_l1_mem_addr(page_ptr.addr):
-                mem_handle = self.get_l1_mem_handle(addr=page_ptr.addr)
-            else:
-                raise Exception(f"Unsupported address: {page_ptr.addr}")
-            
-            mem_handle.deallocate_ptr(page_ptr)
-    
-    def set_ptr_content(self, ptr: BufferPointer | Pointer | BufferHandle, content: torch.Tensor):
-        if isinstance(ptr, BufferPointer):
-            ptr = ptr.raw_handle
-        
+    def mem_get_data(self, ptr: Pointer, size: int, dtype: torch.dtype, native_python_type: bool=False) -> Any:
         if isinstance(ptr, Pointer):
-            if ptr.ptr_type == PointerType.PAGE:
-                self._set_page_var_ptr_content(ptr, content)
-            else:
-                self._set_page_var_ptr_content(ptr, content)
-        elif isinstance(ptr, BufferHandle):
-            page_size = ptr.page_size
-            n_pages = ptr.n_pages
-            
-            if content.numel() * content.element_size() != page_size * n_pages:
-                raise ValueError(f"Content size {content.numel() * content.element_size()} does not match buffer size {page_size * n_pages}.")
-            
-            content = content.view(dtype=torch.uint8).reshape((n_pages, page_size))
-            
-            for page_ptr, page_content in zip(ptr.page_ptrs, content):
-                self._set_page_var_ptr_content(page_ptr, page_content)
+            mem_info = self.global_context.get_mem_info_by_address(ptr.addr)
+            return mem_info.mem_handle.get_data(ptr, size=size, dtype=dtype, native_python_type=native_python_type)
         else:
-            raise Exception(f"Unsupported pointer type: {type(ptr).__name__}. Expected BufferPointer or Pointer.")
-
-    def _set_page_var_ptr_content(self, ptr: Pointer, content: Any):
-        if ptr.ptr_type == PointerType.PAGE:
-            if not isinstance(content, torch.Tensor):
-                raise ValueError(f"Content must be a torch.Tensor for PAGE pointer, got {type(content)}.")
-            
-            content = content.flatten().view(dtype=torch.uint8)
-            
-        if self.cmap_context.config.check_main_mem_addr(ptr.addr):
-            mem_handle = self.get_main_mem_handle()
-        elif self.cmap_context.config.check_l1_mem_addr(ptr.addr):
-            mem_handle = self.get_l1_mem_handle(addr=ptr.addr)
-        else:
-            raise Exception(f"Unsupported address: {ptr.addr}")
-
-        mem_handle.set_content(ptr, content)
-
-    def get_ptr_content(self, ptr: BufferPointer | Pointer | BufferHandle, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> torch.Tensor:
-        if isinstance(ptr, BufferPointer):
-            ptr = ptr.raw_handle
-            
-        if isinstance(ptr, Pointer):
-            if ptr.ptr_type == PointerType.PAGE:
-                return self._get_page_var_ptr_content(ptr, shape, dtype)
-            else:
-                return self._get_page_var_ptr_content(ptr)
-        elif isinstance(ptr, BufferHandle):
-            page_size = ptr.page_size
-            n_pages = ptr.n_pages
-            
-            content = torch.empty((n_pages, page_size), dtype=torch.uint8).contiguous()
-            
-            for i, page_ptr in enumerate(ptr.page_ptrs):
-                content[i, :] = self._get_page_var_ptr_content(page_ptr, shape=(-1,), dtype=torch.uint8)
-                
-            if dtype is not None:
-                content = content.view(dtype=dtype)
-            if shape is not None:
-                content = content.reshape(shape)
-
-            return content
-        else:
-            raise Exception(f"Unsupported pointer type: {type(ptr)}. Expected BufferPointer or Pointer.")
-
-    def _get_page_var_ptr_content(self, ptr: Pointer, shape: tuple[int, ...]=None, dtype: torch.dtype=None) -> torch.Tensor:
-        if self.cmap_context.config.check_main_mem_addr(ptr.addr):
-            mem_handle = self.get_main_mem_handle()
-        elif self.cmap_context.config.check_l1_mem_addr(ptr.addr):
-            mem_handle = self.get_l1_mem_handle(addr=ptr.addr)
-        else:
-            raise Exception(f"Unsupported address: {ptr.addr}")
+            raise Exception(f"Unsupported pointer type {type(ptr)} for mem_get_data.")
         
-        content = mem_handle.get_content(ptr, shape=shape, dtype=dtype)
-
-        return content
+    def mem_set_data(self, ptr: Pointer, size: int, data: Any):
+        if isinstance(ptr, Pointer):
+            mem_info = self.global_context.get_mem_info_by_address(ptr.addr)
+            mem_info.mem_handle.set_data(ptr, size=size, data=data)
+        else:
+            raise Exception(f"Unsupported pointer type {type(ptr)} for mem_set_data.")
     
     def summary(self) -> dict[str, Any]:
         return {
             "device_type": type(self).__name__,
             "npu_cores": len(self.npu_cores),
             "dma_cores": len(self.dma_cores),
-            "cmap_config": self.cmap_context.config.summary(),
+            "global_config": self.global_context.config.summary(),
             "mxu_config": self.mxu_config,
             "vpu_config": self.vpu_config,
             "mem_config": {
@@ -240,17 +277,21 @@ class MCA_DeviceBase(Device):
         pp.pprint(self.summary())
 
 
-class MTA_CoreGrid(list):
+class MTA_CoreGrid(MCA_CoreGroup):
     def __init__(self, offset: tuple[int, int], shape: tuple[int, int], core_ids: list[int]):
         super().__init__(core_ids)
         
         self.offset = offset
         self.shape = shape
-        self.core_ids = core_ids
         
     def __getitem__(self, idx: int) -> int:
         if isinstance(idx, tuple):
-            return self.core_ids[idx[0] * self.shape[1] + idx[1]]
+            grid = torch.arange(len(self.core_ids)).view(self.shape)
+            grid = grid[*idx]
+            core_ids = [self.core_ids[i] for i in grid.flatten().tolist()]
+            if len(core_ids) > 1:
+                return MTA_CoreGrid(offset=(0, 0), shape=grid.shape, core_ids=core_ids)
+            return core_ids[0]
         return super().__getitem__(idx)
 
 
@@ -258,22 +299,12 @@ class MTA_DeviceBase(MCA_DeviceBase):
     def __init__(
         self, 
         
-        cmap_config: CmapConfig, 
+        global_config: GlobalContextConfig, 
         icnt_config: IcntConfig,
-        mem_config: MemConfig,
         mxu_config: MXUConfig,
         vpu_config: VPUConfig,
     ):
-        super().__init__(cmap_config=cmap_config, mem_config=mem_config, mxu_config=mxu_config, vpu_config=vpu_config)
-        
-        self.icnt_context = IcntContext(config=icnt_config)
-        self.icnt_core = IcntCore(cmap_context=self.cmap_context, icnt_context=self.icnt_context)
-        
-        if self.icnt_context.booksim2_enable:
-            self.companion_core.register_companion_module(
-                self.cmap_context.config.booksim_module_id,
-                module=BookSim2(config=self.icnt_context.config.booksim2_config)
-            )
+        super().__init__(global_config=global_config, icnt_config=icnt_config, mxu_config=mxu_config, vpu_config=vpu_config)
             
         npu_core_rows, npu_core_cols = [], []
         
@@ -285,34 +316,23 @@ class MTA_DeviceBase(MCA_DeviceBase):
         npu_core_rows = sorted(list(set(npu_core_rows)))
         npu_core_cols = sorted(list(set(npu_core_cols)))
         
-        self.npu_core_grid = torch.tensor([[self.icnt_context.coord_to_core_id((r, c)) for c in npu_core_cols]for r in npu_core_rows])
-        self.npu_core_grid_enabled = True
+        self._npu_core_grid = torch.tensor([[self.icnt_context.coord_to_core_id((r, c)) for c in npu_core_cols]for r in npu_core_rows])
+        self._npu_core_grid_enabled = True
         
-        for core_id in torch.unique(self.npu_core_grid):
+        for core_id in torch.unique(self._npu_core_grid):
             if core_id not in self.npu_core_ids:
-                self.npu_core_grid_enabled = False  # the accelerator does not have a full mesh of NPU cores
+                self._npu_core_grid_enabled = False  # the accelerator does not have a full mesh of NPU cores
                 break
 
-    def get_npu_core_grid(self, offset: tuple[int, int], shape: tuple[int, int]) -> MTA_CoreGrid:
-        if not self.npu_core_grid_enabled:
+    def get_npu_core_group(self, offset: tuple[int, int]=None, shape: tuple[int, int]=None) -> MTA_CoreGrid:
+        if not self._npu_core_grid_enabled:
             raise Exception("[ERROR] Unable to get npu core grid since the accelerator does not have a full mesh of NPU cores.")
 
-        grid = self.npu_core_grid[offset[0]:offset[0]+shape[0], offset[1]:offset[1]+shape[1]]
-        return MTA_CoreGrid(offset=offset, shape=shape, core_ids=grid.flatten().tolist())
-
-    def create_sharded_l1_buffer(self, page_size: int, n_pages: int, core_ids: list[int]=None, contiguous_n_pages: int=1) -> BufferPointer:
-        if core_ids is None:
-            core_ids = self.cmap_context.config.get_core_ids(CmapCoreType.NPU)
-        if not isinstance(core_ids, Sequence):
-            core_ids = [core_ids]
-
-        mem_handles = [self.get_l1_mem_handle(core_id=core_id) for core_id in core_ids]
-        ptr = create_distributed_buffer(mem_handles=mem_handles, page_size=page_size, n_pages=n_pages, contiguous_n_pages=contiguous_n_pages)
+        if offset is None and shape is None:
+            return MTA_CoreGrid(offset=(0, 0), shape=self._npu_core_grid.shape, core_ids=self._npu_core_grid.flatten().tolist())
         
-        if ptr is None:
-            logger.info(f"Unable to locate distributed buffer with page_size={page_size}, n_pages={n_pages}, contiguous_n_pages={contiguous_n_pages} on cores {core_ids}.")
-
-        return ptr
+        grid = self._npu_core_grid[offset[0]:offset[0]+shape[0], offset[1]:offset[1]+shape[1]]
+        return MTA_CoreGrid(offset=offset, shape=shape, core_ids=grid.flatten().tolist())
     
     def summary(self):
         s = super().summary()

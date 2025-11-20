@@ -85,12 +85,21 @@ class Device:
         if len(callstack) > 100:
             callstack = callstack[:47] + " ... " + callstack[-47:]
         logger.debug(f"{issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {callstack:<100s} | command: {cmd.cmd_id}")
+        
+        # if cmd.cmd_id == "async_rpc_send_req_msg":
+        #     req_msg = cmd.kwargs.get("req_msg", None)
+        #     if req_msg is None:
+        #         req_msg = cmd.args[0] if len(cmd.args) > 0 else None
+        #     logger.debug(f"    >> RPC REQ MSG SENT: {req_msg}")
 
     def run_single_step(self, cycle_resolution: int = 1):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
         
         remaining_cycles = None
+            
+        for core_id, core in self.initialized_cores.items():
+            core.rpc_update_routine()
         
         for core_id, core in self.initialized_cores.items():
             c = core.get_remaining_cycles()
@@ -99,9 +108,6 @@ class Device:
                 remaining_cycles = c
             elif c is not None:
                 remaining_cycles = min(remaining_cycles, c)
-            
-        for core_id, core in self.initialized_cores.items():
-            core.rpc_update_routine()
 
         if remaining_cycles == 0 or remaining_cycles is None:
             remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
