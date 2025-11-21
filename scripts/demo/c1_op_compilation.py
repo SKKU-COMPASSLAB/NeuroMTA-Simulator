@@ -507,7 +507,7 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_grid = device.get_npu_core_group((0, 0), (2, 2))
+    core_grid = device.get_npu_core_group((0, 0), (4, 4))
     
     M, N, K = 512, 512, 512
     Ms, Ns, Ks = 4, 4, 4
