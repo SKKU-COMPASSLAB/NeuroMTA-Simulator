@@ -1,55 +1,50 @@
-import os
-import json
-import torch
 from typing import Any, Sequence, Dict, List
 
 from neuromta.framework import *
-from neuromta.component import *
-from neuromta.system.mca.google_tpu import *
+from neuromta.component.core import *
+from neuromta.component.implementation.tensor_buffer import *
+
+
+__all__ = [
+    "TileSignature",
+    "TiledOperatorSignature",
+    "TiledOperatorMapping",
+    "CompiledCommand",
+    "CompiledStage",
+    "CompiledOperator",
+    "CompiledMapping",
+    
+    "MCA_OperatorMapper",
+]
 
 
 class TileSignature:
     def __init__(self, buf_name: str, buf: MCA_TensorBuffer, y_s: int, x_s: int, y_t: int, x_t: int):
         self.buf_name = buf_name
         self.buf = buf
-        self.y_s = y_s
-        self.x_s = x_s
-        self.y_t = y_t
-        self.x_t = x_t
+        self.coords: tuple[int, int, int, int] = (y_s, x_s, y_t, x_t)
         
-        self.spm_ptr: Pointer | None = None  # to be assigned during pipeline generation
+        self.spm_ptr: Pointer | None = None  # to be assigned during compilation process
         
     def override_spm_ptr(self, spm_ptr: Pointer):
-        new_sig = TileSignature(
-            buf_name=self.buf_name,
-            buf=self.buf,
-            y_s=self.y_s,
-            x_s=self.x_s,
-            y_t=self.y_t,
-            x_t=self.x_t,
-        )
+        new_sig = TileSignature(self.buf_name, self.buf, *self.coords)
         new_sig.spm_ptr = spm_ptr
         return new_sig
         
     def __eq__(self, value):
         if isinstance(value, TileSignature):
-            return (self.buf_name == value.buf_name and
-                    self.y_s == value.y_s and
-                    self.x_s == value.x_s and
-                    self.y_t == value.y_t and
-                    self.x_t == value.x_t)
-        
+            return (self.buf_name == value.buf_name and self.coords == value.coords)
         return False
     
     @property
     def mem_info(self) -> GlobalContextMemInfo:
-        shard_ptr = self.buf.get_shard_ptr(self.y_s, self.x_s)
+        shard_ptr = self.buf.get_shard_ptr(self.coords[0], self.coords[1])
         mem_info  = self.buf.mem_space.device.global_context.get_mem_info_by_address(addr=shard_ptr.addr)
         return mem_info
     
     @property
     def signature(self) -> str:
-        return f"{self.buf_name}({self.y_s},{self.x_s},{self.y_t},{self.x_t})"
+        return f"{self.buf_name}{self.coords}"
         
         
 class TiledOperatorSignature:
@@ -82,7 +77,7 @@ class TiledOperatorMapping(Dict[int, List[TiledOperatorSignature]]):
         self.core_group = core_group
     
     @staticmethod
-    def os_mapping(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
+    def from_tiled_ops(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
         core_ids = core_group.core_ids
         mapper = TiledOperatorMapping(core_group=core_group)
         
@@ -198,9 +193,9 @@ class CompiledCommand:
         
 class CompiledStage:
     def __init__(self):
-        self.dma_stores:  list[CompiledCommand.TILE_STORE]                           = []  # THREAD 0 STEP 1: Store output tiles from SPAD to memory
+        self.dma_stores:  list[CompiledCommand.TILE_STORE]                               = []  # THREAD 0 STEP 1: Store output tiles from SPAD to memory
         self.dma_loads:   list[CompiledCommand.TILE_LOAD | CompiledCommand.OP_LOCK_INCR] = []  # THREAD 0 STEP 2: Load input tiles from memory to SPAD 
-        self.compute_ops: list[CompiledCommand.TILED_OP]                             = []  # THREAD 1:        Compute tiled operations in SPAD
+        self.compute_ops: list[CompiledCommand.TILED_OP]                                 = []  # THREAD 1:        Compute tiled operations in SPAD
         
     def summary(self) -> dict[str, list[str]]:
         return {
@@ -307,7 +302,7 @@ class CompiledMapping:
         self.operators = operators
         
     @staticmethod
-    def from_mapping(spad_pp_ptrs: dict[int, tuple[Pointer, Pointer]], spad_pp_size: int, inner_tiled_op_per_pp: int, mapping: TiledOperatorMapping) -> 'CompiledMapping':
+    def from_tiled_op_mapping(spad_pp_ptrs: dict[int, tuple[Pointer, Pointer]], spad_pp_size: int, inner_tiled_op_per_pp: int, mapping: TiledOperatorMapping) -> 'CompiledMapping':
         core_group = mapping.core_group
         operators: dict[int, CompiledOperator] = {}
         
@@ -325,7 +320,7 @@ class CompiledMapping:
             
         return CompiledMapping(mapping=mapping, operators=operators)
     
-    def apply_broadcast_optimization(self, buf_name: str=None):
+    def apply_broadcast_optimization(self, buf_targets: list[str]=None):
         rr_cnt = 0  # round-robin counter
         
         for src_core_id, src_operator in self.operators.items():
@@ -336,7 +331,7 @@ class CompiledMapping:
                         continue
                     
                     src_tile_sig = src_load_cmd.tile_sig
-                    if (buf_name is not None) and (src_tile_sig.buf_name != buf_name):
+                    if (buf_targets is not None) and (src_tile_sig.buf_name not in buf_targets):
                         continue
                     
                     target_cmd_found: list[tuple[CompiledStage, int, VariableHandle]] = [(src_stage, s_i, src_operator.stage_lock)]
@@ -382,266 +377,135 @@ class CompiledMapping:
             i: p.summary() 
             for i, p in self.operators.items()
         }
-        
 
-def linear_os_compute_cmd(core: NPUCore, compute_cmd: CompiledCommand.TILED_OP, debug_output: bool=False):
-    op_sig = compute_cmd.op_sig
-    inner_op_idx = compute_cmd.inner_op_idx
-    
-    ifm_sig = op_sig.i_tiles[inner_op_idx][0]
-    wgt_sig = op_sig.i_tiles[inner_op_idx][1]
-    bias_sig = op_sig.i_tiles[inner_op_idx][2]
-    ofm_sig = op_sig.o_tile
-    
-    ifm  = DataContainer(shape=ifm_sig.buf.tile_shape, dtype=ifm_sig.buf.dtype)
-    wgt  = DataContainer(shape=wgt_sig.buf.tile_shape, dtype=wgt_sig.buf.dtype)
-    bias = DataContainer(shape=bias_sig.buf.tile_shape, dtype=bias_sig.buf.dtype)
-    ofm  = DataContainer(shape=ofm_sig.buf.tile_shape, dtype=ofm_sig.buf.dtype)
-    
-    preload_psum = (inner_op_idx == 0)
-    flush_ofm    = (inner_op_idx == len(op_sig.i_tiles) - 1)
-    
-    if inner_op_idx == 0:
-        core.mxu_reconfigure(dtype=ifm_sig.buf.dtype, acc_dtype=ofm_sig.buf.dtype)
-    
-    core.local_mem_page_read(ifm_sig.spm_ptr, ifm_sig.buf.tile_size, ifm)
-    core.local_mem_page_read(wgt_sig.spm_ptr, wgt_sig.buf.tile_size, wgt)
-    if preload_psum:
-        core.local_mem_page_read(bias_sig.spm_ptr, bias_sig.buf.tile_size, bias)
-    
-    if debug_output:
-        core.debug_core_with_ambiguous_func(
-            lambda wgt: logger.info(f"CORE: {core.core_id} WGT tile ({wgt_sig.y_s}, {wgt_sig.x_s}, {wgt_sig.y_t}, {wgt_sig.x_t}):\n{wgt.data.flatten().view(wgt.dtype).reshape(wgt.shape)}"),
-            wgt
-        )
-        core.debug_core_with_ambiguous_func(
-            lambda ifm: logger.info(f"CORE: {core.core_id} IFM tile ({ifm_sig.y_s}, {ifm_sig.x_s}, {ifm_sig.y_t}, {ifm_sig.x_t}):\n{ifm.data.flatten().view(ifm.dtype).reshape(ifm.shape)}"),
-            ifm
-        )
-        if preload_psum:
-            core.debug_core_with_ambiguous_func(
-                lambda bias: logger.info(f"CORE: {core.core_id} BIAS tile ({bias_sig.y_s}, {bias_sig.x_s}, {bias_sig.y_t}, {bias_sig.x_t}):\n{bias.data.flatten().view(bias.dtype).reshape(bias.shape)}"),
-                bias
+
+class MCA_OperatorMapper:
+    def __init__(
+        self,
+        
+        core_group: MCA_CoreGroup,
+        spad_mem_space: MCA_L1MemorySpace,
+        
+        n_inner_per_outer: int,
+        input_tile_size: int,
+        output_tile_size: int,
+        
+        tiled_ops: Sequence[TiledOperatorSignature],
+    ):
+        self._core_group = core_group
+        self._tiled_ops = tiled_ops
+        
+        self._spad_mem_space = spad_mem_space
+        self._spad_pp_size = spad_mem_space.size_per_owner // 2  # ping-pong buffer size per core
+        self._spad_pp_ptrs: dict[int, tuple[Pointer, Pointer]] = {
+            core_id: (
+                self._spad_mem_space.allocate(core_id, self._spad_pp_size),
+                self._spad_mem_space.allocate(core_id, self._spad_pp_size),
             )
-
-    core.mxu_tiled_gemm(
-        ifm, wgt, bias, ofm,
-        preload_psum=preload_psum,
-        flush_ofm=flush_ofm,
-        wgt_transposed=True,
-        psum_vectored=True,
-    )
-    
-    if debug_output:
-        core.debug_core_with_ambiguous_func(
-            lambda ofm: logger.info(f"CORE: {core.core_id} OFM tile ({ofm_sig.y_s}, {ofm_sig.x_s}, {ofm_sig.y_t}, {ofm_sig.x_t}):\n{ofm.data.flatten().view(ofm.dtype).reshape(ofm.shape)}"),
-            ofm
-        )
-    
-    if flush_ofm:
-        core.local_mem_page_write(ofm_sig.spm_ptr, ofm_sig.buf.tile_size, ofm)
-
-
-@jit_prototype
-def main(core: NPUCore, operator: CompiledOperator, debug_output: bool=False):
-    for stage in operator.stages:
-        with new_parallel_thread("DMA"):
-            # DMA STORE
-            for store_cmd in stage.dma_stores:
-                tile_sig = store_cmd.tile_sig
-                dst_ptr, src_size, src_row_size, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_write_args(tile_sig.y_s, tile_sig.x_s, tile_sig.y_t, tile_sig.x_t)
-                if debug_output:
-                    core.debug_core_with_ambiguous_func(
-                        logger.info,
-                        f"CORE: {core.core_id} STORE SPM@{tile_sig.spm_ptr.addr} -> {tile_sig.signature} <{src_size} {src_row_size} {src_row_stride} {dst_row_stride}>"
-                    )
-                core.local_mem_copy(dst_ptr, tile_sig.spm_ptr, size=src_size, src_row_size=src_row_size, src_row_stride=src_row_stride, dst_row_stride=dst_row_stride, nowait=True)
-            
-            core.async_rpc_wait_all()
-            
-            # DMA LOAD
-            for load_cmd in stage.dma_loads:
-                if isinstance(load_cmd, CompiledCommand.OP_LOCK_INCR):
-                    core.var_atomic_increase(operator.stage_lock, load_cmd._increment)  # BROADCAST: increase the stage lock and wait for the response from the source core
-                    continue
-                
-                tile_sig = load_cmd.tile_sig
-                src_ptr, src_size, src_row_size, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_read_args(tile_sig.y_s, tile_sig.x_s, tile_sig.y_t, tile_sig.x_t)
-                if debug_output:
-                    core.debug_core_with_ambiguous_func(
-                        logger.info,
-                        f"CORE: {core.core_id} LOAD {tile_sig.signature} -> SPM@{tile_sig.spm_ptr.addr} <{src_size} {src_row_size} {src_row_stride} {dst_row_stride}>"
-                    )
-                
-                if len(load_cmd.broadcast_dst_ptrs) > 0:  # BROADCAST: broadcast optimization
-                    core.local_mem_broadcast(load_cmd.broadcast_dst_ptrs + [tile_sig.spm_ptr,], src_ptr, size=src_size, src_row_size=src_row_size, src_row_stride=src_row_stride, dst_row_stride=dst_row_stride, nowait=True)
-                else:
-                    core.local_mem_copy(tile_sig.spm_ptr, src_ptr, size=src_size, src_row_size=src_row_size, src_row_stride=src_row_stride, dst_row_stride=dst_row_stride, nowait=True)
-                
-            core.async_rpc_wait_all()
-            
-            for load_cmd in stage.dma_loads:
-                if isinstance(load_cmd, CompiledCommand.TILE_LOAD):
-                    for lock in load_cmd.broadcast_locks:  # BROADCAST: notify dst cores that the broadcast load is complete
-                        core.var_atomic_increase(lock, -1)
-                        
-            core.var_atomic_wait(operator.stage_lock, 0)  # BORADCAST: wait for all broadcast loads to complete
-                
-        with new_parallel_thread("COMPUTE"):
-            # COMPUTE
-            for compute_cmd in stage.compute_ops:
-                linear_os_compute_cmd(core, compute_cmd, debug_output=debug_output)
-                
-        core.parallel_merge()
-    
-
-if __name__ == "__main__":
-    import time
-    
-    torch.set_printoptions(linewidth=1024)
-    logger.set_print_options(log_level=LogLevel.DEBUG)
-    
-    config = GoogleTPUConfig.V4()
-    device = GoogleTPUDevice(**config)
-    
-    device.initialize()
-    device.set_command_debug_verbosity(verbose=True)
-    
-    core_group = device.get_npu_core_group(0, 1)
-    
-    M, N, K = 512, 512, 512
-    Ms, Ns, Ks = 2, 2, 2
-    Mt, Nt, Kt = 128, 128, 128
-    dtype = torch.int8
-    acc_dtype = torch.int32
-    
-    ifm  = torch.arange(M * K, dtype=dtype).reshape(M, K)
-    wgt  = torch.arange(N * K, dtype=dtype).reshape(N, K)
-    bias = torch.arange(N, dtype=acc_dtype)
-    ofm  = torch.zeros((M, N), dtype=acc_dtype)
-    
-    ifm_size  = ifm.numel() * ifm.dtype.itemsize
-    wgt_size  = wgt.numel() * wgt.dtype.itemsize
-    bias_size = bias.numel() * bias.dtype.itemsize
-    ofm_size  = ofm.numel() * ofm.dtype.itemsize
-    
-    ifm_tile_size  = Mt * Kt * dtype.itemsize
-    wgt_tile_size  = Nt * Kt * dtype.itemsize
-    bias_tile_size = Nt * acc_dtype.itemsize
-    ofm_tile_size  = Mt * Nt * acc_dtype.itemsize
-    
-    ifm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
-    param_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-    ofm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
-    space_pp_space  = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
-    
-    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks)).tiling(tile_shape=(Mt, Kt)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)).tiling(tile_shape=(Nt, Kt)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns)).tiling(tile_shape=(1,  Nt)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns)).tiling(tile_shape=(Mt, Nt)).allocate()
-    
-    spad_pp_size = parse_mem_cap_str("1MB")
-    spad_pp_ptrs = {
-        core_id: (
-            space_pp_space.allocate(core_id=core_id, size=spad_pp_size),
-            space_pp_space.allocate(core_id=core_id, size=spad_pp_size),
-        )
-        for core_id in core_group.core_ids
-    }
-    
-    _n_inner_per_outer = ifm_b.tile_grid[1]  # number of total Kt tiles
-    _n_outer_tiled_op_per_pp = spad_pp_size // ((ifm_tile_size + wgt_tile_size + bias_tile_size) * _n_inner_per_outer + ofm_tile_size)
-    _n_remaining_inner_tiled_op_per_pp = (spad_pp_size % ((ifm_tile_size + wgt_tile_size + bias_tile_size) * _n_inner_per_outer + ofm_tile_size) - ofm_tile_size) // (ifm_tile_size + wgt_tile_size + bias_tile_size)
-    inner_tiled_op_per_pp = _n_outer_tiled_op_per_pp * _n_inner_per_outer + _n_remaining_inner_tiled_op_per_pp
-    print(f"Inner tiled operations per ping-pong buffer: {inner_tiled_op_per_pp}")
-    
-    ifm_tiles: dict[tuple[int, ...], TileSignature] = {
-        (m_s, k_s, m_t, k_t): TileSignature("ifm", ifm_b, m_s, k_s, m_t, k_t)
-        for m_s in range(ifm_b.shard_grid[0])
-        for k_s in range(ifm_b.shard_grid[1])
-        for m_t in range(ifm_b.tile_grid_per_shard[0])
-        for k_t in range(ifm_b.tile_grid_per_shard[1])
-    }
-    
-    wgt_tiles: dict[tuple[int, ...], TileSignature] = {
-        (n_s, k_s, n_t, k_t): TileSignature("wgt", wgt_b, n_s, k_s, n_t, k_t)
-        for n_s in range(wgt_b.shard_grid[0])
-        for k_s in range(wgt_b.shard_grid[1])
-        for n_t in range(wgt_b.tile_grid_per_shard[0])
-        for k_t in range(wgt_b.tile_grid_per_shard[1])
-    }
-    
-    bias_tiles: dict[tuple[int, ...], TileSignature] = {
-        (0, n_s, 0, n_t): TileSignature("bias", bias_b, 0, n_s, 0, n_t)
-        for n_s in range(bias_b.shard_grid[1])
-        for n_t in range(bias_b.tile_grid_per_shard[1])
-    }
-    
-    ofm_tiles: dict[tuple[int, ...], TileSignature] = {
-        (m_s, n_s, m_t, n_t): TileSignature("ofm", ofm_b, m_s, n_s, m_t, n_t)
-        for m_s in range(ofm_b.shard_grid[0])
-        for n_s in range(ofm_b.shard_grid[1])
-        for m_t in range(ofm_b.tile_grid_per_shard[0])
-        for n_t in range(ofm_b.tile_grid_per_shard[1])
-    }
-    
-    tiled_ops = [
-        TiledOperatorSignature(
-            i_tiles=[
-                (ifm_tiles[(m_s, k_s, m_t, k_t)], wgt_tiles[(n_s, k_s, n_t, k_t)], bias_tiles[(0, n_s, 0, n_t)]) 
-                for k_s in range(ifm_b.shard_grid[1]) 
-                for k_t in range(ifm_b.tile_grid_per_shard[1])
-            ],
-            o_tile=ofm_tiles[(m_s, n_s, m_t, n_t)]
-        )
-        for m_s in range(ofm_b.shard_grid[0])
-        for n_s in range(ofm_b.shard_grid[1])
-        for m_t in range(ofm_b.tile_grid_per_shard[0])
-        for n_t in range(ofm_b.tile_grid_per_shard[1])
-    ]
-    
-    tiled_ops_mapping = TiledOperatorMapping.os_mapping(
-        core_group=core_group,
-        tiled_ops=tiled_ops
-    )
-    
-    compiled_mapping = CompiledMapping.from_mapping(
-        spad_pp_ptrs=spad_pp_ptrs,
-        spad_pp_size=spad_pp_size,
-        inner_tiled_op_per_pp=inner_tiled_op_per_pp,
-        mapping=tiled_ops_mapping
-    )
-    
-    for core_id, operator in compiled_mapping.operators.items():
-        core = device.get_npu_core(core_id=core_id)
-        kernel = main(core, operator)
-        kernel.dispatch("MAIN")
+            for core_id in self._core_group
+        }
         
-    with MonitoringWindow() as monitor:
-        for core_id in core_group.core_ids:
-            core = device.get_npu_core(core_id=core_id)
-            pbar_idx = monitor.add_core_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
-            monitor.pbar_handles[pbar_idx].bind_core(core)
+        _n_outer_tiled_op_per_pp = self._spad_pp_size // (input_tile_size * n_inner_per_outer + output_tile_size)
+        _n_remaining_inner_tiled_op_per_pp = (self._spad_pp_size % (input_tile_size * n_inner_per_outer + output_tile_size) - output_tile_size) // input_tile_size
+        self._inner_tiled_op_per_pp = _n_outer_tiled_op_per_pp * n_inner_per_outer + _n_remaining_inner_tiled_op_per_pp
         
-        st = time.time()
-        device.run_kernels()
-        ed = time.time()
+    @staticmethod
+    def LINEAR(core_group: MCA_CoreGroup, spad_mem_space: MCA_L1MemorySpace, ifm_b: MCA_TensorBuffer, wgt_b: MCA_TensorBuffer, bias_b: MCA_TensorBuffer, ofm_b: MCA_TensorBuffer) -> 'MCA_OperatorMapper':
+        ifm_shape = ifm_b.shape
+        wgt_shape = wgt_b.shape
+        bias_shape = bias_b.shape
+        ofm_shape = ofm_b.shape
         
-    tmp_ouput_path = os.path.join(os.curdir, ".tmp", "pipelined_mapping.json")
-    with open(tmp_ouput_path, "w") as f:
-        json.dump(compiled_mapping.summary(), f, indent=4)
-        logger.info(f"Pipelined mapping summary saved to '{tmp_ouput_path}'.")
-    
-    print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
-    print(f"simulation terminated with {device.timestamp}")
-    
-    total_ops = 2 * M * N * K
-    throughput = (total_ops / device.timestamp)
-    print(f"overall throughput: {throughput:.2f} OP/cycle")
-    
-    simulated = ofm_b.restore()
-    reference = torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
-    
-    print(f"simulated:\n{simulated}")
-    print(f"reference:\n{reference}")
-    print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
+        if ifm_shape[0] != ofm_shape[0]:
+            raise Exception(f"IFM and OFM batch size mismatch: {ifm_shape[0]} != {ofm_shape[0]}")
+        if wgt_shape[0] != ofm_shape[1] or wgt_shape[0] != bias_shape[1]:
+            raise Exception(f"WGT and OFM channel size mismatch: {wgt_shape[0]} != {ofm_shape[1]} != {bias_shape[1]}")
+        if wgt_shape[1] != ifm_shape[1]:
+            raise Exception(f"WGT and IFM feature size mismatch: {wgt_shape[1]} != {ifm_shape[1]}")
+        
+        ifm_shard_grid = ifm_b.shard_grid
+        wgt_shard_grid = wgt_b.shard_grid
+        bias_shard_grid = bias_b.shard_grid
+        ofm_shard_grid = ofm_b.shard_grid
+        
+        if ifm_shard_grid[0] != ofm_shard_grid[0]:
+            raise Exception(f"IFM and OFM shard grid batch size mismatch: {ifm_shard_grid[0]} != {ofm_shard_grid[0]}")
+        if wgt_shard_grid[0] != ofm_shard_grid[1] or wgt_shard_grid[0] != bias_shard_grid[1]:
+            raise Exception(f"WGT and OFM shard grid channel size mismatch: {wgt_shard_grid[0]} != {ofm_shard_grid[1]} != {bias_shard_grid[1]}")
+        if wgt_shard_grid[1] != ifm_shard_grid[1]:
+            raise Exception(f"WGT and IFM shard grid feature size mismatch: {wgt_shard_grid[1]} != {ifm_shard_grid[1]}")
+        
+        ifm_tile_shape = ifm_b.tile_shape
+        wgt_tile_shape = wgt_b.tile_shape
+        bias_tile_shape = bias_b.tile_shape
+        ofm_tile_shape = ofm_b.tile_shape
+        
+        if ifm_tile_shape[0] != ofm_tile_shape[0]:
+            raise Exception(f"IFM and OFM tile shape batch size mismatch: {ifm_tile_shape[0]} != {ofm_tile_shape[0]}")
+        if wgt_tile_shape[0] != ofm_tile_shape[1] or wgt_tile_shape[0] != bias_tile_shape[1]:
+            raise Exception(f"WGT and OFM tile shape channel size mismatch: {wgt_tile_shape[0]} != {ofm_tile_shape[1]} != {bias_tile_shape[1]}")
+        if wgt_tile_shape[1] != ifm_tile_shape[1]:
+            raise Exception(f"WGT and IFM tile shape feature size mismatch: {wgt_tile_shape[1]} != {ifm_tile_shape[1]}")
+        
+        ifm_tiles: dict[tuple[int, ...], TileSignature] = {
+            (m_s, k_s, m_t, k_t): TileSignature("ifm", ifm_b, m_s, k_s, m_t, k_t)
+            for m_s in range(ifm_b.shard_grid[0])
+            for k_s in range(ifm_b.shard_grid[1])
+            for m_t in range(ifm_b.tile_grid_per_shard[0])
+            for k_t in range(ifm_b.tile_grid_per_shard[1])
+        }
+        
+        wgt_tiles: dict[tuple[int, ...], TileSignature] = {
+            (n_s, k_s, n_t, k_t): TileSignature("wgt", wgt_b, n_s, k_s, n_t, k_t)
+            for n_s in range(wgt_b.shard_grid[0])
+            for k_s in range(wgt_b.shard_grid[1])
+            for n_t in range(wgt_b.tile_grid_per_shard[0])
+            for k_t in range(wgt_b.tile_grid_per_shard[1])
+        }
+        
+        bias_tiles: dict[tuple[int, ...], TileSignature] = {
+            (0, n_s, 0, n_t): TileSignature("bias", bias_b, 0, n_s, 0, n_t)
+            for n_s in range(bias_b.shard_grid[1])
+            for n_t in range(bias_b.tile_grid_per_shard[1])
+        }
+        
+        ofm_tiles: dict[tuple[int, ...], TileSignature] = {
+            (m_s, n_s, m_t, n_t): TileSignature("ofm", ofm_b, m_s, n_s, m_t, n_t)
+            for m_s in range(ofm_b.shard_grid[0])
+            for n_s in range(ofm_b.shard_grid[1])
+            for m_t in range(ofm_b.tile_grid_per_shard[0])
+            for n_t in range(ofm_b.tile_grid_per_shard[1])
+        }
+        
+        tiled_ops = [
+            TiledOperatorSignature(
+                i_tiles=[
+                    (ifm_tiles[(m_s, k_s, m_t, k_t)], wgt_tiles[(n_s, k_s, n_t, k_t)], bias_tiles[(0, n_s, 0, n_t)]) 
+                    for k_s in range(ifm_b.shard_grid[1]) 
+                    for k_t in range(ifm_b.tile_grid_per_shard[1])
+                ],
+                o_tile=ofm_tiles[(m_s, n_s, m_t, n_t)]
+            )
+            for m_s in range(ofm_b.shard_grid[0])
+            for n_s in range(ofm_b.shard_grid[1])
+            for m_t in range(ofm_b.tile_grid_per_shard[0])
+            for n_t in range(ofm_b.tile_grid_per_shard[1])
+        ]
+        
+        return MCA_OperatorMapper(
+            core_group=core_group,
+            spad_mem_space=spad_mem_space,
+            n_inner_per_outer=ifm_b.shard_grid[1] * ifm_b.tile_grid_per_shard[1],
+            input_tile_size=ifm_b.tile_size + wgt_b.tile_size + bias_b.tile_size,
+            output_tile_size=ofm_b.tile_size,
+            tiled_ops=tiled_ops,
+        )
+        
+    def compile(self) -> CompiledMapping:
+        return CompiledMapping.from_tiled_op_mapping(
+            spad_pp_ptrs=self._spad_pp_ptrs,
+            spad_pp_size=self._spad_pp_size,
+            inner_tiled_op_per_pp=self._inner_tiled_op_per_pp,
+            mapping=TiledOperatorMapping.from_tiled_ops(self._core_group, self._tiled_ops)
+        )
+        

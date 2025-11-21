@@ -137,7 +137,6 @@ class TenstorrentConfig(dict):
             seq_len=32,
             dtype=torch.float32,
             acc_dtype=torch.float32,
-            dataflow=MXUDataflow.OS,
             op_latency_per_byte=1,
         )
         

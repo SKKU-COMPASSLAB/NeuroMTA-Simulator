@@ -113,7 +113,6 @@ class GoogleTPUConfig(dict):
             seq_len=128,  # TODO: sequence length is 128? 256? for now decide for simple tiling ...
             dtype=torch.float32,
             acc_dtype=torch.float32,
-            dataflow=MXUDataflow.OS,
             op_latency_per_byte=1,
         )
         

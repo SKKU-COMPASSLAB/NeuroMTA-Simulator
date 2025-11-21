@@ -3,15 +3,10 @@ import torch
 
 
 __all__ = [
-    "MXUDataflow",
     "MXUConfig",
     "MXUContext",
     "MXUElementwiseOp",
 ]
-
-
-class MXUDataflow(enum.Enum):
-    OS = enum.auto()  # Output Stationary
     
 
 class MXUElementwiseOp(enum.Enum):
@@ -32,7 +27,6 @@ class MXUConfig(dict):
         seq_len: int = 32,
         dtype: torch.dtype = torch.float32,
         acc_dtype: torch.dtype = torch.float32,
-        dataflow: MXUDataflow = MXUDataflow.OS,
         op_latency_per_byte: int = 1,
     ):
         super().__init__()
@@ -42,7 +36,6 @@ class MXUConfig(dict):
         self["seq_len"] = seq_len
         self["dtype"] = dtype
         self["acc_dtype"] = acc_dtype
-        self["dataflow"] = dataflow
         self["op_latency_per_byte"] = op_latency_per_byte
         
     def create_context(self) -> "MXUContext":
@@ -58,7 +51,6 @@ class MXUContext:
         seq_len: int,
         dtype: torch.dtype,
         acc_dtype: torch.dtype,
-        dataflow: MXUDataflow,
         op_latency_per_byte: int,
     ):
         self.pe_arr_height  = pe_arr_height
@@ -66,13 +58,11 @@ class MXUContext:
         self.seq_len        = seq_len
         self._dtype         = dtype
         self._acc_dtype     = acc_dtype
-        self._dataflow      = dataflow
         self.op_latency_per_byte = op_latency_per_byte
         
-        # Determine the tile shape
-        if self._dataflow == MXUDataflow.OS:
-            if self.seq_len != self.pe_arr_height:
-                raise Exception(f"The sequence length should be the same with the PE array height for OS dataflow (input output tile shape consistency)")
+        # # Determine the tile shape
+        if self.seq_len != self.pe_arr_height:
+            raise Exception(f"The sequence length should be the same with the PE array height for OS dataflow (input output tile shape consistency)")
         
         # Initialize registers
         self._pe_arr_regs: torch.Tensor = torch.zeros((self.pe_arr_height, self.pe_arr_width), dtype=self._acc_dtype)
@@ -108,46 +98,37 @@ class MXUContext:
         self._pe_arr_regs[:, :] = tile.to(dtype=self._acc_dtype)
 
     def execute_gemm(self, ifm_tile: torch.Tensor, wgt_tile: torch.Tensor=None, psum_tile: torch.Tensor=None) -> torch.Tensor:
-        if self._dataflow == MXUDataflow.OS:
-            if wgt_tile is None:
-                raise Exception("[ERROR] WGT tile must be provided for OS dataflow.")
-            if ifm_tile.shape != self.ifm_tile_shape:
-                raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ifm_tile_shape}.")
-            if wgt_tile.shape != self.wgt_tile_shape:
-                raise Exception(f"WGT tile shape {wgt_tile.shape} does not match expected shape {self.wgt_tile_shape}.")
-            
-            self._pe_arr_regs = (ifm_tile.to(dtype=self._acc_dtype) @ wgt_tile.to(dtype=self._acc_dtype)) + self._pe_arr_regs
-        else:
-            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
+        if wgt_tile is None:
+            raise Exception("[ERROR] WGT tile must be provided for OS dataflow.")
+        if ifm_tile.shape != self.ifm_tile_shape:
+            raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ifm_tile_shape}.")
+        if wgt_tile.shape != self.wgt_tile_shape:
+            raise Exception(f"WGT tile shape {wgt_tile.shape} does not match expected shape {self.wgt_tile_shape}.")
+        
+        self._pe_arr_regs = (ifm_tile.to(dtype=self._acc_dtype) @ wgt_tile.to(dtype=self._acc_dtype)) + self._pe_arr_regs
         
     def execute_maxpool(self, ifm_tile: torch.Tensor, psum_tile: torch.Tensor=None) -> torch.Tensor:
-        if self._dataflow == MXUDataflow.OS:
-            if psum_tile is not None:
-                raise Exception("[ERROR] PSUM tile must not be provided for OS dataflow.")
-            if ifm_tile.shape != self.ofm_tile_shape:
-                raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ofm_tile_shape}.")
-            
-            self._pe_arr_regs = torch.maximum(ifm_tile.to(dtype=self._acc_dtype), self._pe_arr_regs)
-        else:
-            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
+        if psum_tile is not None:
+            raise Exception("[ERROR] PSUM tile must not be provided for OS dataflow.")
+        if ifm_tile.shape != self.ofm_tile_shape:
+            raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ofm_tile_shape}.")
+        
+        self._pe_arr_regs = torch.maximum(ifm_tile.to(dtype=self._acc_dtype), self._pe_arr_regs)
 
     def execute_elemwise(self, ifm_tile: torch.Tensor, op: MXUElementwiseOp) -> torch.Tensor:
         if ifm_tile.shape != self.ofm_tile_shape:
             raise Exception(f"IFM tile shape {ifm_tile.shape} does not match expected shape {self.ofm_tile_shape}.")
 
-        if self._dataflow == MXUDataflow.OS:
-            if op == MXUElementwiseOp.ADD:
-                self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) + self._pe_arr_regs
-            elif op == MXUElementwiseOp.SUB:
-                self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) - self._pe_arr_regs
-            elif op == MXUElementwiseOp.MUL:
-                self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) * self._pe_arr_regs
-            elif op == MXUElementwiseOp.DIV:
-                self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) / self._pe_arr_regs
-            else:
-                raise Exception(f"Unsupported elementwise operation: {op}.")
+        if op == MXUElementwiseOp.ADD:
+            self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) + self._pe_arr_regs
+        elif op == MXUElementwiseOp.SUB:
+            self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) - self._pe_arr_regs
+        elif op == MXUElementwiseOp.MUL:
+            self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) * self._pe_arr_regs
+        elif op == MXUElementwiseOp.DIV:
+            self._pe_arr_regs = ifm_tile.to(dtype=self._acc_dtype) / self._pe_arr_regs
         else:
-            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
+            raise Exception(f"Unsupported elementwise operation: {op}.")
         
     @property
     def acc_dtype(self) -> torch.dtype:
@@ -156,10 +137,6 @@ class MXUContext:
     @property
     def dtype(self) -> torch.dtype:
         return self._dtype
-    
-    @property
-    def dataflow(self) -> MXUDataflow:
-        return self._dataflow
         
     @property
     def pe_arr_shape(self) -> tuple[int, int]:
@@ -167,24 +144,15 @@ class MXUContext:
         
     @property
     def m_tile(self) -> int:
-        if self._dataflow == MXUDataflow.OS:
-            return self.pe_arr_height
-        else:
-            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
+        return self.pe_arr_height
         
     @property
     def n_tile(self) -> int:
-        if self._dataflow == MXUDataflow.OS:
-            return self.pe_arr_width
-        else:
-            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
+        return self.pe_arr_width
         
     @property
     def k_tile(self) -> int:
-        if self._dataflow == MXUDataflow.OS:
-            return self.seq_len
-        else:
-            raise Exception(f"Unsupported MXU dataflow: {self._dataflow}.")
+        return self.seq_len
     
     @property
     def ifm_tile_numel(self) -> int:

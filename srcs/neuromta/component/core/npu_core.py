@@ -5,7 +5,7 @@ from neuromta.framework import *
 from neuromta.component.context.global_context import GlobalContext, GlobalContextMemType, GlobalContextCoreType
 from neuromta.component.context.icnt_context import IcntContext
 from neuromta.component.context.vpu_context import VPUConfig, VPUOperator
-from neuromta.component.context.mxu_context import MXUConfig, MXUDataflow, MXUElementwiseOp
+from neuromta.component.context.mxu_context import MXUConfig, MXUElementwiseOp
 
 
 __all__ = [

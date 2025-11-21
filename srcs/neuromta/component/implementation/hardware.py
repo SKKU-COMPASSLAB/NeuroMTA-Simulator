@@ -56,6 +56,7 @@ class MCA_MemorySpace:
         self._device = device
         self._mem_type = mem_type
         self._owner_ids = owner_ids
+        self._size_per_owner = size_per_owner
         self._owner_id_to_mem_id_mappings: dict[int, int] = {}
         self._mem_id_to_stack_id_mappings: dict[int, int] = {}
         
@@ -114,6 +115,10 @@ class MCA_MemorySpace:
     @property
     def owner_ids(self) -> Sequence[int] | MCA_CoreGroup:
         return self._owner_ids
+    
+    @property
+    def size_per_owner(self) -> int:
+        return self._size_per_owner
 
 class MCA_MainMemorySpace(MCA_MemorySpace):
     def __init__(self, device: 'MCA_DeviceBase', size_per_channel: int, channel_ids: Sequence[int]=None,):

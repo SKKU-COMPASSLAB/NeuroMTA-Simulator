@@ -28,6 +28,8 @@ __all__ = [
     "Core",
     
     "jit_prototype",
+    "check_jit_prototype",
+    
     "core_command_method",
     "core_conditional_command_method",
     "new_parallel_thread",
@@ -132,6 +134,9 @@ def get_global_current_parent_kernel_callstack() -> tuple[GlobalContextMode, 'Co
 # Decorators for Command and Kernel Methods
 #################################################
 
+def check_jit_prototype(_func: Callable) -> bool:
+    return hasattr(_func, "_is_jit_prototype") and _func._is_jit_prototype
+
 def jit_prototype(_func: Callable):
     @functools.wraps(_func)
     def __jit_prototype_wrapper(core: 'Core', *_args, **_kwargs) -> KernelPrototype:
@@ -142,6 +147,7 @@ def jit_prototype(_func: Callable):
             kernel_context.add_execution_step(prototype)
         
         return prototype
+    __jit_prototype_wrapper._is_jit_prototype = True  # mark this function as a jit prototype
     return __jit_prototype_wrapper
 
 def core_command_method(_func: Callable):
