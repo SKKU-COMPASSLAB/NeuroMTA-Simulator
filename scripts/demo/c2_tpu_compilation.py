@@ -5,7 +5,7 @@ from typing import Any, Sequence, Dict, List
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mta.tenstorrent import *
+from neuromta.system.mca.google_tpu import *
 
 
 class TileSignature:
@@ -383,7 +383,7 @@ class CompiledMapping:
             for i, p in self.operators.items()
         }
         
-        
+
 def linear_os_compute_cmd(core: NPUCore, compute_cmd: CompiledCommand.TILED_OP, debug_output: bool=False):
     op_sig = compute_cmd.op_sig
     inner_op_idx = compute_cmd.inner_op_idx
@@ -501,17 +501,17 @@ if __name__ == "__main__":
     torch.set_printoptions(linewidth=1024)
     logger.set_print_options(log_level=LogLevel.DEBUG)
     
-    config = TenstorrentConfig.BLACKHOLE()
-    device = TenstorrentDevice(**config)
+    config = GoogleTPUConfig.V4()
+    device = GoogleTPUDevice(**config)
     
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_grid = device.get_npu_core_group((0, 0), (2, 2))
+    core_group = device.get_npu_core_group(0, 1)
     
     M, N, K = 512, 512, 512
-    Ms, Ns, Ks = 4, 4, 4
-    Mt, Nt, Kt = 32, 32, 32
+    Ms, Ns, Ks = 2, 2, 2
+    Mt, Nt, Kt = 128, 128, 128
     dtype = torch.int8
     acc_dtype = torch.int32
     
@@ -530,23 +530,23 @@ if __name__ == "__main__":
     bias_tile_size = Nt * acc_dtype.itemsize
     ofm_tile_size  = Mt * Nt * acc_dtype.itemsize
     
-    ifm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_grid)
+    ifm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
     param_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-    ofm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_grid)
-    space_pp_space  = device.create_l1_mem_space(parse_mem_cap_str("128KB"), core_group=core_grid)
+    ofm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
+    space_pp_space  = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks), blocked_mapping=True).tiling(tile_shape=(Mt, Kt)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)                      ).tiling(tile_shape=(Nt, Kt)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns)                      ).tiling(tile_shape=(1,  Nt)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns), blocked_mapping=True).tiling(tile_shape=(Mt, Nt)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks)).tiling(tile_shape=(Mt, Kt)).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)).tiling(tile_shape=(Nt, Kt)).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns)).tiling(tile_shape=(1,  Nt)).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns)).tiling(tile_shape=(Mt, Nt)).allocate()
     
-    spad_pp_size = parse_mem_cap_str("64KB")
+    spad_pp_size = parse_mem_cap_str("1MB")
     spad_pp_ptrs = {
         core_id: (
             space_pp_space.allocate(core_id=core_id, size=spad_pp_size),
             space_pp_space.allocate(core_id=core_id, size=spad_pp_size),
         )
-        for core_id in core_grid.core_ids
+        for core_id in core_group.core_ids
     }
     
     _n_inner_per_outer = ifm_b.tile_grid[1]  # number of total Kt tiles
@@ -601,7 +601,7 @@ if __name__ == "__main__":
     ]
     
     tiled_ops_mapping = TiledOperatorMapping.os_mapping(
-        core_group=core_grid,
+        core_group=core_group,
         tiled_ops=tiled_ops
     )
     
@@ -612,15 +612,13 @@ if __name__ == "__main__":
         mapping=tiled_ops_mapping
     )
     
-    compiled_mapping.apply_broadcast_optimization()
-    
     for core_id, operator in compiled_mapping.operators.items():
         core = device.get_npu_core(core_id=core_id)
         kernel = main(core, operator)
         kernel.dispatch("MAIN")
         
     with MonitoringWindow() as monitor:
-        for core_id in core_grid.core_ids:
+        for core_id in core_group.core_ids:
             core = device.get_npu_core(core_id=core_id)
             pbar_idx = monitor.add_core_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
             monitor.pbar_handles[pbar_idx].bind_core(core)

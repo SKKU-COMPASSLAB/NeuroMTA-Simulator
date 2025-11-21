@@ -5,7 +5,7 @@ from typing import Sequence
 
 from neuromta.framework import *
 from neuromta.component.context.global_context import *
-from neuromta.component.implementation.common.hardware import *
+from neuromta.component.implementation.hardware import *
 
 
 class MCA_TensorBuffer:

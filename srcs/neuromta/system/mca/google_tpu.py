@@ -27,11 +27,13 @@ class GoogleTPUConfig(dict):
         
         processor_clock_freq: int,
         global_config: GlobalContextConfig,
+        icnt_config: IcntConfig,
         mxu_config: MXUConfig,
         vpu_config: VPUConfig, 
     ):
         self["processor_clock_freq"] = processor_clock_freq
         self["global_config"] = global_config
+        self["icnt_config"] = icnt_config
         self["mxu_config"] = mxu_config
         self["vpu_config"] = vpu_config
         
@@ -46,6 +48,7 @@ class GoogleTPUConfig(dict):
         
         n_dma_core = n_main_mem_channels
         n_npu_core = 2
+        icnt_shape = (2, max(n_dma_core, n_npu_core))
         
         if PYDRAMSIM3_AVAILABLE:
             dramsim3_config_path    = GOOGLE_TPU_IP_DRAMSIM_CONFIG_FMT(config_name=config_name)
@@ -82,6 +85,14 @@ class GoogleTPUConfig(dict):
             dramsim3_config=dramsim3_config,
         )
         
+        icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
+            shape=icnt_shape,                       # - 12x16 torus
+            subnets=2,                              # - 2 subnets (full-duplex)
+            flit_size=parse_mem_cap_str("32B"),     # - 32B flit size (the unit of flow control)
+            max_payload_size=256,                   # - 256 in flits in maximum as a payload = 8KB
+            booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 32B * 2 * 1GHz = 64GB/s
+        )
+        
         global_config = GlobalContextConfig(
             n_npu_core=n_npu_core,
             n_main_mem_channel=n_main_mem_channels,
@@ -91,13 +102,18 @@ class GoogleTPUConfig(dict):
             main_mem_config=main_mem_config,
         )
         
+        for i, n in enumerate(global_config.npu_core_ids):
+            icnt_config.update_core_map(coord=(0, i), core_id=n)
+        for i, n in enumerate(global_config.dma_core_ids):
+            icnt_config.update_core_map(coord=(1, i), core_id=n)
+        
         mxu_config = MXUConfig(
             pe_arr_height=128,
             pe_arr_width=128,
             seq_len=128,  # TODO: sequence length is 128? 256? for now decide for simple tiling ...
             dtype=torch.float32,
             acc_dtype=torch.float32,
-            dataflow=MXUDataflow.WS,
+            dataflow=MXUDataflow.OS,
             op_latency_per_byte=1,
         )
         
@@ -116,12 +132,13 @@ class GoogleTPUConfig(dict):
         return cls(
             processor_clock_freq=processor_clock_freq,
             global_config=global_config,
+            icnt_config=icnt_config,
             mxu_config=mxu_config,
             vpu_config=vpu_config,
         )
 
 class GoogleTPUDevice(MCA_DeviceBase):
-    def __init__(self, processor_clock_freq, global_config, mxu_config, vpu_config):
-        super().__init__(global_config, None, mxu_config, vpu_config)
+    def __init__(self, processor_clock_freq, global_config, icnt_config, mxu_config, vpu_config):
+        super().__init__(global_config, icnt_config, mxu_config, vpu_config)
         
         self.processor_clock_freq = processor_clock_freq
