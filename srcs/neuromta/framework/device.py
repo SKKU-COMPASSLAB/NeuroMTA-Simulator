@@ -108,6 +108,9 @@ class Device:
                 remaining_cycles = c
             elif c is not None:
                 remaining_cycles = min(remaining_cycles, c)
+                
+        # if remaining_cycles == 0 or remaining_cycles is None:
+        #     remaining_cycles = cycle_resolution
 
         if remaining_cycles == 0 or remaining_cycles is None:
             remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()

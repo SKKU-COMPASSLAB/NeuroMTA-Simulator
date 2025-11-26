@@ -30,10 +30,12 @@ class MCA_Operator:
             raise ValueError(f"Method '{self._method.__name__}' is not a valid JIT prototype.")
         
         self._is_dispatched = False
+        
+        self._pipelined_ops: list[MCA_Operator] = []
             
     def dispatch(self, slot_id: str="MAIN"):
         if self._is_dispatched:
-            raise RuntimeError("Operator has already been dispatched on the device.")
+            return self  # already dispatched
         
         try:
             for core_id, operator in self._compiled_mapping.operators.items():
@@ -47,14 +49,35 @@ class MCA_Operator:
         except Exception as e:
             raise RuntimeError(f"Failed to dispatch operator on device at slot '{slot_id}': {str(e)}") from e
         
+        for op in self._pipelined_ops:
+            if op.is_dispatched:
+                continue
+            
+            op.dispatch(slot_id)
+        
+        return self
+    
+    def pipeline(self, dst_op: 'MCA_Operator', src_buf_name: str, dst_buf_name: str):
+        self.compiled_mapping.apply_pipeline_optimization(
+            dst_mapping=dst_op.compiled_mapping,
+            src_buf_name=src_buf_name,
+            dst_buf_name=dst_buf_name
+        )
+        
+        self._pipelined_ops.append(dst_op)
+        
         return self
     
     def summary(self) -> dict:
-        return self._compiled_mapping.summary()
+        return self.compiled_mapping.summary()
     
     @property
     def is_dispatched(self) -> bool:
         return self._is_dispatched
+    
+    @property
+    def compiled_mapping(self) -> CompiledMapping:
+        return self._compiled_mapping
         
         
 def MCA_OP_LINEAR(
@@ -95,7 +118,7 @@ def MCA_OP_LINEAR(
     operator = MCA_Operator(
         device=device, 
         compiled_mapping=mapping, 
-        method="MCA_KERNEL_CORE_OP_LINEAR"
+        method=mca_kernel_lib.MCA_KERNEL_CORE_OP_LINEAR
     )
     
     if auto_dispatch:

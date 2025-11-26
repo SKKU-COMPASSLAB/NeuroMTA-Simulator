@@ -238,11 +238,11 @@ class CompiledCommand:
         
 class CompiledStage:
     def __init__(self):
-        self.preprocessings:  list[list[CompiledCommand._Base]]                                   = []
-        self.dma_stores:      list[CompiledCommand.TILE_STORE | CompiledCommand.MEM_INIT]   = []  # THREAD 0 STEP 1: Store output tiles from SPAD to memory
-        self.dma_loads:       list[CompiledCommand.TILE_LOAD  | CompiledCommand.MEM_INIT]   = []  # THREAD 0 STEP 2: Load input tiles from memory to SPAD 
-        self.compute_ops:     list[CompiledCommand.TILED_OP]                                = []  # THREAD 1:        Compute tiled operations in SPAD
-        self.postprocessings: list[list[CompiledCommand._Base]]                              = []
+        self.preprocessings:  list[list[CompiledCommand._Base]]     = []
+        self.dma_stores:      list[CompiledCommand._Base]           = []  # THREAD 0 STEP 1: Store output tiles from SPAD to memory
+        self.dma_loads:       list[CompiledCommand._Base]           = []  # THREAD 0 STEP 2: Load input tiles from memory to SPAD 
+        self.compute_ops:     list[CompiledCommand._Base]           = []  # THREAD 1:        Compute tiled operations in SPAD
+        self.postprocessings: list[list[CompiledCommand._Base]]     = []
         
     def summary(self) -> dict[str, list[str]]:
         return {
@@ -388,15 +388,15 @@ class CompiledMapping:
             
         return CompiledMapping(mapping=mapping, operators=operators, var_globals=var_globals)
     
-    def apply_broadcast_optimization(self, buf_targets: list[str]=None):
+    def apply_broadcast_optimization(self, buf_targets: list[str]=None, n_max_bcast_bursts: int=4):
         n_stages = max([len(op.stages) for op in self.operators.values()])
-        # barrier_targets: dict[int, list[int]] = {}
         core_ids = list(self.operators.keys())
         
-        rr_cnt = 0
+        barrier_target_stages: list[int] = []
         
         for stage_idx in range(n_stages):
-            bcast_targets: dict[tuple[str, tuple[int, ...]], list[tuple[int, CompiledOperator, CompiledCommand.TILE_LOAD, int]]] = {}
+            current_bcast_targets: dict[tuple[str, tuple[int, ...]], list[tuple[int, CompiledOperator, CompiledCommand.TILE_LOAD, int, TileSignature]]] = {}
+            cached_bcast_targets: list[list[tuple[int, CompiledOperator, CompiledCommand.TILE_LOAD, int, TileSignature]]] = []
             
             for core_id in core_ids:
                 op = self.operators[core_id]
@@ -414,24 +414,40 @@ class CompiledMapping:
                         continue
                     
                     key = (cmd.tile_sig.buf_name, cmd.tile_sig.coords)
-                    if key not in bcast_targets:
-                        bcast_targets[key] = [(core_id, op, cmd, cmd_idx)]
-                    else:
-                        bcast_targets[key].append((core_id, op, cmd, cmd_idx))
-                            
-            for target_list in bcast_targets.values():
-                if len(target_list) > 1:
-                    src_core_id, src_op, src_cmd, src_cmd_idx = target_list[rr_cnt % len(target_list)]
-                    rr_cnt += 1
                     
-                    for dst_core_id, dst_op, dst_cmd, dst_cmd_idx in target_list:
+                    if key not in current_bcast_targets:
+                        current_bcast_targets[key] = [(core_id, op, cmd, cmd_idx, cmd.tile_sig)]
+                    elif len(current_bcast_targets[key]) >= n_max_bcast_bursts:
+                        cached_bcast_targets.append(current_bcast_targets[key])
+                        current_bcast_targets[key] = [(core_id, op, cmd, cmd_idx, cmd.tile_sig)]
+                    else:
+                        current_bcast_targets[key].append((core_id, op, cmd, cmd_idx, cmd.tile_sig))
+            
+            load_balance_cnt: dict[int, int] = {core_id: 0 for core_id in core_ids}
+            
+            for target_list in current_bcast_targets.values():
+                cached_bcast_targets.append(target_list)
+                    
+            for target_list in cached_bcast_targets:
+                if len(target_list) > 1:
+                    src_core_id, src_op, src_cmd, src_cmd_idx, src_tile_sig = min(target_list, key=lambda item: load_balance_cnt[item[0]])
+                    load_balance_cnt[src_core_id] += len(target_list) * src_tile_sig.buf.tile_size
+                    
+                    for dst_core_id, dst_op, dst_cmd, dst_cmd_idx, dst_tile_sig in target_list:
                         if src_core_id == dst_core_id:
                             continue
                         
                         src_cmd.add_broadcast_dst_ptr(dst_ptr=dst_cmd.tile_sig.spm_ptr)
                         dst_op.stages[stage_idx].dma_loads[dst_cmd_idx] = CompiledCommand.NOP()
                     
-        for stage_idx in range(n_stages):
+                    if stage_idx not in barrier_target_stages:
+                        barrier_target_stages.append(stage_idx)
+            
+            # print(f"[Broadcast Optimization] Stage {stage_idx}: Load balance counts:")
+            # for core_id in core_ids:
+            #     print(f"  Core {core_id}: {load_balance_cnt[core_id]} loads after optimization.")
+        
+        for stage_idx in barrier_target_stages:
             target_core_ids = core_ids
             master_core_id = target_core_ids[0]
             

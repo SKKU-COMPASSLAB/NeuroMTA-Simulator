@@ -39,35 +39,37 @@ def MCA_KERNEL_CORE_STAGE_POSTPROCESSING(core: NPUCore, operator: CompiledOperat
     
     core.parallel_merge()
 
+@jit_prototype
 def MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
-    for store_cmd in stage.dma_stores:
-        if isinstance(store_cmd, CompiledCommand.NOP):
+    for cmd in stage.dma_stores:
+        if isinstance(cmd, CompiledCommand.NOP):
             continue
-        elif isinstance(store_cmd, CompiledCommand.MEM_INIT):
-            core.local_mem_init(store_cmd.ptr, store_cmd.size)
-        elif isinstance(store_cmd, CompiledCommand.TILE_STORE):
-            tile_sig = store_cmd.tile_sig
+        elif isinstance(cmd, CompiledCommand.MEM_INIT):
+            core.local_mem_init(cmd.ptr, cmd.size)
+        elif isinstance(cmd, CompiledCommand.TILE_STORE):
+            tile_sig = cmd.tile_sig
             dst_ptr, row_size, row_num, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_write_args(*tile_sig.coords)
             
             core.local_mem_copy(dst_ptr, tile_sig.spm_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
             core.mem_init(tile_sig.spm_ptr, tile_sig.buf.tile_size)
         else:
-            raise NotImplementedError(f"DMA Store command {type(store_cmd)} is not implemented.")
+            raise NotImplementedError(f"DMA Store command {type(cmd)} is not implemented.")
     
     core.async_rpc_wait_all()
 
+@jit_prototype
 def MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
-    for load_cmd in stage.dma_loads:
-        if isinstance(load_cmd, CompiledCommand.NOP):
+    for cmd in stage.dma_loads:
+        if isinstance(cmd, CompiledCommand.NOP):
             continue
-        elif isinstance(load_cmd, CompiledCommand.MEM_INIT):
-            core.local_mem_init(load_cmd.ptr, load_cmd.size)
-        elif isinstance(load_cmd, CompiledCommand.TILE_LOAD):
-            tile_sig = load_cmd.tile_sig
+        elif isinstance(cmd, CompiledCommand.MEM_INIT):
+            core.local_mem_init(cmd.ptr, cmd.size)
+        elif isinstance(cmd, CompiledCommand.TILE_LOAD):
+            tile_sig = cmd.tile_sig
             src_ptr, row_size, row_num, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_read_args(*tile_sig.coords)
             
-            if len(load_cmd.broadcast_dst_ptrs) > 0:  # BROADCAST: broadcast optimization
-                target_ptrs = load_cmd.broadcast_dst_ptrs + [tile_sig.spm_ptr,]
+            if len(cmd.broadcast_dst_ptrs) > 0:  # BROADCAST: broadcast optimization
+                target_ptrs = cmd.broadcast_dst_ptrs + [tile_sig.spm_ptr,]
                 for ptr in target_ptrs:
                     core.mem_init(ptr, tile_sig.buf.tile_size)
                 core.local_mem_broadcast(target_ptrs, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
@@ -75,17 +77,18 @@ def MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core: NPUCore, operator: CompiledOperat
                 core.mem_init(tile_sig.spm_ptr, tile_sig.buf.tile_size)
                 core.local_mem_copy(tile_sig.spm_ptr, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
         else:
-            raise NotImplementedError(f"DMA Load command {type(load_cmd)} is not implemented.")
+            raise NotImplementedError(f"DMA Load command {type(cmd)} is not implemented.")
         
     core.async_rpc_wait_all()
 
+@jit_prototype
 def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
-    for compute_cmd in stage.compute_ops:
-        if not isinstance(compute_cmd, CompiledCommand.TILED_OP):
-            raise NotImplementedError(f"Compute command {type(compute_cmd)} is not implemented.")
+    for cmd in stage.compute_ops:
+        if not isinstance(cmd, CompiledCommand.TILED_OP):
+            raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
         
-        op_sig = compute_cmd.op_sig
-        inner_op_idx = compute_cmd.inner_op_idx
+        op_sig = cmd.op_sig
+        inner_op_idx = cmd.inner_op_idx
         
         ifm_sig = op_sig.i_tiles[inner_op_idx][0]
         wgt_sig = op_sig.i_tiles[inner_op_idx][1]

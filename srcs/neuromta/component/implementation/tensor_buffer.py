@@ -55,7 +55,7 @@ class MCA_TensorBuffer:
         # Memory Owners and Layout
         self._blocked_mapping = blocked_mapping
         if self._blocked_mapping and not isinstance(self.owner_ids, MTA_CoreGrid):
-            raise ValueError("Blocked mapping requires mem_ids to be of type MTA_CoreGrid.")
+            self._blocked_mapping = False  # fallback to non-blocked mapping if mem_ids is not MTA_CoreGrid
         
         self._shard_size = self._shard_y * self._shard_x * self._dtype.itemsize
         self._shard_ptrs: list[list[Pointer]] = [[
