@@ -5,7 +5,9 @@ __all__ = ["LockHandle", "VariableHandle"]
 
 
 class LockHandle:
-    def __init__(self):
+    def __init__(self, handle_name: str="UNKNOWN"):
+        self.handle_name = handle_name
+        
         self._owner: Any = None
         self._history: list[tuple[Any, Callable]] = []
         
@@ -26,10 +28,15 @@ class LockHandle:
             callback()
         else:
             self._owner = None
-            
+    
+    def __str__(self):
+        return f"LockHandle(name={self.handle_name}, owner={self._owner})"
+    
 
 class VariableHandle:
-    def __init__(self, initial_value: int):
+    def __init__(self, handle_name: str="UNKNOWN", initial_value: int=0):
+        self.handle_name = handle_name
+        
         self._value: int = initial_value
         self._actions: dict[int, list[Callable]] = {}
     
@@ -37,7 +44,8 @@ class VariableHandle:
         if self._value in self._actions:
             for action in self._actions[self._value]:
                 action()
-            del self._actions[self._value]
+            if self._value in self._actions:
+                del self._actions[self._value]
             
     def atomic_update(self, value: int):
         self._value = value
@@ -82,3 +90,6 @@ class VariableHandle:
     @value.setter
     def value(self, new_value: int):
         self.atomic_update(new_value)
+        
+    def __str__(self):
+        return f"VariableHandle(name={self.handle_name}, value={self._value})"

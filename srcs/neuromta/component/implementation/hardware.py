@@ -289,6 +289,9 @@ class MTA_CoreGrid(MCA_CoreGroup):
         self.offset = offset
         self.shape = shape
         
+    def lower(self) -> MCA_CoreGroup:
+        return MCA_CoreGroup(self.core_ids)
+        
     def __getitem__(self, idx: int) -> int:
         if isinstance(idx, tuple):
             grid = torch.arange(len(self.core_ids)).view(self.shape)

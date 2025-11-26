@@ -20,15 +20,14 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
-    M, N, K = 512, 512, 512
-    Ms, Ns, Ks = 4, 4, 4
-    Mt, Nt, Kt = 32, 32, 32
-    dtype = torch.int8
+    M, N, K = 504, 504, 504
+    Ms, Ns, Ks = 8, 8, 8
+    dtype = torch.int32
     acc_dtype = torch.int32
     
-    ifm  = torch.arange(M * K, dtype=dtype).reshape(M, K)
-    wgt  = torch.arange(N * K, dtype=dtype).reshape(N, K)
-    bias = torch.arange(N, dtype=acc_dtype)
+    ifm  = torch.randint(low=0, high=128, size=(M, K), dtype=dtype)
+    wgt  = torch.randint(low=0, high=128, size=(N, K), dtype=dtype)
+    bias = torch.randint(low=0, high=256, size=(N,), dtype=acc_dtype)
     ofm  = torch.zeros((M, N), dtype=acc_dtype)
     
     ifm_size  = ifm.numel() * ifm.dtype.itemsize
@@ -36,22 +35,23 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    ifm_tile_size  = Mt * Kt * dtype.itemsize
-    wgt_tile_size  = Nt * Kt * dtype.itemsize
-    bias_tile_size = Nt * acc_dtype.itemsize
-    ofm_tile_size  = Mt * Nt * acc_dtype.itemsize
-    
     ifm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
     param_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     ofm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
-    spad_pp_space   = device.create_l1_mem_space(parse_mem_cap_str("256KB"), core_group=core_group)
+    spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("192KB"), core_group=core_group)
+    spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks)).tiling(tile_shape=(Mt, Kt)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)).tiling(tile_shape=(Nt, Kt)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns)).tiling(tile_shape=(1,  Nt)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns)).tiling(tile_shape=(Mt, Nt)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks), blocked_mapping=False).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)                      ).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns)                      ).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns), blocked_mapping=False).allocate()
     
-    operator = MCA_LINEAR(core_group, spad_pp_space, ifm_b, wgt_b, bias_b, ofm_b).dispatch(device)
+    operator = MCA_OP_LINEAR(device, core_group, spad_ld_pp_space, spad_st_pp_space, ifm_b, wgt_b, bias_b, ofm_b, broadcast_optimize=True, auto_dispatch=True)
+    
+    tmp_ouput_path = os.path.join(os.curdir, ".tmp", "pipelined_mapping.json")
+    with open(tmp_ouput_path, "w") as f:
+        json.dump(operator.summary(), f, indent=4)
+        logger.info(f"Pipelined mapping summary saved to '{tmp_ouput_path}'.")
         
     with MonitoringWindow() as monitor:
         for core_id in core_group.core_ids:
@@ -62,11 +62,6 @@ if __name__ == "__main__":
         st = time.time()
         device.run_kernels()
         ed = time.time()
-        
-    tmp_ouput_path = os.path.join(os.curdir, ".tmp", "pipelined_mapping.json")
-    with open(tmp_ouput_path, "w") as f:
-        json.dump(operator.summary(), f, indent=4)
-        logger.info(f"Pipelined mapping summary saved to '{tmp_ouput_path}'.")
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
@@ -81,3 +76,16 @@ if __name__ == "__main__":
     print(f"simulated:\n{simulated}")
     print(f"reference:\n{reference}")
     print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
+    
+    if not torch.equal(simulated, reference):
+        mismatch_report = os.path.join(os.curdir, ".tmp", "mismatch_report.txt")
+        with open(mismatch_report, "w") as f:
+            content = []
+            for i in range(M):
+                for j in range(N):
+                    sim_val = simulated[i, j].item()
+                    ref_val = reference[i, j].item()
+                    if sim_val != ref_val:
+                        content.append(f"Mismatch at position ({i}, {j}): simulated={sim_val}, reference={ref_val}\n")
+            f.writelines(content)
+        logger.error(f"Mismatch report saved to '{mismatch_report}'.")

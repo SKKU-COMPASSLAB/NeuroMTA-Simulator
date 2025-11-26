@@ -35,10 +35,8 @@ class DataContainer(Generic[T]):
     @data.setter
     def data(self, value: T):
         if isinstance(value, torch.Tensor):
-            if self._dtype is not None:
-                value = value.flatten().view(self._dtype)
-            if self._shape is not None:
-                value = value.reshape(self._shape)
+            self._dtype = value.dtype
+            self._shape = tuple(value.size())
         
         self._data = value
         

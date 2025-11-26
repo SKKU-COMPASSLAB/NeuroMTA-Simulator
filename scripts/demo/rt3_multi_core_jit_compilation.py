@@ -10,10 +10,11 @@ from neuromta.system.mta.tenstorrent import *
 def main(core: NPUCore, t: MCA_TensorBuffer, spm_ptr: int, y_s: int, x_s: int, y_t: int, x_t: int):
     container = DataContainer(shape=t.tile_shape, dtype=t.dtype)
     
-    src_ptr, src_size, src_row_size, src_row_stride, dst_row_stride = t.get_tile_ptr_read_args(y_s, x_s, y_t, x_t)
+    src_ptr, row_size, row_num, src_row_stride, dst_row_stride = t.get_tile_ptr_read_args(y_s, x_s, y_t, x_t)
     
-    core.local_mem_copy(spm_ptr, src_ptr, size=src_size, src_row_size=src_row_size, src_row_stride=src_row_stride, dst_row_stride=dst_row_stride)
-    core.local_mem_page_read(spm_ptr, t.tile_size, container, mem_row_size=t.tile_shape[1] * t.dtype.itemsize)
+    core.local_mem_init(spm_ptr, size=t.tile_size)
+    core.local_mem_copy(spm_ptr, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=False)
+    core.local_mem_page_read(spm_ptr, container, t.tile_size)
     
     core.debug_core_with_ambiguous_func(
         lambda container: logger.info(f"CORE: {core.core_id} tile ({y_s}, {x_s}, {y_t}, {x_t}):\n{container.data.flatten().view(t.dtype).reshape(t.tile_shape)}"),

@@ -3,7 +3,7 @@ import sys
 import shutil
 from typing import Sequence, Callable  #, Any
 
-from neuromta.framework.core import Core, Kernel, Command, RPCMessage
+from neuromta.framework.core import Core, Kernel, Command, RPCMessage, ThreadGroup
 from neuromta.framework.companion import CompanionCore
 from neuromta.framework.logger import logger
 
@@ -145,6 +145,30 @@ class Device:
             # break condition: timestamp
             if self.timestamp >= max_timestamp > 0:
                 logger.info(f"Reached maximum timestamp: {max_timestamp}. Stopping simulation.")
+                for core_id in core_ids:
+                    core = self.initialized_cores[core_id]
+                    if len(core._dispatched_main_kernels) == 0:
+                        continue
+                    logger.info(f"Core '{core_id}'")
+                    for slot_id, kernel in core._dispatched_main_kernels.items():
+                        logger.info(f"  KERNEL {kernel.callstack}")
+                        step = kernel.current_step(core)
+                        
+                        def print_step_info(step):
+                            if isinstance(step, Kernel):
+                                if step.is_finished(core):
+                                    return
+                                logger.info(f"    calls KERNEL {step.callstack}")
+                                print_step_info(step.current_step(core))
+                            elif isinstance(step, ThreadGroup):
+                                for sub_step in step:
+                                    if not sub_step.is_finished(core):
+                                        logger.info(f"    calls THREAD {sub_step.callstack}" + (" (blocked)" if sub_step.is_blocked else ""))
+                                        print_step_info(sub_step.current_step(core))
+                            else:
+                                logger.info(f"     -> COMMAND {step}")
+                        
+                        print_step_info(step)
                 break
 
     def register_command_debug_hook(self, hook: Callable):

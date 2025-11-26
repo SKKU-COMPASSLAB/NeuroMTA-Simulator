@@ -41,14 +41,14 @@ def main(
             bias_tile_ptr = bias_ptr + n_t * o_row_tile_size
             ofm_tile_ptr  = ofm_ptr + (m_t * 32 * o_row_stride) + (n_t * o_row_tile_size)
             
-            core.local_mem_page_read(bias_tile_ptr, o_row_tile_size, containers[2])
+            core.local_mem_page_read(bias_tile_ptr, containers[2], o_row_tile_size)
             
             for k_t in range(k_tile):
                 ifm_tile_ptr = ifm_ptr + (m_t * 32 * i_row_stride) + (k_t * i_row_tile_size)
                 wgt_tile_ptr = wgt_ptr + (n_t * 32 * i_row_stride) + (k_t * i_row_tile_size)
                 
-                core.local_mem_page_read(ifm_tile_ptr, i_row_stride * 32, containers[0], mem_row_size=i_row_tile_size, mem_row_stride=i_row_stride)
-                core.local_mem_page_read(wgt_tile_ptr, i_row_stride * 32, containers[1], mem_row_size=i_row_tile_size, mem_row_stride=i_row_stride)  # same access pattern with IFM
+                core.local_mem_page_read(ifm_tile_ptr, containers[0], i_row_tile_size, 32, i_row_stride)
+                core.local_mem_page_read(wgt_tile_ptr, containers[1], i_row_tile_size, 32, i_row_stride)  # same access pattern with IFM
                 
                 preload_psum = (k_t == 0)
                 flush_ofm    = (k_t == (k_tile - 1))
@@ -63,7 +63,7 @@ def main(
                     psum_vectored=True,     # TODO: assume taht the psum is a bias vector, not the partial sum matrix
                 )
             
-            core.local_mem_page_write(ofm_tile_ptr, o_row_stride * 32, containers[3], mem_row_size=o_row_tile_size, mem_row_stride=o_row_stride)
+            core.local_mem_page_write(ofm_tile_ptr, containers[3], o_row_tile_size, 32, o_row_stride)
 
 
 if __name__ == "__main__":

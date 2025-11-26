@@ -9,7 +9,7 @@ from neuromta.system.mta.tenstorrent import *
 def main(core: NPUCore, main_in_ptrs: list[Pointer], main_out_ptrs: list[Pointer], l1_ptrs: list[Pointer], size: int, burst_count: int = 4):
     for i in range(burst_count):
         with new_parallel_thread():
-            core.local_mem_copy(l1_ptrs[i], main_in_ptrs[i], size=size, nowait=True)  # does not wait for the NoC and DRAM transactions
+            core.local_mem_copy(l1_ptrs[i], main_in_ptrs[i], size, nowait=True)  # does not wait for the NoC and DRAM transactions
             
     core.parallel_merge()
     core.async_rpc_wait_all()  # wait for all the NoC and DRAM transactions to complete
@@ -17,7 +17,7 @@ def main(core: NPUCore, main_in_ptrs: list[Pointer], main_out_ptrs: list[Pointer
     
     for i in range(burst_count):
         with new_parallel_thread():
-            core.local_mem_copy(main_out_ptrs[i], l1_ptrs[i], size=size, nowait=True)  # does not wait for the NoC and DRAM transactions
+            core.local_mem_copy(main_out_ptrs[i], l1_ptrs[i], size, nowait=True)  # does not wait for the NoC and DRAM transactions
     
     core.parallel_merge()
     core.async_rpc_wait_all()  # wait for all the NoC and DRAM transactions to complete

@@ -7,52 +7,83 @@ from neuromta.component.implementation.mapping import *
 
 
 __all__ = [
-    # KERNEL CORE STAGE
-    "MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST",
-    "MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST",
-    "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR",
-    
     # KERNEL CORE OP
     "MCA_KERNEL_CORE_OP_LINEAR",
 ]
 
-
 @jit_prototype
-def MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST(core: NPUCore, stage: CompiledStage):
-    for store_cmd in stage.dma_stores:
-        tile_sig = store_cmd.tile_sig
-        dst_ptr, src_size, src_row_size, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_write_args(*tile_sig.coords)
-        core.local_mem_copy(dst_ptr, tile_sig.spm_ptr, size=src_size, src_row_size=src_row_size, src_row_stride=src_row_stride, dst_row_stride=dst_row_stride, nowait=True)
-    
-    core.async_rpc_wait_all()
-
-@jit_prototype 
-def MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core: NPUCore, stage: CompiledStage, stage_lock: VariableHandle):
-    for load_cmd in stage.dma_loads:
-        if isinstance(load_cmd, CompiledCommand.OP_LOCK_INCR):
-            core.var_atomic_increase(stage_lock, load_cmd._increment)  # BROADCAST: increase the stage lock and wait for the response from the source core
-            continue
-        
-        tile_sig = load_cmd.tile_sig
-        src_ptr, src_size, src_row_size, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_read_args(*tile_sig.coords)
-        
-        if len(load_cmd.broadcast_dst_ptrs) > 0:  # BROADCAST: broadcast optimization
-            core.local_mem_broadcast(load_cmd.broadcast_dst_ptrs + [tile_sig.spm_ptr,], src_ptr, size=src_size, src_row_size=src_row_size, src_row_stride=src_row_stride, dst_row_stride=dst_row_stride, nowait=True)
-        else:
-            core.local_mem_copy(tile_sig.spm_ptr, src_ptr, size=src_size, src_row_size=src_row_size, src_row_stride=src_row_stride, dst_row_stride=dst_row_stride, nowait=True)
-        
-    core.async_rpc_wait_all()
-    
-    for load_cmd in stage.dma_loads:
-        if isinstance(load_cmd, CompiledCommand.TILE_LOAD):
-            for lock in load_cmd.broadcast_locks:  # BROADCAST: notify dst cores that the broadcast load is complete
-                core.var_atomic_increase(lock, -1)
+def MCA_KERNEL_CORE_STAGE_PREPROCESSING(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):                
+    for thread in stage.preprocessings:
+        with new_parallel_thread():
+            for cmd in thread:
+                if isinstance(cmd, CompiledCommand.NOP):
+                    continue
+                elif isinstance(cmd, CompiledCommand.VAR_BARRIER):
+                    core.var_atomic_barrier(cmd.var_arrived_count, cmd.var_block_state, cmd.total_arrivals)
+                else:
+                    raise NotImplementedError(f"Preprocessing command {type(cmd)} is not implemented.")
                 
-    core.var_atomic_wait(stage_lock, 0)  # BORADCAST: wait for all broadcast loads to complete
+    core.parallel_merge()
 
 @jit_prototype
-def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, stage: CompiledStage):
+def MCA_KERNEL_CORE_STAGE_POSTPROCESSING(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    for thread in stage.postprocessings:
+        with new_parallel_thread():
+            for cmd in thread:
+                if isinstance(cmd, CompiledCommand.NOP):
+                    continue
+                elif isinstance(cmd, CompiledCommand.VAR_BARRIER):
+                    core.var_atomic_barrier(cmd.var_arrived_count, cmd.var_block_state, cmd.total_arrivals)
+                else:
+                    raise NotImplementedError(f"Postprocessing command {type(cmd)} is not implemented.")
+    
+    core.parallel_merge()
+
+def MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    for store_cmd in stage.dma_stores:
+        if isinstance(store_cmd, CompiledCommand.NOP):
+            continue
+        elif isinstance(store_cmd, CompiledCommand.MEM_INIT):
+            core.local_mem_init(store_cmd.ptr, store_cmd.size)
+        elif isinstance(store_cmd, CompiledCommand.TILE_STORE):
+            tile_sig = store_cmd.tile_sig
+            dst_ptr, row_size, row_num, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_write_args(*tile_sig.coords)
+            
+            core.local_mem_copy(dst_ptr, tile_sig.spm_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
+            core.mem_init(tile_sig.spm_ptr, tile_sig.buf.tile_size)
+        else:
+            raise NotImplementedError(f"DMA Store command {type(store_cmd)} is not implemented.")
+    
+    core.async_rpc_wait_all()
+
+def MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    for load_cmd in stage.dma_loads:
+        if isinstance(load_cmd, CompiledCommand.NOP):
+            continue
+        elif isinstance(load_cmd, CompiledCommand.MEM_INIT):
+            core.local_mem_init(load_cmd.ptr, load_cmd.size)
+        elif isinstance(load_cmd, CompiledCommand.TILE_LOAD):
+            tile_sig = load_cmd.tile_sig
+            src_ptr, row_size, row_num, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_read_args(*tile_sig.coords)
+            
+            if len(load_cmd.broadcast_dst_ptrs) > 0:  # BROADCAST: broadcast optimization
+                target_ptrs = load_cmd.broadcast_dst_ptrs + [tile_sig.spm_ptr,]
+                for ptr in target_ptrs:
+                    core.mem_init(ptr, tile_sig.buf.tile_size)
+                core.local_mem_broadcast(target_ptrs, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
+            else:
+                core.mem_init(tile_sig.spm_ptr, tile_sig.buf.tile_size)
+                core.local_mem_copy(tile_sig.spm_ptr, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
+        else:
+            raise NotImplementedError(f"DMA Load command {type(load_cmd)} is not implemented.")
+        
+    core.async_rpc_wait_all()
+
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
     for compute_cmd in stage.compute_ops:
+        if not isinstance(compute_cmd, CompiledCommand.TILED_OP):
+            raise NotImplementedError(f"Compute command {type(compute_cmd)} is not implemented.")
+        
         op_sig = compute_cmd.op_sig
         inner_op_idx = compute_cmd.inner_op_idx
         
@@ -72,10 +103,10 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, stage: CompiledSta
         if inner_op_idx == 0:
             core.mxu_reconfigure(dtype=ifm_sig.buf.dtype, acc_dtype=ofm_sig.buf.dtype)
         
-        core.local_mem_page_read(ifm_sig.spm_ptr, ifm_sig.buf.tile_size, ifm)
-        core.local_mem_page_read(wgt_sig.spm_ptr, wgt_sig.buf.tile_size, wgt)
+        core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_sig.buf.tile_size)
+        core.local_mem_page_read(wgt_sig.spm_ptr, wgt, wgt_sig.buf.tile_size)
         if preload_psum:
-            core.local_mem_page_read(bias_sig.spm_ptr, bias_sig.buf.tile_size, bias)
+            core.local_mem_page_read(bias_sig.spm_ptr, bias, bias_sig.buf.tile_size)
 
         core.mxu_tiled_gemm(
             ifm, wgt, bias, ofm,
@@ -86,19 +117,22 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, stage: CompiledSta
         )
         
         if flush_ofm:
-            core.local_mem_page_write(ofm_sig.spm_ptr, ofm_sig.buf.tile_size, ofm)
+            core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
 
 @jit_prototype
-def MCA_KERNEL_CORE_OP_LINEAR(core: NPUCore, operator: CompiledOperator):
-    for stage in operator.stages:
-        with new_parallel_thread("DMA"):
-            # DMA STORE
-            MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST(core, stage)
-            # DMA LOAD
-            MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core, stage, stage_lock=operator.stage_lock)
-                
-        with new_parallel_thread("COMPUTE"):
-            # COMPUTE (LINEAR TILED)
-            MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core, stage)
-                
-        core.parallel_merge()
+def MCA_KERNEL_CORE_OP_LINEAR(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    # for stage in operator.stages:
+    MCA_KERNEL_CORE_STAGE_PREPROCESSING(core, operator, stage)
+    
+    with new_parallel_thread("DMA_LOAD"):
+        MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST(core, operator, stage)
+        
+    with new_parallel_thread("DMA_STORE"):
+        MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core, operator, stage)
+            
+    with new_parallel_thread("COMPUTE"):
+        MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core, operator, stage)
+            
+    core.parallel_merge()
+    
+    MCA_KERNEL_CORE_STAGE_POSTPROCESSING(core, operator, stage)

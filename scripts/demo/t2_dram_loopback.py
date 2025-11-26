@@ -7,8 +7,8 @@ from neuromta.system.mta.tenstorrent import *
 
 @jit_prototype
 def main(core: NPUCore, main_in_ptr: Pointer, main_out_ptr: Pointer, l1_ptr: Pointer, size: int):
-    core.local_mem_copy(l1_ptr,       main_in_ptr, size=size)
-    core.local_mem_copy(main_out_ptr, l1_ptr,      size=size)
+    core.local_mem_copy(l1_ptr,       main_in_ptr, size)
+    core.local_mem_copy(main_out_ptr, l1_ptr,      size)
 
 
 if __name__ == "__main__":

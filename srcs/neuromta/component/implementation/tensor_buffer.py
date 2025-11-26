@@ -65,6 +65,24 @@ class MCA_TensorBuffer:
         
         self._is_allocated = False
         
+    def copy(self) -> "MCA_TensorBuffer":
+        new_buffer = MCA_TensorBuffer(
+            mem_space=self._mem_space,
+            shape=self._shape,
+            dtype=self._dtype,
+            shard_grid=(self._n_y_shards, self._n_x_shards),
+            blocked_mapping=self._blocked_mapping
+        )
+        
+        for y in range(self._n_y_shards):
+            for x in range(self._n_x_shards):
+                new_buffer._shard_ptrs[y][x].addr = self._shard_ptrs[y][x].addr
+        new_buffer._is_allocated = self._is_allocated
+        
+        new_buffer.tiling(tile_shape=(self._tile_y, self._tile_x))
+        
+        return new_buffer
+        
     def tiling(self, tile_shape: Sequence[int]=None):
         if tile_shape is None:
             tile_shape = (self._shard_y, self._shard_x)
@@ -105,9 +123,9 @@ class MCA_TensorBuffer:
             if not isinstance(self.owner_ids, MTA_CoreGrid):
                 raise ValueError("Blocked mapping requires mem_ids to be of type MTA_CoreGrid.")
             if self._n_y_shards % self.owner_ids.shape[0] != 0:
-                raise ValueError(f"Number of height shards {self._n_y_shards} is not divisible by core grid height {self._owner_ids.shape[0]}.")
+                raise ValueError(f"Number of height shards {self._n_y_shards} is not divisible by core grid height {self.owner_ids.shape[0]}.")
             if self._n_x_shards % self.owner_ids.shape[1] != 0:
-                raise ValueError(f"Number of width shards {self._n_x_shards} is not divisible by core grid width {self._owner_ids.shape[1]}.")
+                raise ValueError(f"Number of width shards {self._n_x_shards} is not divisible by core grid width {self.owner_ids.shape[1]}.")
             
             h_block_size = self._n_y_shards // self.owner_ids.shape[0]
             w_block_size = self._n_x_shards // self.owner_ids.shape[1]
@@ -183,14 +201,14 @@ class MCA_TensorBuffer:
         
         actual_tile_x = min(self._tile_x, self._shard_x - x_shard_offset)  # if the tile exceeds shard boundary (used for automatic padding)
         actual_tile_y = min(self._tile_y, self._shard_y - y_shard_offset)  # if the tile exceeds shard boundary (used for automatic padding)
-        
-        src_ptr        = self._shard_ptrs[y_shard_idx][x_shard_idx] + (total_offset * self._dtype.itemsize)
-        src_read_size  = actual_tile_y * self._shard_x * self._dtype.itemsize
-        src_row_size   = actual_tile_x * self._dtype.itemsize
+    
+        src_ptr = self._shard_ptrs[y_shard_idx][x_shard_idx] + (total_offset * self._dtype.itemsize)
+        row_size = actual_tile_x * self._dtype.itemsize
+        row_num = actual_tile_y
         src_row_stride = self._shard_x * self._dtype.itemsize
         dst_row_stride = self._tile_x  * self._dtype.itemsize
         
-        return src_ptr, src_read_size, src_row_size, src_row_stride, dst_row_stride  # src ptr, src size, src row size, src row stride, dst row stride
+        return src_ptr, row_size, row_num, src_row_stride, dst_row_stride
     
     def get_tile_ptr_write_args(self, y_shard_idx: int, x_shard_idx: int, y_tile_in_shard_idx: int, x_tile_in_shard_idx: int) -> tuple[Pointer, int, int, int, int]:
         y_shard_offset = y_tile_in_shard_idx * self._tile_y
@@ -201,13 +219,13 @@ class MCA_TensorBuffer:
         actual_tile_x = min(self._tile_x, self._shard_x - x_shard_offset)  # if the tile exceeds shard boundary (used for automatic padding)
         actual_tile_y = min(self._tile_y, self._shard_y - y_shard_offset)  # if the tile exceeds shard boundary (used for automatic padding)
         
-        dst_ptr        = self._shard_ptrs[y_shard_idx][x_shard_idx] + (total_offset * self._dtype.itemsize)
-        src_read_size  = actual_tile_y * self._tile_x * self._dtype.itemsize
-        src_row_size   = actual_tile_x * self._dtype.itemsize
+        dst_ptr = self._shard_ptrs[y_shard_idx][x_shard_idx] + (total_offset * self._dtype.itemsize)
+        row_size = actual_tile_x * self._dtype.itemsize
+        row_num = actual_tile_y
         src_row_stride = self._tile_x  * self._dtype.itemsize
         dst_row_stride = self._shard_x * self._dtype.itemsize
         
-        return dst_ptr, src_read_size, src_row_size, src_row_stride, dst_row_stride  # dst ptr, dst size, dst row size, dst row stride, src row stride
+        return dst_ptr, row_size, row_num, src_row_stride, dst_row_stride
     
     @property
     def shape(self) -> Sequence[int]:

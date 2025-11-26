@@ -36,15 +36,12 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    ifm_tile_size  = Mt * Kt * dtype.itemsize
-    wgt_tile_size  = Nt * Kt * dtype.itemsize
-    bias_tile_size = Nt * acc_dtype.itemsize
-    ofm_tile_size  = Mt * Nt * acc_dtype.itemsize
-    
     ifm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
     param_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     ofm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
-    spad_pp_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
+    # spad_pp_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
+    spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
+    spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
     
     ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks)).tiling(tile_shape=(Mt, Kt)).allocate().update(ifm)
     wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)).tiling(tile_shape=(Nt, Kt)).allocate().update(wgt)
@@ -53,22 +50,24 @@ if __name__ == "__main__":
     
     mapper = MCA_OperatorMapper.LINEAR(
         core_group=core_group,
-        spad_mem_space=spad_pp_space,
-        ifm_b=ifm_b,
-        wgt_b=wgt_b,
-        bias_b=bias_b,
-        ofm_b=ofm_b,
+        spad_ld_mem_space=spad_ld_pp_space,
+        spad_st_mem_space=spad_st_pp_space,
+        ifm=ifm_b,
+        wgt=wgt_b,
+        bias=bias_b,
+        ofm=ofm_b,
     )
     
     mapping = mapper.compile()
     mapping.apply_broadcast_optimization()
     
     operator = MCA_Operator(
-        mapping=mapping, 
+        device=device,
+        compiled_mapping=mapping, 
         method=mca_kernel_lib.MCA_KERNEL_CORE_OP_LINEAR
     )
     
-    operator.dispatch(device=device, slot_id="MAIN")
+    operator.dispatch(slot_id="MAIN")
         
     with MonitoringWindow() as monitor:
         for core_id in core_group.core_ids:

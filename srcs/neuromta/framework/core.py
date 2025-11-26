@@ -22,6 +22,7 @@ __all__ = [
     "ConditionalCommand",
     
     "KernelPrototype",
+    "ThreadGroup",
     "Kernel",
 
     "CoreCycleModel",
@@ -152,14 +153,14 @@ def jit_prototype(_func: Callable):
 
 def core_command_method(_func: Callable):
     @functools.wraps(_func)
-    def __core_command_method_wrapper(_core: 'Core', *_args, **_kwargs) -> Command:
+    def __core_command_method_wrapper(core: 'Core', *_args, **_kwargs) -> Command:
         if get_global_context_mode() == GlobalContextMode.IDLE:
             raise Exception(f"Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
         if get_global_context_mode() == GlobalContextMode.EXECUTE:
             # with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
-                return _func(_core, *_args, **_kwargs)
+                return _func(core, *_args, **_kwargs)
 
-        if not isinstance(_core, Core):
+        if not isinstance(core, Core):
             raise Exception(f"Command method '{_func.__name__}' can only be called on an instance of Core")
         
         kernel_context = get_global_kernel_context()
@@ -188,14 +189,14 @@ def core_command_method(_func: Callable):
     return __core_command_method_wrapper
 
 def core_conditional_command_method(_func: Callable):
-    def __core_command_method_wrapper(_core: 'Core', *_args, **_kwargs) -> Command:
+    def __core_command_method_wrapper(core: 'Core', *_args, **_kwargs) -> Command:
         if get_global_context_mode() == GlobalContextMode.IDLE:
             raise Exception(f"Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
         if get_global_context_mode() == GlobalContextMode.EXECUTE:
             # with print_log_execution_time(f"RUNNING COMMAND '{_func.__name__}'"):
-                return _func(_core, *_args, **_kwargs)
+                return _func(core, *_args, **_kwargs)
 
-        if not isinstance(_core, Core):
+        if not isinstance(core, Core):
             raise Exception(f"Command method '{_func.__name__}' can only be called on an instance of Core")
         
         kernel_context = get_global_kernel_context()
@@ -552,7 +553,7 @@ class Kernel:
                 self._execution_cursor += 1
             
     def current_step(self, core: 'Core') -> 'Command | ThreadGroup':
-        if self.is_finished(core):
+        if self._execution_cursor >= len(self._execution_steps):
             return None
         
         if isinstance(self._execution_steps[self._execution_cursor], KernelPrototype):
@@ -980,8 +981,9 @@ class Core:
     # Synchronization (Lock and Atomic Variable Update)
     ###########################################################################
     
-    @staticmethod
-    def _SYNCHRONIZER_CALLBACK_PRIM(context: Kernel):
+    # @staticmethod
+    def _SYNCHRONIZER_CALLBACK_PRIM(self, context: Kernel):
+        # logger.info(f"[{self.core_id}] Synchronizer callback invoked to unblock kernel '{context.callstack}'")
         context.set_blocked(False)
     
     @core_command_method
@@ -995,8 +997,17 @@ class Core:
         lock.release(owner=self.core_id)
         
     @core_command_method
-    def var_atomic_update(self, var: VariableHandle, value: int):
-        var.atomic_update(value)
+    def var_atomic_barrier(self, arrival_cnt: VariableHandle, blocking: VariableHandle, total_cnt: int):
+        arrival_cnt.atomic_update(arrival_cnt.value + 1)
+        # logger.info(f"[{self.core_id}] Barrier arrival count updated: {arrival_cnt.value}/{total_cnt}")
+        
+        if arrival_cnt.value >= total_cnt:
+            arrival_cnt.atomic_update(0)
+            blocking.atomic_update(1 - blocking.value)  # release the barrier (toggle the blocking variable 1->0 or 0->1)
+        else:
+            context = get_global_kernel_context()
+            context.set_blocked(True)
+            blocking.atomic_wait(expected_value=1 - blocking.value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
         
     @core_command_method
     def var_atomic_compare_and_swap(self, var: VariableHandle, cmp_value: int, new_value: int) -> bool:
