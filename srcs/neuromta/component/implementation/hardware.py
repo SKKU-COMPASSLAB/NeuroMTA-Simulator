@@ -271,10 +271,10 @@ class MCA_DeviceBase(Device):
             "global_config": self.global_context.config.summary(),
             "mxu_config": self.mxu_config,
             "vpu_config": self.vpu_config,
-            "mem_config": {
-                "l1_config": self.mem_context.l1_config.summary(),
-                "main_config": self.mem_context.main_config.summary(),
-            }
+            # "mem_config": {
+            #     "l1_config": self.mem_context.l1_config.summary(),
+            #     "main_config": self.mem_context.main_config.summary(),
+            # }
         }
         
     def print_summary(self):
