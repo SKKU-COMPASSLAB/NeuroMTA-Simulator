@@ -1,5 +1,5 @@
 import abc
-from typing import Any, Sequence, Dict, List
+from typing import Any, Sequence, Dict, List, Callable
 
 from neuromta.framework import *
 from neuromta.component.core import *
@@ -87,7 +87,7 @@ class TiledOperatorMapping(Dict[int, List[TiledOperatorSignature]]):
         self.core_group = core_group
     
     @staticmethod
-    def from_tiled_ops(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
+    def output_stationary(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
         core_ids = core_group.core_ids
         mapper = TiledOperatorMapping(core_group=core_group)
         
@@ -119,6 +119,20 @@ class TiledOperatorMapping(Dict[int, List[TiledOperatorSignature]]):
             if not flag:
                 target_core_id = core_ids[op_idx % len(core_ids)]  
                 
+            mapper[target_core_id].append(op)
+        
+        return mapper
+    
+    @staticmethod
+    def round_robin(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
+        core_ids = core_group.core_ids
+        mapper = TiledOperatorMapping(core_group=core_group)
+        
+        for core_id in core_ids:
+            mapper[core_id] = []
+        
+        for op_idx, op in enumerate(tiled_ops):
+            target_core_id = core_ids[op_idx % len(core_ids)]
             mapper[target_core_id].append(op)
         
         return mapper
@@ -555,6 +569,9 @@ class CompiledMapping:
 
 
 class MCA_OperatorMapper:
+    OUTPUT_STATIONARY = "output_stationary"
+    ROUND_ROBIN       = "round_robin"
+    
     def __init__(
         self,
         
@@ -705,12 +722,17 @@ class MCA_OperatorMapper:
             tiled_ops=tiled_ops,
         )
         
-    def compile(self) -> CompiledMapping:
+    def compile(self, mapping_strategy: Callable | str = OUTPUT_STATIONARY) -> CompiledMapping:
+        if isinstance(mapping_strategy, str):
+            mapping_strategy = getattr(TiledOperatorMapping, mapping_strategy, None)
+            if mapping_strategy is None:
+                raise ValueError(f"Invalid mapping strategy: {mapping_strategy}")
+        
         return CompiledMapping.from_tiled_op_mapping(
             spad_ld_pp_ptrs=self._spad_ld_pp_ptrs,
             spad_st_pp_ptrs=self._spad_st_pp_ptrs,
             spad_ld_pp_size=self._spad_ld_pp_size,
             spad_st_pp_size=self._spad_st_pp_size,
-            mapping=TiledOperatorMapping.from_tiled_ops(self._core_group, self._tiled_ops)
+            mapping=mapping_strategy(self._core_group, self._tiled_ops)
         )
         

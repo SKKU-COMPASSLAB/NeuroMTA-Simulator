@@ -112,7 +112,7 @@ class MXUContext:
         return self._config.seq_len
     
     def get_execute_cycles(self) -> int:
-        return self._config.seq_len * self._config.op_latency_per_byte * self._config.dtype.itemsize
+        return self._config.seq_len # * self._config.op_latency_per_byte * self._config.dtype.itemsize
     
     def get_flush_pe_arr_cycles(self) -> int:
         return self._config.pe_arr_width

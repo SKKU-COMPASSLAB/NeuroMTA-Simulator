@@ -265,6 +265,10 @@ class MCA_TensorBuffer:
         return (self._tile_y, self._tile_x)
     
     @property
+    def total_size(self) -> int:
+        return self._layout_y * self._layout_x * self._dtype.itemsize
+    
+    @property
     def shard_size(self) -> int:
         return self._shard_size
     

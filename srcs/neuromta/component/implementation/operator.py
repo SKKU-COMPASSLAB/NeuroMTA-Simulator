@@ -107,7 +107,9 @@ def MCA_OP_LINEAR(
     broadcast_optimize: bool=True,
     broadcast_optimize_targets: list[str]=None,
     
-    auto_dispatch: bool=False
+    auto_dispatch: bool=False,
+    
+    mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
 ) -> MCA_Operator:
     # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
     ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
@@ -123,7 +125,7 @@ def MCA_OP_LINEAR(
         wgt=wgt,
         bias=bias,
         ofm=ofm,
-    ).compile()
+    ).compile(mapping_strategy=mapping_strategy)
     
     if broadcast_optimize:
         mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)
@@ -149,7 +151,9 @@ def MCA_OP_RELU_INPLACE(
     
     ifm:  MCA_TensorBuffer,
     
-    auto_dispatch: bool=False
+    auto_dispatch: bool=False,
+    
+    mapping_strategy: Callable | str = TiledOperatorMapping.output_stationary
 ) -> MCA_Operator:
     # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
     ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
@@ -159,7 +163,7 @@ def MCA_OP_RELU_INPLACE(
         spad_ld_mem_space=spad_ld_mem_space,
         spad_st_mem_space=spad_st_mem_space,
         ifm=ifm,
-    ).compile()
+    ).compile(mapping_strategy=mapping_strategy)
     
     operator = MCA_Operator(
         device=device, 
@@ -188,7 +192,9 @@ def MCA_OP_LINEAR_RELU(
     broadcast_optimize: bool=True,
     broadcast_optimize_targets: list[str]=None,
     
-    auto_dispatch: bool=False
+    auto_dispatch: bool=False,
+    
+    mapping_strategy: Callable | str = TiledOperatorMapping.output_stationary
 ) -> MCA_Operator:
     # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
     ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
@@ -204,7 +210,7 @@ def MCA_OP_LINEAR_RELU(
         wgt=wgt,
         bias=bias,
         ofm=ofm,
-    ).compile()
+    ).compile(mapping_strategy=mapping_strategy)
     
     if broadcast_optimize:
         mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)

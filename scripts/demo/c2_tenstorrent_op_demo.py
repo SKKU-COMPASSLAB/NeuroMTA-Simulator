@@ -48,7 +48,13 @@ if __name__ == "__main__":
     bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns), blocked_mapping=blocked_mapping).allocate().update(bias)
     ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns), blocked_mapping=blocked_mapping).allocate()
     
-    operator = MCA_OP_LINEAR(device, core_group, spad_ld_pp_space, spad_st_pp_space, ifm_b, wgt_b, bias_b, ofm_b, broadcast_optimize=broadcast_optimize, auto_dispatch=True)
+    operator = MCA_OP_LINEAR(
+        device, core_group, spad_ld_pp_space, spad_st_pp_space, 
+        ifm_b, wgt_b, bias_b, ofm_b, 
+        broadcast_optimize=broadcast_optimize, 
+        auto_dispatch=True, 
+        mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN
+    )
     
     tmp_ouput_path = os.path.join(os.curdir, ".tmp", "pipelined_mapping.json")
     with open(tmp_ouput_path, "w") as f:

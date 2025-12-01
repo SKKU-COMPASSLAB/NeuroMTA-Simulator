@@ -213,7 +213,6 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU(core: NPUCore, operat
             core.vpu_store_reg(ofm, 0, burst_len=burst_len, offset=0)
 
             core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
-        
 
 
 @jit_prototype
