@@ -20,11 +20,11 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
-    M, N, K = 512, 512, 512
-    Ms, Ns, Ks = 8, 8, 8
+    M, N, K = 1, 1024, 1024
+    Ms, Ns, Ks = 1, 8, 8
     dtype = torch.int32
     acc_dtype = torch.int32
-    blocked_mapping = True  # Enable blocked mapping for better data locality
+    blocked_mapping = False  # Enable blocked mapping for better data locality
     broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
     
     ifm  = torch.randint(low=0, high=128, size=(M, K), dtype=dtype)

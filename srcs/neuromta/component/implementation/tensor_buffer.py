@@ -119,14 +119,19 @@ class MCA_TensorBuffer:
         
         if self._blocked_mapping:
             if self.mem_type != GlobalContextMemType.L1:
-                raise ValueError("Blocked mapping is only supported for L1 memory type.")
+                self._blocked_mapping = False
+                logger.warning(f"Unable to use blocked mapping: blocked mapping is only supported for L1 memory type.")
             if not isinstance(self.owner_ids, MTA_CoreGrid):
-                raise ValueError("Blocked mapping requires mem_ids to be of type MTA_CoreGrid.")
+                self._blocked_mapping = False
+                logger.warning(f"Unable to use blocked mapping: blocked mapping requires mem_ids to be of type MTA_CoreGrid.")
             if self._n_y_shards % self.owner_ids.shape[0] != 0:
-                raise ValueError(f"Number of height shards {self._n_y_shards} is not divisible by core grid height {self.owner_ids.shape[0]}.")
+                self._blocked_mapping = False
+                logger.warning(f"Unable to use blocked mapping: number of height shards {self._n_y_shards} is not divisible by core grid height {self.owner_ids.shape[0]}.")
             if self._n_x_shards % self.owner_ids.shape[1] != 0:
-                raise ValueError(f"Number of width shards {self._n_x_shards} is not divisible by core grid width {self.owner_ids.shape[1]}.")
-            
+                self._blocked_mapping = False
+                logger.warning(f"Unable to use blocked mapping: number of width shards {self._n_x_shards} is not divisible by core grid width {self.owner_ids.shape[1]}.")
+        
+        if self._blocked_mapping:
             h_block_size = self._n_y_shards // self.owner_ids.shape[0]
             w_block_size = self._n_x_shards // self.owner_ids.shape[1]
             

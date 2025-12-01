@@ -63,6 +63,13 @@ class Device:
         
         return self
     
+    def reset_simulation(self):
+        if not self.is_initialized:
+            raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
+        
+        for core in self._cores.values():
+            core.reset_simulation()
+    
     def set_command_debug_verbosity(self, verbose: bool=True):
         if verbose:
             for core in self._cores.values():

@@ -660,7 +660,6 @@ class Core:
         self._dispatched_rpc_msg_mappings.clear()
         self._suspended_main_kernels.clear()
         self._suspended_rpc_req_msg.clear()
-        # self._suspended_rpc_rsp_msg.clear()
         
         return self
 
@@ -676,6 +675,10 @@ class Core:
         self._use_cycle_model = use_cycle_model if use_cycle_model is not None else self._use_cycle_model
         self._use_functional_model = use_functional_model if use_functional_model is not None else self._use_functional_model
 
+    def reset_simulation(self):
+        self.initialize_kernel_dispatch_queue()
+        self._timestamp = 0
+    
     ###########################################################################
     # Kernel Dispatch / Execute / Update Timestamp
     ###########################################################################

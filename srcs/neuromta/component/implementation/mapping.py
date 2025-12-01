@@ -461,12 +461,14 @@ class CompiledMapping:
             target_core_ids = core_ids
             master_core_id = target_core_ids[0]
             
-            thread_count = len(target_core_ids)
+            thread_count = sum([1 for core_id in target_core_ids if stage_idx < len(self.operators[core_id].stages)])
             arrived_count = self.operators[master_core_id].var_globals[BCAST_BARRIER_ARRIVED_CNT]
             barrier_state = self.operators[master_core_id].var_globals[BCAST_BARRIER_BLOCK_STATE]
             
             for target_core_id in target_core_ids:
                 target_op = self.operators[target_core_id]
+                if stage_idx >= len(target_op.stages):
+                    continue
                 target_op.stages[stage_idx].postprocessings.append(CompiledCommand.VAR_BARRIER(var_arrived_count=arrived_count, var_block_state=barrier_state, total_arrivals=thread_count))
                                 
         return self
@@ -530,7 +532,8 @@ class CompiledMapping:
         for dst_stage_idx, src_stage_idx in dst_src_barrier:   
             master_core_id = dst_core_ids[0]
                 
-            thread_count = len(dst_core_ids) + len(src_core_ids)
+            # thread_count = len(dst_core_ids) + len(src_core_ids)
+            thread_count = sum([1 for core_id in dst_core_ids if dst_stage_idx < len(dst_mapping.operators[core_id].stages)]) + sum([1 for core_id in src_core_ids if src_stage_idx < len(self.operators[core_id].stages)])
             arrived_count = dst_mapping.operators[master_core_id].var_globals[PIPE_BARRIER_ARRIVED_CNT]
             barrier_state = dst_mapping.operators[master_core_id].var_globals[PIPE_BARRIER_BLOCK_STATE]
             
