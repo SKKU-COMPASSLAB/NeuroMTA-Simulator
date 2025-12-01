@@ -221,6 +221,8 @@ class CompiledCommand:
             self._op_sig = op_sig
             self._inner_op_idx = inner_op_idx
             
+            self._pipelined_cmds: list[CompiledCommand.TILED_OP] = []
+            
         @property
         def op_sig(self) -> TiledOperatorSignature:
             return self._op_sig
@@ -228,6 +230,9 @@ class CompiledCommand:
         @property
         def inner_op_idx(self) -> int:
             return self._inner_op_idx
+        
+        def add_pipelined_cmd(self, cmd: 'CompiledCommand.TILED_OP'):
+            self._pipelined_cmds.append(cmd)
         
         def signature(self) -> str:
             tin_signature = lambda tin: tin.signature + ("" if tin.spm_ptr is None else f'@{tin.spm_ptr.addr}')
@@ -238,19 +243,19 @@ class CompiledCommand:
         
 class CompiledStage:
     def __init__(self):
-        self.preprocessings:  list[list[CompiledCommand._Base]]     = []
-        self.dma_stores:      list[CompiledCommand._Base]           = []  # THREAD 0 STEP 1: Store output tiles from SPAD to memory
-        self.dma_loads:       list[CompiledCommand._Base]           = []  # THREAD 0 STEP 2: Load input tiles from memory to SPAD 
-        self.compute_ops:     list[CompiledCommand._Base]           = []  # THREAD 1:        Compute tiled operations in SPAD
-        self.postprocessings: list[list[CompiledCommand._Base]]     = []
+        self.preprocessings:  list[CompiledCommand._Base]   = []  # GROUP 0          : Preprocessing (e.g., barriers) -> collection of parallel commands
+        self.dma_stores:      list[CompiledCommand._Base]   = []  # GROUP 1 THREAD 0 : Store output tiles from SPAD to memory
+        self.dma_loads:       list[CompiledCommand._Base]   = []  # GROUP 1 THREAD 1 : Load input tiles from memory to SPAD 
+        self.compute_ops:     list[CompiledCommand._Base]   = []  # GROUP 1 THREAD 2 : Compute tiled operations in SPAD
+        self.postprocessings: list[CompiledCommand._Base]   = []  # GROUP 2          : Postprocessing (e.g., barriers) -> collection of parallel commands
         
     def summary(self) -> dict[str, list[str]]:
         return {
-            "preprocessings": [[cmd.signature() for cmd in thread] for thread in self.preprocessings],
-            "dma_stores":  [cmd.signature() for cmd in self.dma_stores],
-            "dma_loads":   [cmd.signature() for cmd in self.dma_loads],
-            "compute_ops": [cmd.signature() for cmd in self.compute_ops],
-            "postprocessings": [[cmd.signature() for cmd in thread] for thread in self.postprocessings],
+            "preprocessings":  [cmd.signature() for cmd in self.preprocessings],
+            "dma_stores":      [cmd.signature() for cmd in self.dma_stores],
+            "dma_loads":       [cmd.signature() for cmd in self.dma_loads],
+            "compute_ops":     [cmd.signature() for cmd in self.compute_ops],
+            "postprocessings": [cmd.signature() for cmd in self.postprocessings],
         }
         
 class CompiledOperator:
@@ -264,7 +269,6 @@ class CompiledOperator:
         spad_st_pp_ptrs: tuple[Pointer, Pointer], 
         spad_ld_pp_size: int, 
         spad_st_pp_size: int, 
-        inner_tiled_op_per_pp: int, 
         tiled_ops: Sequence[TiledOperatorSignature],
         var_globals: dict[str, VariableHandle]=None,
     ) -> 'CompiledOperator':
@@ -284,7 +288,10 @@ class CompiledOperator:
             op = tiled_ops[cursor].copy()  
             
             for inner_op_idx in range(len(op.i_tiles)):
-                if spad_pp_ops >= inner_tiled_op_per_pp:
+                total_ld_spad_usage = sum([tile.buf.tile_size for tile in op.i_tiles[inner_op_idx]])
+                total_st_spad_usage = op.o_tile.buf.tile_size
+                
+                if (spad_ld_pp_size < spad_pp_usage[0] + total_ld_spad_usage) or (spad_st_pp_size < spad_pp_usage[1] + total_st_spad_usage):
                     # switch ping-pong buffer
                     spad_pp_idx = 1 - spad_pp_idx
                     spad_pp_usage = [0, 0]
@@ -316,6 +323,8 @@ class CompiledOperator:
                     
                         spad_pp_usage[0] += tile_size
                         if spad_pp_usage[0] > spad_ld_pp_size:
+                            logger.warning(f"SPAD LOAD ping-pong buffer size exceeded: current usage={spad_pp_usage[0]}, size={spad_ld_pp_size}")
+                            logger.warning(f"Consider reducing the tile size or increasing the SPAD STORE ping-pong buffer size.")
                             raise RuntimeError("Not enough SPAD space for ping-pong buffering.")
             
                 compute_stage.compute_ops.append(
@@ -340,6 +349,8 @@ class CompiledOperator:
                     
                     spad_pp_usage[1] += tile_size
                     if spad_pp_usage[1] > spad_st_pp_size:
+                        logger.warning(f"SPAD STORE ping-pong buffer size exceeded: current usage={spad_pp_usage[1]}, size={spad_st_pp_size}")
+                        logger.warning(f"Consider reducing the tile size or increasing the SPAD STORE ping-pong buffer size.")
                         raise RuntimeError("Not enough SPAD space for ping-pong buffering.")
                 
                 spad_pp_ops += 1
@@ -360,7 +371,7 @@ class CompiledMapping:
         self.var_globals = var_globals
         
     @staticmethod
-    def from_tiled_op_mapping(spad_ld_pp_ptrs: dict[int, tuple[Pointer, Pointer]], spad_st_pp_ptrs: dict[int, tuple[Pointer, Pointer]], spad_ld_pp_size: int, spad_st_pp_size: int, inner_tiled_op_per_pp: int, mapping: TiledOperatorMapping) -> 'CompiledMapping':
+    def from_tiled_op_mapping(spad_ld_pp_ptrs: dict[int, tuple[Pointer, Pointer]], spad_st_pp_ptrs: dict[int, tuple[Pointer, Pointer]], spad_ld_pp_size: int, spad_st_pp_size: int, mapping: TiledOperatorMapping) -> 'CompiledMapping':
         core_group = mapping.core_group
         operators: dict[int, CompiledOperator] = {}
         var_globals: dict[int, dict[str, VariableHandle]] = {}
@@ -380,7 +391,6 @@ class CompiledMapping:
                 spad_st_pp_ptrs=spad_st_pp_ptrs[core_id],
                 spad_ld_pp_size=spad_ld_pp_size,
                 spad_st_pp_size=spad_st_pp_size,
-                inner_tiled_op_per_pp=inner_tiled_op_per_pp,
                 tiled_ops=mapping[core_id],
                 var_globals=var_globals[core_id],
             )
@@ -457,8 +467,7 @@ class CompiledMapping:
             
             for target_core_id in target_core_ids:
                 target_op = self.operators[target_core_id]
-                target_op.stages[stage_idx].postprocessings.append([])
-                target_op.stages[stage_idx].postprocessings[-1].append(CompiledCommand.VAR_BARRIER(var_arrived_count=arrived_count, var_block_state=barrier_state, total_arrivals=thread_count))
+                target_op.stages[stage_idx].postprocessings.append(CompiledCommand.VAR_BARRIER(var_arrived_count=arrived_count, var_block_state=barrier_state, total_arrivals=thread_count))
                                 
         return self
     
@@ -527,16 +536,12 @@ class CompiledMapping:
             
             for target_core_id in dst_core_ids:
                 target_op = dst_mapping.operators[target_core_id]
-                target_op.stages[dst_stage_idx].preprocessings.append([])
-                
-                target_op.stages[dst_stage_idx].preprocessings[-1].append(CompiledCommand.VAR_BARRIER(var_arrived_count=arrived_count, var_block_state=barrier_state, total_arrivals=thread_count))
+                target_op.stages[dst_stage_idx].preprocessings.append(CompiledCommand.VAR_BARRIER(var_arrived_count=arrived_count, var_block_state=barrier_state, total_arrivals=thread_count))
                     
             for target_core_id in src_core_ids:
                 target_op = self.operators[target_core_id]
-                target_op.stages[src_stage_idx].postprocessings.append([])
-                
-                target_op.stages[src_stage_idx].postprocessings[-1].append(CompiledCommand.VAR_BARRIER(var_arrived_count=arrived_count, var_block_state=barrier_state, total_arrivals=thread_count))
-                
+                target_op.stages[src_stage_idx].postprocessings.append(CompiledCommand.VAR_BARRIER(var_arrived_count=arrived_count, var_block_state=barrier_state, total_arrivals=thread_count))
+        
         return self
     
     def summary(self) -> list[dict[str, list[str]]]:
@@ -553,10 +558,6 @@ class MCA_OperatorMapper:
         core_group: MCA_CoreGroup,
         spad_ld_mem_space: MCA_L1MemorySpace,
         spad_st_mem_space: MCA_L1MemorySpace,
-        
-        n_inner_per_outer: int,
-        input_tile_size: int,
-        output_tile_size: int,
         
         tiled_ops: Sequence[TiledOperatorSignature],
     ):
@@ -582,14 +583,6 @@ class MCA_OperatorMapper:
             )
             for core_id in self._core_group
         }
-        
-        _st_n_outer_per_pp = self._spad_st_pp_size // output_tile_size
-        _ld_n_outer_per_pp = self._spad_ld_pp_size // (input_tile_size * n_inner_per_outer)
-        _n_outer_per_pp = min(_st_n_outer_per_pp, _ld_n_outer_per_pp)
-        if _n_outer_per_pp >= len(tiled_ops):
-            _n_outer_per_pp = len(tiled_ops) // 2  # at least 2 ping-pong assignment to overlap computation and data transfer
-        _n_remaining_inner_per_pp = (self._spad_ld_pp_size % (input_tile_size * n_inner_per_outer)) // input_tile_size
-        self._inner_tiled_op_per_pp = _n_outer_per_pp * n_inner_per_outer + _n_remaining_inner_per_pp
         
     @staticmethod
     def LINEAR(core_group: MCA_CoreGroup, spad_ld_mem_space: MCA_L1MemorySpace, spad_st_mem_space: MCA_L1MemorySpace, ifm: MCA_TensorBuffer, wgt: MCA_TensorBuffer, bias: MCA_TensorBuffer, ofm: MCA_TensorBuffer) -> 'MCA_OperatorMapper':
@@ -678,9 +671,34 @@ class MCA_OperatorMapper:
             core_group=core_group,
             spad_ld_mem_space=spad_ld_mem_space,
             spad_st_mem_space=spad_st_mem_space,
-            n_inner_per_outer=ifm.tile_grid[1],
-            input_tile_size=ifm.tile_size + wgt.tile_size + bias.tile_size,
-            output_tile_size=ofm.tile_size,
+            tiled_ops=tiled_ops,
+        )
+        
+    @staticmethod
+    def UNARY_INPLACE(core_group: MCA_CoreGroup, spad_ld_mem_space: MCA_L1MemorySpace, spad_st_mem_space: MCA_L1MemorySpace, ifm: MCA_TensorBuffer) -> 'MCA_OperatorMapper':
+        ifm_tiles: dict[tuple[int, ...], TileSignature] = {
+            (m_s, k_s, m_t, k_t): TileSignature("ifm", ifm, m_s, k_s, m_t, k_t)
+            for m_s in range(ifm.shard_grid[0])
+            for k_s in range(ifm.shard_grid[1])
+            for m_t in range(ifm.tile_grid_per_shard[0])
+            for k_t in range(ifm.tile_grid_per_shard[1])
+        }
+        
+        tiled_ops = [
+            TiledOperatorSignature(
+                i_tiles=[(ifm_tiles[(m_s, k_s, m_t, k_t)],) ],
+                o_tile=ifm_tiles[(m_s, k_s, m_t, k_t)]
+            )
+            for m_s in range(ifm.shard_grid[0])
+            for k_s in range(ifm.shard_grid[1])
+            for m_t in range(ifm.tile_grid_per_shard[0])
+            for k_t in range(ifm.tile_grid_per_shard[1])
+        ]
+        
+        return MCA_OperatorMapper(
+            core_group=core_group,
+            spad_ld_mem_space=spad_ld_mem_space,
+            spad_st_mem_space=spad_st_mem_space,
             tiled_ops=tiled_ops,
         )
         
@@ -690,7 +708,6 @@ class MCA_OperatorMapper:
             spad_st_pp_ptrs=self._spad_st_pp_ptrs,
             spad_ld_pp_size=self._spad_ld_pp_size,
             spad_st_pp_size=self._spad_st_pp_size,
-            inner_tiled_op_per_pp=self._inner_tiled_op_per_pp,
             mapping=TiledOperatorMapping.from_tiled_ops(self._core_group, self._tiled_ops)
         )
         

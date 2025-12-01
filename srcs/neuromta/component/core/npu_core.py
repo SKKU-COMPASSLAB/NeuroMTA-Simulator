@@ -643,7 +643,7 @@ class NPUCore(Core):
         if not self.use_functional_model:
             return  # Terminate the command to reduce the simulation time without actual VPU functional unit (do not return anything to make sure that the command is executed only once)
         
-        data = data_cont.data.view(self.vpu_context.vdtype).reshape(-1)
+        data = data_cont.data.flatten().view(self.vpu_context.vdtype)
         
         for i in range(burst_len):
             st = offset + i * self.vpu_context.vlen

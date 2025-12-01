@@ -43,10 +43,10 @@ pip install ./externals/pydramsim3    # pydramsim3 (cycle-level DRAM simulator)
 
 NeuroMTA simulator provides a comprehensive framework `neuromta/framework` to implement behavioral and cycle-level model of the deep learning accelerator. The framework includes several metaclasses to create cores, memory space, and device instances. You can create your own cores and hardware components by defining command-level interface of them.
 
-### NeuroMTA Hardware (under-development)
+### NeuroMTA Component (under-development)
 
-NeuroMTA simulator provides `neuromta/hardware`, which contains the actual implementation of predetermined hardware architectures including multi-tile accelerator. You can check details of each hardware architecture including MXU (Matrix Multiplication Unit) and DMA (Direct Memory Access) engines.
+NeuroMTA simulator provides `neuromta/component`, which contains the actual implementation of predetermined hardware architectures including multi-tile accelerator. You can check details of each hardware architecture including NPU core, MXU (Matrix Multiplication Unit) and DMA (Direct Memory Access) engines. In this subproject, you can see several softwares that determines the memory layout of the tensors, dynamically maps tiled operators to each NPU core, and compiled DNN operator considering the on-chip memory usage and data transfer between NPU and DMA cores.
 
-### NeuroMTA IP (under-development)
+### NeuroMTA System (under-development)
 
-NeuroMTA simulator provides `neuromta/ip`, which contains the presets of the commercial NPU architectures. This subproject also provides software stack of the accelerator including runtime library and compiler.
+NeuroMTA simulator provides `neuromta/system`, which contains the preset of the commercial NPU architectures.

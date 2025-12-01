@@ -1,41 +1,49 @@
 from typing import Callable
 
+from matplotlib import container
 from neuromta.framework import *
 from neuromta.component.core import *
+from neuromta.component.context import *
 from neuromta.component.implementation.tensor_buffer import *
 from neuromta.component.implementation.mapping import *
 
 
 __all__ = [
+    # KERNEL CORE STAGE
+    "MCA_KERNEL_CORE_STAGE_PREPROCESSING",
+    "MCA_KERNEL_CORE_STAGE_POSTPROCESSING",
+    "MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST",
+    "MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST",
+    "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR",
+    "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU",
+
     # KERNEL CORE OP
-    "MCA_KERNEL_CORE_OP_LINEAR",
+    "MCA_OP_CORE_TEMPLATE",
 ]
 
 @jit_prototype
 def MCA_KERNEL_CORE_STAGE_PREPROCESSING(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):                
-    for thread in stage.preprocessings:
+    for cmd in stage.preprocessings:
         with new_parallel_thread():
-            for cmd in thread:
-                if isinstance(cmd, CompiledCommand.NOP):
-                    continue
-                elif isinstance(cmd, CompiledCommand.VAR_BARRIER):
-                    core.var_atomic_barrier(cmd.var_arrived_count, cmd.var_block_state, cmd.total_arrivals)
-                else:
-                    raise NotImplementedError(f"Preprocessing command {type(cmd)} is not implemented.")
+            if isinstance(cmd, CompiledCommand.NOP):
+                continue
+            elif isinstance(cmd, CompiledCommand.VAR_BARRIER):
+                core.var_atomic_barrier(cmd.var_arrived_count, cmd.var_block_state, cmd.total_arrivals)
+            else:
+                raise NotImplementedError(f"Preprocessing command {type(cmd)} is not implemented.")
                 
     core.parallel_merge()
 
 @jit_prototype
 def MCA_KERNEL_CORE_STAGE_POSTPROCESSING(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
-    for thread in stage.postprocessings:
+    for cmd in stage.postprocessings:
         with new_parallel_thread():
-            for cmd in thread:
-                if isinstance(cmd, CompiledCommand.NOP):
-                    continue
-                elif isinstance(cmd, CompiledCommand.VAR_BARRIER):
-                    core.var_atomic_barrier(cmd.var_arrived_count, cmd.var_block_state, cmd.total_arrivals)
-                else:
-                    raise NotImplementedError(f"Postprocessing command {type(cmd)} is not implemented.")
+            if isinstance(cmd, CompiledCommand.NOP):
+                continue
+            elif isinstance(cmd, CompiledCommand.VAR_BARRIER):
+                core.var_atomic_barrier(cmd.var_arrived_count, cmd.var_block_state, cmd.total_arrivals)
+            else:
+                raise NotImplementedError(f"Postprocessing command {type(cmd)} is not implemented.")
     
     core.parallel_merge()
 
@@ -121,10 +129,95 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, operator: Compiled
         
         if flush_ofm:
             core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
+            
+@jit_prototype
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU_INPLACE(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    for cmd in stage.compute_ops:
+        if not isinstance(cmd, CompiledCommand.TILED_OP):
+            raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
+        
+        op_sig = cmd.op_sig
+        inner_op_idx = cmd.inner_op_idx
+        
+        ifm_sig = op_sig.i_tiles[inner_op_idx][0]
+        ofm_sig = op_sig.o_tile
+        
+        ifm = DataContainer(shape=ifm_sig.buf.tile_shape, dtype=ifm_sig.buf.dtype)
+        ofm = DataContainer(shape=ofm_sig.buf.tile_shape, dtype=ofm_sig.buf.dtype)
+        
+        core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_sig.buf.tile_size)
+        core.local_mem_page_read(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
+        
+        vlen        = ifm_sig.buf.tile_shape[1]
+        burst_len   = ifm_sig.buf.tile_shape[0]
+        vdtype      = ifm_sig.buf.dtype
+        n_vreg_num  = core.vpu_context.get_vreg_num_with_config(vlen=vlen, vdtype=vdtype)
+        
+        if n_vreg_num < burst_len:
+            raise Exception(f"VPU register number ({n_vreg_num}) is insufficient for burst length ({burst_len}).")  # TODO: implement split burst if insufficient vreg
+        
+        if inner_op_idx == 0:
+            core.vpu_reconfigure(vlen=vlen, vdtype=ifm_sig.buf.dtype)
+        
+        core.vpu_load_reg(ifm, 0, burst_len=burst_len, offset=0)
+        core.vpu_execute(VPUOperator.RELU, vreg_a=0, inplace=True, burst_len=burst_len)
+        core.vpu_store_reg(ofm, 0, burst_len=burst_len, offset=0)
+        
+        core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
+        
+        
+@jit_prototype
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    for cmd in stage.compute_ops:
+        if not isinstance(cmd, CompiledCommand.TILED_OP):
+            raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
+        
+        op_sig = cmd.op_sig
+        inner_op_idx = cmd.inner_op_idx
+        
+        ifm_sig = op_sig.i_tiles[inner_op_idx][0]
+        wgt_sig = op_sig.i_tiles[inner_op_idx][1]
+        bias_sig = op_sig.i_tiles[inner_op_idx][2]
+        ofm_sig = op_sig.o_tile
+        
+        ifm  = DataContainer(shape=ifm_sig.buf.tile_shape, dtype=ifm_sig.buf.dtype)
+        wgt  = DataContainer(shape=wgt_sig.buf.tile_shape, dtype=wgt_sig.buf.dtype)
+        bias = DataContainer(shape=bias_sig.buf.tile_shape, dtype=bias_sig.buf.dtype)
+        ofm  = DataContainer(shape=ofm_sig.buf.tile_shape, dtype=ofm_sig.buf.dtype)
+        
+        preload_psum = (inner_op_idx == 0)
+        flush_ofm    = (inner_op_idx == len(op_sig.i_tiles) - 1)
+        
+        if inner_op_idx == 0:
+            core.mxu_reconfigure(dtype=ifm_sig.buf.dtype, acc_dtype=ofm_sig.buf.dtype)
+            core.vpu_reconfigure(vlen=ofm_sig.buf.tile_shape[1], vdtype=ofm_sig.buf.dtype)
+        
+        core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_sig.buf.tile_size)
+        core.local_mem_page_read(wgt_sig.spm_ptr, wgt, wgt_sig.buf.tile_size)
+        if preload_psum:
+            core.local_mem_page_read(bias_sig.spm_ptr, bias, bias_sig.buf.tile_size)
+
+        core.mxu_tiled_gemm(
+            ifm, wgt, bias, ofm,
+            preload_psum=preload_psum,
+            flush_ofm=flush_ofm,
+            wgt_transposed=True,
+            psum_vectored=True,
+        )
+        
+        if flush_ofm:
+            burst_len = ofm_sig.buf.tile_shape[0]
+            
+            core.vpu_load_reg(ofm, 0, burst_len=burst_len, offset=0)
+            core.vpu_execute(VPUOperator.RELU, vreg_a=0, inplace=True, burst_len=burst_len)
+            core.vpu_store_reg(ofm, 0, burst_len=burst_len, offset=0)
+
+            core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
+        
+
 
 @jit_prototype
-def MCA_KERNEL_CORE_OP_LINEAR(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
-    # for stage in operator.stages:
+def MCA_OP_CORE_TEMPLATE(core: NPUCore, operator: CompiledOperator, stage: CompiledStage, op_compute_methods: list[Callable]):
     MCA_KERNEL_CORE_STAGE_PREPROCESSING(core, operator, stage)
     
     with new_parallel_thread("DMA_LOAD"):
@@ -134,8 +227,10 @@ def MCA_KERNEL_CORE_OP_LINEAR(core: NPUCore, operator: CompiledOperator, stage: 
         MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core, operator, stage)
             
     with new_parallel_thread("COMPUTE"):
-        MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core, operator, stage)
+        for method in op_compute_methods:
+            method(core, operator, stage)
             
     core.parallel_merge()
     
     MCA_KERNEL_CORE_STAGE_POSTPROCESSING(core, operator, stage)
+
