@@ -1,12 +1,11 @@
 import os
 import argparse
-import threading
 import multiprocessing as mp
 import torch
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mta.tenstorrent import *
+from neuromta.system.mca.google_tpu import *
 
 
 class Benchmark:
@@ -36,7 +35,7 @@ class Benchmark:
         self._main_traffic: int = 0
         self._total_ops:    int = (self.M * self.N * self.K) * 2 + (self.M * self.N)  # MACs + Bias Add
         
-    def run(self, device: TenstorrentDevice, core_group: MTA_CoreGrid):
+    def run(self, device: GoogleTPUDevice, core_group: MTA_CoreGrid):
         if (self.M // 32) % self.Ms != 0:
             self.Ms = 1
         if (self.N // 32) % self.Ns != 0:
@@ -48,16 +47,16 @@ class Benchmark:
         wgt  = torch.randint(low=0, high=128, size=(self.N, self.K), dtype=self.dtype)
         bias = torch.randint(low=0, high=256, size=(self.N,), dtype=self.dtype)
         
-        ifm_mem_space    = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
-        ofm_mem_space    = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
+        ifm_mem_space    = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
+        ofm_mem_space    = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
         param_mem_space  = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-        spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("256KB"), core_group=core_group)
-        spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
+        spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("30MB"), core_group=core_group)
+        spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
         
-        ifm_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks)).allocate().update(ifm)
+        ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks)).allocate().update(ifm)
         wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks)).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),    ).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns)).allocate()
+        bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns)     ).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns)).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
@@ -67,14 +66,14 @@ class Benchmark:
                 self._l1_traffic += b.total_size
             else:
                 self._main_traffic += b.total_size
-        
+                
         MCA_OP_LINEAR(
             device, core_group, 
             spad_ld_pp_space, spad_st_pp_space, 
             ifm_b, wgt_b, bias_b, ofm_b, 
-            broadcast_optimize=True, 
+            broadcast_optimize=True,
             auto_dispatch=True,
-            mapping_strategy=self.mapping_strategy,
+            mapping_strategy=self.mapping_strategy
         )
         
         device.run_kernels()
@@ -118,20 +117,24 @@ class Benchmark:
     
     
 class BenchmarkProcess(mp.Process):
-    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, core_group_offset: tuple[int, int], core_group_shape: tuple[int, int], return_dict: dict):
+    def __init__(self, benchmark: Benchmark, device_config: GoogleTPUConfig, core_group_offset: int, core_group_size: int, return_dict: dict, worker_sem):
         super().__init__()
         self.benchmark = benchmark
         self.device_config = device_config
         self.core_group_offset = core_group_offset
-        self.core_group_shape = core_group_shape
+        self.core_group_size = core_group_size
         self.return_dict = return_dict
+        self.worker_sem = worker_sem
         
     def run(self):
-        device = TenstorrentDevice(**self.device_config)
+        self.worker_sem.acquire()
+        print(f"process started for  {self.benchmark.signature}")
+        
+        device = GoogleTPUDevice(**self.device_config)
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
         
-        core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
+        core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_size)
         
         self.benchmark.run(device, core_group)
         
@@ -141,25 +144,28 @@ class BenchmarkProcess(mp.Process):
             "l1_traffic":   self.benchmark.l1_traffic,
             "main_traffic": self.benchmark.main_traffic,
         }
+        
+        self.worker_sem.release()
+        print(f"process finished for {self.benchmark.signature}")
 
-
+    
 benchmarks = [
     # Benchmarks: Square Matrices with Varying Sizes
     Benchmark(M=1024, N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=256 , N=256,  K=256,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=128 , N=128,  K=128,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=512 , N=512,  K=512,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=256 , N=256,  K=256,  Ms=2, Ns=2, Ks=2, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=128 , N=128,  K=128,  Ms=1, Ns=1, Ks=1, dtype=torch.int32, acc_dtype=torch.int32),
     
     # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
-    Benchmark(M=512,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=256,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=128,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    Benchmark(M=512,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=256,  N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=128,  N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=64,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
 ]
 
 if __name__ == "__main__":
@@ -168,6 +174,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Tenstorrent Device Benchmark Suite")
     parser.add_argument("-o", "--output", type=str, default=f"{FILE_NAME}.csv", help="Output file to save benchmark results")
+    parser.add_argument("-n", "--n-workers", type=int, default=4, help="Number of parallel worker processes")
     args = parser.parse_args()
 
     output_dir = os.path.join(ROOT_DIR, ".logs")
@@ -176,27 +183,19 @@ if __name__ == "__main__":
     
     manager = mp.Manager()
     return_dict = manager.dict()
-    config = TenstorrentConfig.BLACKHOLE()
-    
+    config = GoogleTPUConfig.V4()
+        
+    n_workers = args.n_workers
+    worker_sem = mp.Semaphore(n_workers)
+            
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), return_dict)
+        p = BenchmarkProcess(benchmark, config, 0, 4, return_dict, worker_sem)
         p.start()
         processes.append(p)
-        print(f"Started benchmark process for: {benchmark.signature}")
-        
-    def _monitor_and_notify(proc: BenchmarkProcess):
-        proc.join()
-        print(f"Benchmark process finished for: {proc.benchmark.signature}")
-
-    monitor_threads: list[threading.Thread] = []
-    for proc in processes:
-        t = threading.Thread(target=_monitor_and_notify, args=(proc,), daemon=True)
-        t.start()
-        monitor_threads.append(t)
-
-    for t in monitor_threads:
-        t.join()
+    
+    for p in processes:
+        p.join()
     
     with open(output_path, "w") as f:
         f.write("Benchmark,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")

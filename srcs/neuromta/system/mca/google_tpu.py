@@ -44,10 +44,10 @@ class GoogleTPUConfig(dict):
         processor_clock_freq    = parse_freq_str("1GHz")
         main_mem_channel_size   = parse_mem_cap_str("2GB")
         l1_mem_bank_size        = parse_mem_cap_str("48MB")
-        n_main_mem_channels     = 16
+        n_main_mem_channels     = 8
         
         n_dma_core = n_main_mem_channels
-        n_npu_core = 2
+        n_npu_core = 8
         icnt_shape = (2, max(n_dma_core, n_npu_core))
         
         if PYDRAMSIM3_AVAILABLE:
@@ -87,9 +87,9 @@ class GoogleTPUConfig(dict):
         
         icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
             shape=icnt_shape,                       # - 12x16 torus
-            subnets=2,                              # - 2 subnets (full-duplex)
+            subnets=6,                              # - 2 subnets (full-duplex)
             flit_size=parse_mem_cap_str("32B"),     # - 32B flit size (the unit of flow control)
-            max_payload_size=256,                   # - 256 in flits in maximum as a payload = 8KB
+            max_payload_size=2048,                   # - 256 in flits in maximum as a payload = 8KB
             booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 32B * 2 * 1GHz = 64GB/s
         )
         

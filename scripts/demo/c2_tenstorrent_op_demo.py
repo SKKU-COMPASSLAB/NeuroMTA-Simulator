@@ -20,8 +20,8 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
-    M, N, K = 1, 1024, 1024
-    Ms, Ns, Ks = 1, 8, 8
+    M, N, K = 512, 512, 512
+    Ms, Ns, Ks = 4, 4, 4
     dtype = torch.int32
     acc_dtype = torch.int32
     blocked_mapping = False  # Enable blocked mapping for better data locality

@@ -63,14 +63,14 @@ class Benchmark:
         spad_ld_pp_space2 = device.create_l1_mem_space(parse_mem_cap_str("256KB"), core_group=core_group2)
         spad_st_pp_space2 = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group2)
         
-        ifm1_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks)).allocate().update(ifm)
-        wgt1_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks)).allocate().update(wgt)
-        bias1_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),    ).allocate().update(bias)
+        ifm1_b  = MCA_TensorBuffer(mem_space=ifm_mem_space1,  shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks), blocked_mapping=True).allocate().update(ifm)
+        wgt1_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks), blocked_mapping=True).allocate().update(wgt)
+        bias1_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),      blocked_mapping=True).allocate().update(bias)
         
-        ifm2_b  = MCA_TensorBuffer(mem_space=ofm_mem_space1,  shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns)).allocate()
-        wgt2_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=self.acc_dtype,  shard_grid=(self.Ns, self.Ks)).allocate().update(wgt.to(self.acc_dtype))
-        bias2_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),    ).allocate().update(bias)
-        ofm_b   = MCA_TensorBuffer(mem_space=ofm_mem_space2,  shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns)).allocate()
+        ifm2_b  = MCA_TensorBuffer(mem_space=ifm_mem_space2,  shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns), blocked_mapping=True).allocate()
+        wgt2_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=self.acc_dtype,  shard_grid=(self.Ns, self.Ks), blocked_mapping=True).allocate().update(wgt.to(self.acc_dtype))
+        bias2_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),      blocked_mapping=True).allocate().update(bias)
+        ofm_b   = MCA_TensorBuffer(mem_space=ofm_mem_space2,  shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns), blocked_mapping=True).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
@@ -165,7 +165,9 @@ class BenchmarkProcess(mp.Process):
         core_group_offset2: tuple[int, int], 
         core_group_shape2:  tuple[int, int], 
         
-        return_dict: dict
+        return_dict: dict,
+        
+        worker_sem
     ):
         super().__init__()
         self.benchmark = benchmark
@@ -179,7 +181,12 @@ class BenchmarkProcess(mp.Process):
         
         self.return_dict = return_dict
         
+        self.worker_sem = worker_sem
+    
     def run(self):
+        self.worker_sem.acquire()
+        print(f"process started for  {self.benchmark.signature}")
+
         device = TenstorrentDevice(**self.device_config)
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
@@ -202,6 +209,9 @@ class BenchmarkProcess(mp.Process):
             "l1_traffic":   self.benchmark.l1_traffic,
             "main_traffic": self.benchmark.main_traffic,
         }
+        
+        self.worker_sem.release()
+        print(f"process finished for {self.benchmark.signature}")
 
 
 benchmarks = [
@@ -229,6 +239,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Tenstorrent Device Benchmark Suite")
     parser.add_argument("-o", "--output", type=str, default=f"{FILE_NAME}.csv", help="Output file to save benchmark results")
+    parser.add_argument("-n", "--n-workers", type=int, default=4, help="Number of parallel worker processes")
     args = parser.parse_args()
 
     output_dir = os.path.join(ROOT_DIR, ".logs")
@@ -239,25 +250,18 @@ if __name__ == "__main__":
     return_dict = manager.dict()
     config = TenstorrentConfig.BLACKHOLE()
     
+    n_workers = args.n_workers
+    worker_sem = mp.Semaphore(n_workers)
+    
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), (0, 4), (4, 4), return_dict)
+        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), (0, 4), (4, 4), return_dict, worker_sem)
         p.start()
         processes.append(p)
         print(f"Started benchmark process for: {benchmark.signature}")
         
-    def _monitor_and_notify(proc: BenchmarkProcess):
-        proc.join()
-        print(f"Benchmark process finished for: {proc.benchmark.signature}")
-
-    monitor_threads: list[threading.Thread] = []
-    for proc in processes:
-        t = threading.Thread(target=_monitor_and_notify, args=(proc,), daemon=True)
-        t.start()
-        monitor_threads.append(t)
-
-    for t in monitor_threads:
-        t.join()
+    for p in processes:
+        p.join()
     
     with open(output_path, "w") as f:
         f.write("Benchmark,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
