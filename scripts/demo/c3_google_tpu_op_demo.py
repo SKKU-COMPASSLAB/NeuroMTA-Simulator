@@ -18,10 +18,10 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_group = device.get_npu_core_group(0, 1)
+    core_group = device.get_npu_core_group(0, 4)
     
-    M, N, K = 500, 500, 500
-    Ms, Ns, Ks = 2, 2, 2
+    M, N, K = 128, 1024, 1024
+    Ms, Ns, Ks = 1, 8, 8
     dtype = torch.int32
     acc_dtype = torch.int32
     
@@ -35,10 +35,10 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    ifm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
-    param_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-    ofm_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
-    spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
+    ifm_mem_space    = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
+    ofm_mem_space    = device.create_l1_mem_space(parse_mem_cap_str("4MB"), core_group=core_group)
+    param_mem_space  = device.create_main_mem_space(parse_mem_cap_str("1GB"))
+    spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("30MB"), core_group=core_group)
     spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
     
     ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks)).allocate().update(ifm)
