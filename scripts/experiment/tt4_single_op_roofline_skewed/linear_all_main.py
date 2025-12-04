@@ -191,7 +191,7 @@ if __name__ == "__main__":
     
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), return_dict, worker_sem)
+        p = BenchmarkProcess(benchmark, config, (0, 0), (8, 2), return_dict, worker_sem)
         p.start()
         processes.append(p)
         print(f"Started benchmark process for: {benchmark.signature}")

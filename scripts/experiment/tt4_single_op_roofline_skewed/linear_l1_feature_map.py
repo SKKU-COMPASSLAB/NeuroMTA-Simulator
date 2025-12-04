@@ -54,10 +54,10 @@ class Benchmark:
         spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("256KB"), core_group=core_group)
         spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
         
-        ifm_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks)).allocate().update(ifm)
-        wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks)).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),    ).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns)).allocate()
+        ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks), blocked_mapping=True).allocate().update(ifm)
+        wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks),                     ).allocate().update(wgt)
+        bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),                          ).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns), blocked_mapping=True).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
@@ -67,14 +67,14 @@ class Benchmark:
                 self._l1_traffic += b.total_size
             else:
                 self._main_traffic += b.total_size
-        
+                
         MCA_OP_LINEAR(
             device, core_group, 
             spad_ld_pp_space, spad_st_pp_space, 
             ifm_b, wgt_b, bias_b, ofm_b, 
             broadcast_optimize=True, 
             auto_dispatch=True,
-            mapping_strategy=self.mapping_strategy,
+            mapping_strategy=self.mapping_strategy
         )
         
         device.run_kernels()
@@ -167,6 +167,13 @@ benchmarks = [
     Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
     Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
     Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    
+    # Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    # Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    # Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    # Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    # Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    # Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
 ]
 
 if __name__ == "__main__":
@@ -191,7 +198,7 @@ if __name__ == "__main__":
     
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), return_dict, worker_sem)
+        p = BenchmarkProcess(benchmark, config, (0, 0), (8, 2), return_dict, worker_sem)
         p.start()
         processes.append(p)
         print(f"Started benchmark process for: {benchmark.signature}")

@@ -339,8 +339,15 @@ class MTA_DeviceBase(MCA_DeviceBase):
         if offset is None and shape is None:
             return MTA_CoreGrid(offset=(0, 0), shape=self._npu_core_grid.shape, core_ids=self._npu_core_grid.flatten().tolist())
         
+        if shape[0] >= self._npu_core_grid.shape[0] - offset[0]:
+            shape = list(shape)
+            shape[0] = self._npu_core_grid.shape[0] - offset[0]  # make sure the shape does not exceed the grid boundary
+        if shape[1] >= self._npu_core_grid.shape[1] - offset[1]:
+            shape = list(shape)
+            shape[1] = self._npu_core_grid.shape[1] - offset[1]  # make sure the shape does not exceed the grid boundary
+        
         grid = self._npu_core_grid[offset[0]:offset[0]+shape[0], offset[1]:offset[1]+shape[1]]
-        return MTA_CoreGrid(offset=offset, shape=shape, core_ids=grid.flatten().tolist())
+        return MTA_CoreGrid(offset=offset, shape=tuple(shape), core_ids=grid.flatten().tolist())
     
     def summary(self):
         s = super().summary()

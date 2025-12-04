@@ -16,6 +16,7 @@ class Benchmark:
         Ms: int, Ns: int, Ks: int,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
+        core_group_shape: tuple[int, int],
         mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
     ):
         self.M: int = M
@@ -29,6 +30,7 @@ class Benchmark:
         self.dtype:     torch.dtype = dtype
         self.acc_dtype: torch.dtype = acc_dtype
         
+        self.core_group_shape: tuple[int, int] = core_group_shape
         self.mapping_strategy: str = mapping_strategy
         
         self._timestamp:    int = 0
@@ -54,10 +56,13 @@ class Benchmark:
         spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("256KB"), core_group=core_group)
         spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
         
-        ifm_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks)).allocate().update(ifm)
-        wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks)).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),    ).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns)).allocate()
+        ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks), blocked_mapping=True).allocate().update(ifm)
+        wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks),                     ).allocate().update(wgt)
+        bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),                          ).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns), blocked_mapping=True).allocate()
+        
+        if not ofm_b._blocked_mapping:
+            self.mapping_strategy = MCA_OperatorMapper.ROUND_ROBIN
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
@@ -67,14 +72,14 @@ class Benchmark:
                 self._l1_traffic += b.total_size
             else:
                 self._main_traffic += b.total_size
-        
+                
         MCA_OP_LINEAR(
             device, core_group, 
             spad_ld_pp_space, spad_st_pp_space, 
             ifm_b, wgt_b, bias_b, ofm_b, 
             broadcast_optimize=True, 
             auto_dispatch=True,
-            mapping_strategy=self.mapping_strategy,
+            mapping_strategy=self.mapping_strategy
         )
         
         device.run_kernels()
@@ -107,35 +112,27 @@ class Benchmark:
     
     @property
     def signature(self) -> str:
-        ms = self.mapping_strategy.lower()
-        if ms == MCA_OperatorMapper.OUTPUT_STATIONARY:
-            ms_str = "os"
-        elif ms == MCA_OperatorMapper.ROUND_ROBIN:
-            ms_str = "rr"
-        else:
-            ms_str = "unk"
-        return f"{self.M}x{self.N}x{self.K}_{self.Ms}x{self.Ns}x{self.Ks}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
+        return f"{self.M}x{self.N}x{self.K}_{self.Ms}x{self.Ns}x{self.Ks}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}_grid{self.core_group_shape[0]}x{self.core_group_shape[1]}"
     
     
 class BenchmarkProcess(mp.Process):
-    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, core_group_offset: tuple[int, int], core_group_shape: tuple[int, int], return_dict: dict, worker_sem):
+    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, core_group_offset: tuple[int, int], return_dict: dict, worker_sem):
         super().__init__()
         self.benchmark = benchmark
         self.device_config = device_config
         self.core_group_offset = core_group_offset
-        self.core_group_shape = core_group_shape
         self.return_dict = return_dict
         self.worker_sem = worker_sem
         
     def run(self):
         self.worker_sem.acquire()
-        print(f"process started for  {self.benchmark.signature}")
+        logger.info(f"process started for  {self.benchmark.signature}")
 
         device = TenstorrentDevice(**self.device_config)
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
         
-        core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
+        core_group = device.get_npu_core_group(self.core_group_offset, self.benchmark.core_group_shape)
         
         self.benchmark.run(device, core_group)
         
@@ -147,26 +144,20 @@ class BenchmarkProcess(mp.Process):
         }
         
         self.worker_sem.release()
-        print(f"process finished for {self.benchmark.signature}")
+        logger.info(f"process finished for {self.benchmark.signature}")
 
 
 benchmarks = [
-    # Benchmarks: Square Matrices with Varying Sizes
-    Benchmark(M=1024, N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=256 , N=256,  K=256,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=128 , N=128,  K=128,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, core_group_shape=(1,4)),
+    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, core_group_shape=(2,2)),
+    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, core_group_shape=(4,1)),
     
-    # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
-    Benchmark(M=512,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=256,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=128,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, core_group_shape=(2,8)),
+    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, core_group_shape=(4,4)),
+    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, core_group_shape=(8,2)),
+    
+    Benchmark(M=1024 , N=1024,  K=1024,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, core_group_shape=(4,8)),
+    Benchmark(M=1024 , N=1024,  K=1024,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, core_group_shape=(8,4)),
 ]
 
 if __name__ == "__main__":
@@ -191,10 +182,9 @@ if __name__ == "__main__":
     
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), return_dict, worker_sem)
+        p = BenchmarkProcess(benchmark, config, (0, 0), return_dict, worker_sem)
         p.start()
         processes.append(p)
-        print(f"Started benchmark process for: {benchmark.signature}")
         
     for p in processes:
         p.join()
@@ -202,7 +192,11 @@ if __name__ == "__main__":
     with open(output_path, "w") as f:
         f.write("Benchmark,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
         for benchmark in benchmarks:
-            result = return_dict[benchmark.signature]
+            result = return_dict.get(benchmark.signature, None)
+            
+            if result is None:
+                logger.warning(f"No result found for benchmark: {benchmark.signature}")
+                continue
             
             timestamp    = result["timestamp"]
             total_ops    = result["total_ops"]

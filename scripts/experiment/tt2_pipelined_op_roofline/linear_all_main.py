@@ -149,7 +149,7 @@ class Benchmark:
             ms_str = "rr"
         else:
             ms_str = "unk"
-        return f"{self.M}x{self.N}x{self.K}_{self.Ms}x{self.Ns}x{self.Ks}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}_{ms_str}"
+        return f"{self.M}x{self.N}x{self.K}_{self.Ms}x{self.Ns}x{self.Ks}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
     
     
 class BenchmarkProcess(mp.Process):
