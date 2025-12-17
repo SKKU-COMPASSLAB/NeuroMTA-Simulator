@@ -216,5 +216,6 @@ __marimo__/
 .backup/
 scripts/*/.logs/
 scripts/*experiments/*/.archive/
+scripts/*experiment/*/.logs*
 
 build/
