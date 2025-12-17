@@ -20,46 +20,70 @@ __all__ = [
 ]
 
 
-def create_new_dramsim_config_file(
-    src_config_path: str, 
-    new_config_path: str,
+# def create_new_dramsim_config_file(
+#     src_config_path: str, 
+#     new_config_path: str,
     
-    # channel_size: int,
-    # n_channel: int,
-    system_params: dict[str, int] = None,
-    dram_structure_params: dict[str, int] = None,
-):
-    if not os.path.isfile(src_config_path):
-        src_config_path = pydramsim3.PYDRAMSIM_MSYS_CONFIG_PATH(src_config_path)
-    if not os.path.isfile(src_config_path):
-        raise FileNotFoundError(f"DRAMSim3 config file '{src_config_path}' not found.")
+#     # channel_size: int,
+#     # n_channel: int,
+#     system_params: dict[str, int] = None,
+#     dram_structure_params: dict[str, int] = None,
+# ):
+#     if not os.path.isfile(src_config_path):
+#         src_config_path = pydramsim3.PYDRAMSIM_MSYS_CONFIG_PATH(src_config_path)
+#     if not os.path.isfile(src_config_path):
+#         raise FileNotFoundError(f"DRAMSim3 config file '{src_config_path}' not found.")
 
-    os.makedirs(os.path.dirname(new_config_path), exist_ok=True)
+#     os.makedirs(os.path.dirname(new_config_path), exist_ok=True)
 
-    src_config = configparser.ConfigParser()
-    src_config.read(src_config_path)
+#     src_config = configparser.ConfigParser()
+#     src_config.read(src_config_path)
     
-    # src_config["system"]["channel_size"] = str(channel_size)
-    # src_config["system"]["channels"] = str(n_channel)
+#     # src_config["system"]["channel_size"] = str(channel_size)
+#     # src_config["system"]["channels"] = str(n_channel)
     
-    if system_params is not None:
-        for key, value in system_params.items():
-            src_config["system"][key] = str(value)
+#     if system_params is not None:
+#         for key, value in system_params.items():
+#             src_config["system"][key] = str(value)
     
-    if dram_structure_params is not None:
-        for key, value in dram_structure_params.items():
-            src_config["dram_structure"][key] = str(value)
+#     if dram_structure_params is not None:
+#         for key, value in dram_structure_params.items():
+#             src_config["dram_structure"][key] = str(value)
 
-    with open(new_config_path, "w") as new_file:
-        src_config.write(new_file)
+#     with open(new_config_path, "w") as new_file:
+#         src_config.write(new_file)
+        
+        
+# def get_bandwidth_from_dramsim_config(config_path: str) -> float:
+#     if not os.path.isfile(config_path):
+#         config_path = pydramsim3.PYDRAMSIM_MSYS_CONFIG_PATH(config_path)
+#     if not os.path.isfile(config_path):
+#         raise FileNotFoundError(f"DRAMSim3 config file '{config_path}' not found.")
+
+#     src_config = configparser.ConfigParser()
+#     src_config.read(config_path)
+    
+#     is_ddr = False
+#     protocol = src_config["system"].get("protocol", "DDR3").upper()
+    
+#     if "DDR" in protocol or "HBM" in protocol:
+#         is_ddr = True
+    
+#     tck = float(src_config["timing"]["tck"])  # in ns
+#     data_rate = (2 if is_ddr else 1) * (1 / tck * 1e9)  # in Transfers/sec
+#     channels = int(src_config["system"]["channels"])
+#     bus_width = int(src_config["system"]["bus_width"])  # in bits
+    
+#     return data_rate * channels * (bus_width / 8)  # in Byte/sec
 
 
 class DRAMSim3Config:
     def __init__(
         self, 
-        config_path: str,  #="GDDR5_8Gb_x32", 
-        processor_clock_freq: int,  #=parse_freq_str("1GHz"),
-        cmd_queue_num: int,
+        config_path: str, 
+        processor_clock_freq: int,
+        n_instance: int,
+        n_cmd_q_per_instance: int,
     ):  
         if not os.path.isfile(config_path):
             config_path = pydramsim3.PYDRAMSIM_MSYS_CONFIG_PATH(config_path)
@@ -68,7 +92,11 @@ class DRAMSim3Config:
 
         self.config_path = config_path
         self.processor_clock_freq = processor_clock_freq
-        self.cmd_queue_num = cmd_queue_num
+        self.n_instance = n_instance
+        self.n_cmd_q_per_instance = n_cmd_q_per_instance
+        
+    def peak_bandwidth(self) -> float:
+        return pydramsim3.get_bandwidth_from_dramsim_config(self.config_path) * self.n_instance
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -83,13 +111,18 @@ class DRAMSim3(CompanionModule):
         
         self.config = config
         
-        self._msys = pydramsim3.create_msys(
-            config_file=self.config.config_path,
-            output_dir=pydramsim3.PYDRAMSIM_DEFAULT_OUT_DIR,
-            cmd_queue_num=self.config.cmd_queue_num,
-        )
+        if self.config.n_instance <= 0:
+            raise ValueError("DRAMSim3Config.n_instance must be greater than 0.")
         
-        self._mem_clock_time = pydramsim3.msys_get_tck(self._msys)
+        self._msys_instances = [
+            pydramsim3.create_msys(
+                config_file=self.config.config_path,
+                output_dir=pydramsim3.PYDRAMSIM_DEFAULT_OUT_DIR,
+                cmd_queue_num=self.config.n_cmd_q_per_instance,
+            ) for _ in range(self.config.n_instance)
+        ]
+        
+        self._mem_clock_time = pydramsim3.msys_get_tck(self._msys_instances[0])
         self._ref_clock_time = 1 / (self.config.processor_clock_freq * (1e-9))
         self._rem_clock_sync_time = 0
         
@@ -104,11 +137,16 @@ class DRAMSim3(CompanionModule):
         mem_cycles = math.floor(self._rem_clock_sync_time / self._mem_clock_time)
         self._rem_clock_sync_time -= mem_cycles * self._mem_clock_time
         
-        pydramsim3.msys_cycle_step(msys=self._msys, cycles=mem_cycles)
+        for msys in self._msys_instances:
+            pydramsim3.msys_cycle_step(msys=msys, cycles=mem_cycles)
 
-    def create_command(self, cmd_q_id: int, addr: int, size: int, is_write: bool) -> CompanionCommandSignature:
+    def create_command(self, inst_id: int, cmd_q_id: int, addr: int, size: int, is_write: bool) -> CompanionCommandSignature:
+        # inst_id = ch_id // self.config.n_cmd_q_per_instance
+        # cmd_q_id = ch_id % self.config.n_cmd_q_per_instance
+        
         capsule = pydramsim3.create_msys_cmd(cmd_q_id=cmd_q_id, addr=addr, size=size, is_write=is_write)
         cmd = CompanionCommandSignature(module_id=self.module_id, capsule=capsule, kwargs={
+            "inst_id": inst_id,
             "cmd_q_id": cmd_q_id,
             "addr": addr,
             "size": size,
@@ -117,7 +155,9 @@ class DRAMSim3(CompanionModule):
         return cmd
 
     def dispatch_command(self, cmd: CompanionCommandSignature, dispatch_callback: Callable, execute_callback: Callable) -> bool:
-        return pydramsim3.msys_dispatch_cmd(msys=self._msys, cmd=cmd.capsule, dispatch_callback=dispatch_callback, execute_callback=execute_callback)
+        inst_id = cmd.kwargs["inst_id"]
+        msys = self._msys_instances[inst_id]
+        return pydramsim3.msys_dispatch_cmd(msys=msys, cmd=cmd.capsule, dispatch_callback=dispatch_callback, execute_callback=execute_callback)
     
     def enable_bandwidth_profiling(self, resolution: int = 1):
         self._bw_profile_resolution = resolution

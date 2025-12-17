@@ -37,7 +37,8 @@ class NPUCore(Core):
         self.mem_info   = self.core_info.owned_mem_info  # Assume that each NPU core owns only one memory
         self.mem_handle = self.mem_info.mem_handle
         
-        self._dma_engine_idx = self.core_id % self.global_context.n_dma_engine_per_ch  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
+        self._dma_engine_idx = self.core_id % self.global_context.n_main_mem_cmd_q_per_instance  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
+        # self._dma_engine_idx = 0  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
         
         # synchronization variables
         self.ongoing_core_sync_msg: list[int] = []
@@ -303,7 +304,7 @@ class NPUCore(Core):
                 noc_msgs = []
                 
                 if src_owner_core_id != self.core_id:
-                    noc_msgs = [
+                    noc_msgs += [
                         RPCMessage(
                             src_core_id=self.core_id,
                             dst_core_id=COMPANION_CORE_ID,
@@ -316,7 +317,7 @@ class NPUCore(Core):
                     ]
                     
                 if dst_owner_core_id != self.core_id:
-                    noc_msgs = [
+                    noc_msgs += [
                         RPCMessage(
                             src_core_id=self.core_id,
                             dst_core_id=COMPANION_CORE_ID,
@@ -456,7 +457,7 @@ class NPUCore(Core):
                 noc_msgs = []
                 
                 if src_owner_core_id != self.core_id:
-                    noc_msgs = [
+                    noc_msgs += [
                         RPCMessage(
                             src_core_id=self.core_id,
                             dst_core_id=COMPANION_CORE_ID,
@@ -477,7 +478,7 @@ class NPUCore(Core):
                         dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
                         
                     if dst_owner_core_id != self.core_id:
-                        noc_msgs = [
+                        noc_msgs += [
                             RPCMessage(
                                 src_core_id=self.core_id,
                                 dst_core_id=COMPANION_CORE_ID,

@@ -18,13 +18,13 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_group = device.get_npu_core_group((0, 0), (4, 4))
+    core_group = device.get_npu_core_group((0, 0), (8, 8))
     
-    M, N, K = 512, 512, 512
-    Ms, Ns, Ks = 4, 4, 4
+    M, N, K = 256, 1024, 1024
+    Ms, Ns, Ks = 8, 8, 8
     dtype = torch.int32
     acc_dtype = torch.int32
-    blocked_mapping = False  # Enable blocked mapping for better data locality
+    blocked_mapping = True  # Enable blocked mapping for better data locality
     broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
     
     ifm  = torch.randint(low=0, high=128, size=(M, K), dtype=dtype)
@@ -97,3 +97,7 @@ if __name__ == "__main__":
                         content.append(f"Mismatch at position ({i}, {j}): simulated={sim_val}, reference={ref_val}\n")
             f.writelines(content)
         logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+    
+    print(param_mem_space.owner_ids)
+    for inst_id, cnt in sorted(device.global_context._history.items(), key=lambda x: x[0]):
+        print(f"DRAMSim3 Instance {inst_id} handled {cnt} commands.")

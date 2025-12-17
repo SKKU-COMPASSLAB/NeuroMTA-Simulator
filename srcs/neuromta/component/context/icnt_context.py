@@ -1,8 +1,9 @@
 import math
+import random
 from typing import Any
 
 from neuromta.framework import *
-from neuromta.component.companions.booksim import BookSim2Config
+from neuromta.component.companions.booksim import BookSim2Config, pybooksim2
 
 
 __all__ = [
@@ -20,6 +21,7 @@ class IcntConfig:
         max_payload_size: int   = 256,
         subnets: int            = 1,
         booksim2_enable: bool   = False,
+        booksim2_kwargs: dict[str, Any] = None,
     ):  
         if booksim2_enable:
             x_dim = shape[0]
@@ -33,6 +35,10 @@ class IcntConfig:
                 xr=1,   # no concentration by default
                 yr=1,   # no concentration by default
             )
+            
+            if booksim2_kwargs is not None:
+                for field, value in booksim2_kwargs.items():
+                    booksim2_config.update_field(field, value)
         else:
             booksim2_config = None
             
@@ -80,7 +86,8 @@ class IcntContext:
         return hop_cnt + (data_size // self.config.flit_size) + 1
     
     def get_icnt_data_transfer_args(self, src_id: int, dst_id: int, data_size: int, is_write: bool) -> list[dict[str, int]]:
-        subnet = (src_id + dst_id) % self.config.booksim2_config._subnets
+        # subnet = (src_id + dst_id) % self.config.booksim2_config._subnets
+        subnet = random.randint(0, self.config.booksim2_config._subnets - 1) if self.config.booksim2_enable else 0
         n_flits = math.ceil(data_size / self.config.flit_size)
         n_payloads = math.ceil(n_flits / self.config.max_payload_size)
         payload_size = min(n_flits, self.config.max_payload_size)

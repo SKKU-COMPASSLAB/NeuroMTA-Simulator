@@ -48,16 +48,30 @@ class Benchmark:
         wgt  = torch.randint(low=0, high=128, size=(self.N, self.K), dtype=self.dtype)
         bias = torch.randint(low=0, high=256, size=(self.N,), dtype=self.dtype)
         
-        ifm_mem_space    = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
-        ofm_mem_space    = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
-        param_mem_space  = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-        spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("256KB"), core_group=core_group)
-        spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
+        Mt = self.M // self.Ms
+        Nt = self.N // self.Ns
+        Kt = self.K // self.Ks
         
-        ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks), blocked_mapping=True).allocate().update(ifm)
-        wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks),                     ).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),                          ).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns), blocked_mapping=True).allocate()
+        _ifm_size_per_core  = math.ceil(self.Ms / core_group.shape[0]) * math.ceil(self.Ks / core_group.shape[1]) * (Mt * Kt * self.dtype.itemsize)
+        _ofm_size_per_core  = math.ceil(self.Ms / core_group.shape[0]) * math.ceil(self.Ns / core_group.shape[1]) * (Mt * Nt * self.acc_dtype.itemsize)
+        
+        _l1_total_per_core     = parse_mem_cap_str("512KB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
+        _l1_data_size_per_core = math.ceil((_ifm_size_per_core + _ofm_size_per_core))
+        _spad_size_per_core    = _l1_total_per_core - _l1_data_size_per_core  # remaining L1 SPAD size per core
+        _spad_st_size_per_core = max(32*32*self.acc_dtype.itemsize, math.floor(_spad_size_per_core * 0.15))
+        _spad_ld_size_per_core = _spad_size_per_core - _spad_st_size_per_core
+        
+        logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD Load: {_spad_ld_size_per_core / 1024:.2f} KB, SPAD Store: {_spad_st_size_per_core / 1024:.2f} KB")
+        
+        l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
+        main_data_mem_space  = device.create_main_mem_space(parse_mem_cap_str("1GB"))
+        spad_ld_pp_space = device.create_l1_mem_space(_spad_ld_size_per_core, core_group=core_group)
+        spad_st_pp_space = device.create_l1_mem_space(_spad_st_size_per_core, core_group=core_group)
+        
+        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks), blocked_mapping=False).allocate().update(ifm)
+        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks),                     ).allocate().update(wgt)
+        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),                          ).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns), blocked_mapping=False).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
@@ -83,9 +97,8 @@ class Benchmark:
         
         device.reset_simulation()
         
-        ifm_mem_space.remove()
-        ofm_mem_space.remove()
-        param_mem_space.remove()
+        l1_data_mem_space.remove()
+        main_data_mem_space.remove()
         spad_ld_pp_space.remove()
         spad_st_pp_space.remove()
         
@@ -129,7 +142,7 @@ class BenchmarkProcess(mp.Process):
         
     def run(self):
         self.worker_sem.acquire()
-        print(f"process started for  {self.benchmark.signature}")
+        logger.info(f"process started for {self.benchmark.signature}")
 
         device = TenstorrentDevice(**self.device_config)
         device.initialize()
@@ -147,12 +160,11 @@ class BenchmarkProcess(mp.Process):
         }
         
         self.worker_sem.release()
-        print(f"process finished for {self.benchmark.signature}")
+        logger.info(f"process finished for {self.benchmark.signature}")
 
 
 benchmarks = [
     # Benchmarks: Square Matrices with Varying Sizes
-    Benchmark(M=1024, N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
     Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
     Benchmark(M=256 , N=256,  K=256,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
     Benchmark(M=128 , N=128,  K=128,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
@@ -167,22 +179,26 @@ benchmarks = [
     Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
     Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
     Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    
-    # Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    # Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    # Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    # Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    # Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    # Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
 ]
 
 if __name__ == "__main__":
+    try:
+        import os
+        import sys
+        
+        sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+        
+        import visualize
+    except ImportError as e:
+        logger.error("Error importing visualize module:", e)
+        visualize = None
+        
     ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
     FILE_NAME = os.path.splitext(os.path.basename(__file__))[0]
     
     parser = argparse.ArgumentParser(description="Tenstorrent Device Benchmark Suite")
     parser.add_argument("-o", "--output", type=str, default=f"{FILE_NAME}.csv", help="Output file to save benchmark results")
-    parser.add_argument("-n", "--n-workers", type=int, default=4, help="Number of parallel worker processes")
+    parser.add_argument("-n", "--n-workers", type=int, default=1, help="Number of parallel worker processes")
     args = parser.parse_args()
 
     output_dir = os.path.join(ROOT_DIR, ".logs")
@@ -193,7 +209,7 @@ if __name__ == "__main__":
     return_dict = manager.dict()
     config = TenstorrentConfig.BLACKHOLE()
     
-    n_workers = args.n_workers
+    n_workers = min(args.n_workers, len(benchmarks))
     worker_sem = mp.Semaphore(n_workers)
     
     processes: list[BenchmarkProcess] = []
@@ -201,7 +217,6 @@ if __name__ == "__main__":
         p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), return_dict, worker_sem)
         p.start()
         processes.append(p)
-        print(f"Started benchmark process for: {benchmark.signature}")
         
     for p in processes:
         p.join()
@@ -225,3 +240,32 @@ if __name__ == "__main__":
             f.write(f"{benchmark.signature},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
     
     print(f"Benchmark results saved to '{output_path}'.")
+    
+    if visualize is not None:
+        global_context_config: GlobalContextConfig = config["global_config"]
+        icnt_config: IcntConfig = config["icnt_config"]
+        # icnt_config.booksim2_config._flit_size = parse_mem_cap_str("64B")  # TODO
+        dramsim_config = global_context_config.main_mem_config.dramsim3_config
+        booksim_config = icnt_config.booksim2_config
+        img_path = os.path.join(output_dir, f"{FILE_NAME}.png")
+        
+        print(f"=== DRAMSim3 Configuration ===")
+        print(f"peak bandwidth: {dramsim_config.peak_bandwidth() / 1e9:.2f} GB/s")
+        print(f"number of channels per instance: {dramsim_config.n_cmd_q_per_instance}")
+        print(f"number of instances: {dramsim_config.n_instance}")
+        
+        print(f"=== BookSim2 Configuration ===")
+        print(f"peak bandwidth per router: {booksim_config.peak_bandwidth_per_router() * 16:.2f} GB/s")
+        print(f"number of subnets: {booksim_config._subnets}")
+        print(f"flit size: {booksim_config._flit_size} Bytes")
+        
+        visualize.draw(
+            peak_perf = 2 * 4 * 4 * 32 * 32,
+            peak_mem_bw = dramsim_config.peak_bandwidth() / 1e9,  # Convert to GB/s
+            peak_noc_bw = booksim_config.peak_bandwidth_per_router() * 16,
+            src_path=output_path,
+            img_path=img_path,
+            img_title="Tenstorrent Roofline Analysis - Single Op Benchmarks"
+        )
+        
+        print(f"Roofline visualization saved to '{img_path}'.")

@@ -6,7 +6,12 @@ from neuromta.framework import *
 from neuromta.component import *
 
 from neuromta.component.companions.booksim import PYBOOKSIM2_AVAILABLE, BookSim2Config
-from neuromta.component.companions.dramsim import PYDRAMSIM3_AVAILABLE, DRAMSim3Config, create_new_dramsim_config_file
+from neuromta.component.companions.dramsim import PYDRAMSIM3_AVAILABLE, DRAMSim3Config
+
+try:
+    from pydramsim3 import create_new_dramsim_config_file
+except ImportError:
+    create_new_dramsim_config_file = None
 
 
 __all__ = [
@@ -47,8 +52,9 @@ class TenstorrentConfig(dict):
         icnt_shape = (12, 16)
         n_npu_core = 12 * 14
         n_dma_core = 12 * 2
-        n_dma_core_per_channel = 3
-        n_main_mem_channels = math.ceil(n_dma_core / n_dma_core_per_channel)
+        
+        n_main_mem_cmd_q_per_instance = 3
+        n_main_mem_instances = math.ceil(n_dma_core / n_main_mem_cmd_q_per_instance)
 
         if PYDRAMSIM3_AVAILABLE:
             dramsim3_config_path    = TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name)
@@ -59,27 +65,29 @@ class TenstorrentConfig(dict):
                 new_config_path=dramsim3_config_path,
                 system_params={
                     "channel_size": dramsim3_channel_size,
-                    "channels": n_main_mem_channels,
+                    "channels": n_main_mem_cmd_q_per_instance,  # original config is for 3 channels
+                    "address_mapping": "rorababgchco",
                 },
                 dram_structure_params={
-                    "bankgroups": 2  # TODO: more authentic way of doing this..?
+                    "bankgroups": 1  # TODO: more authentic way of doing this..?
                 }
             )
             
             dramsim3_config = DRAMSim3Config(
                 config_path=dramsim3_config_path,
                 processor_clock_freq=processor_clock_freq,
-                cmd_queue_num=n_main_mem_channels,
+                n_instance=n_main_mem_instances,
+                n_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
             )
         else:
             dramsim3_config = None
 
         main_mem_config = MainMemoryConfig(
             # STATIC MEMORY CONFIG (used if pydramsim is not available)
-            transfer_speed=7000,        # MT/s (DDR6 typical speed)
-            ch_io_width=32,             # bits (DDR6 typical channel width)
-            ch_num=n_main_mem_channels, # channels (example for DDR6)
-            burst_len=32,               # bytes (typical burst length)
+            transfer_speed=7000,         # MT/s (DDR6 typical speed)
+            ch_io_width=32,              # bits (DDR6 typical channel width)
+            ch_num=n_main_mem_instances, # channels (example for DDR6)
+            burst_len=32,                # bytes (typical burst length)
             is_ddr=True,
             processor_clock_freq=processor_clock_freq,
             
@@ -90,36 +98,45 @@ class TenstorrentConfig(dict):
         
         icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
             shape=icnt_shape,                       # - 12x16 torus
-            subnets=6,                              # - 2 subnets (full-duplex)
-            flit_size=parse_mem_cap_str("32B"),     # - 32B flit size (the unit of flow control)
-            max_payload_size=256,                   # - 256 in flits in maximum as a payload = 8KB
+            subnets=5,                              # - 2 subnets (full-duplex)
+            flit_size=parse_mem_cap_str("64B"),     # - 32B flit size (the unit of flow control)
+            max_payload_size=4,                     # - 4 in flits in maximum as a payload = 8KB
             booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 32B * 2 * 1GHz = 64GB/s
+            booksim2_kwargs={
+                "in_ports": 32,
+                "out_ports": 32,
+                "input_speedup": 32,   # experimental: double the input speedup to improve bandwidth
+                "output_speedup": 32,  # experimental: double the output speedup to improve bandwidth
+            }
         )
         
         global_config = GlobalContextConfig(
             n_npu_core=n_npu_core,
-            n_main_mem_channel=n_main_mem_channels,
             n_dma_core=n_dma_core,
+            
+            n_main_mem_instances=n_main_mem_instances,
+            n_main_mem_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
+            
             l1_mem_bank_size=l1_mem_bank_size,
             main_mem_bank_size=main_mem_channel_size,
             main_mem_config=main_mem_config,
         )
 
         dma_core_to_coord_map: dict[int, list[tuple[int, int]]] = {}
-        dma_ch_col = [0, 8]
+        dma_cmap_col = [0, 8]
         npu_core_to_coord_map: dict[int, tuple[int, int]] = {}
         
-        for ch_idx in range(n_main_mem_channels):
-            c = dma_ch_col[ch_idx % 2]
-            for dma_engine_idx in range(n_dma_core_per_channel):
-                r = ch_idx // 2 * n_dma_core_per_channel + dma_engine_idx
-                d = global_config.dma_core_ids[ch_idx * n_dma_core_per_channel + dma_engine_idx]
+        for main_mem_inst_idx in range(n_main_mem_instances):
+            c = dma_cmap_col[main_mem_inst_idx % 2]
+            for main_mem_cmd_q_idx in range(n_main_mem_cmd_q_per_instance):
+                r = main_mem_inst_idx // 2 * n_main_mem_cmd_q_per_instance + main_mem_cmd_q_idx
+                d = global_config.dma_core_ids[main_mem_inst_idx * n_main_mem_cmd_q_per_instance + main_mem_cmd_q_idx]
                 dma_core_to_coord_map[d] = (r, c)
         
         cnt = 0
         for r in range(icnt_shape[0]):
             for c in range(icnt_shape[1]):
-                if c in dma_ch_col:
+                if c in dma_cmap_col:
                     continue
                 
                 n = global_config.npu_core_ids[cnt]

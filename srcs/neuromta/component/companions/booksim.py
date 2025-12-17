@@ -30,9 +30,15 @@ class BookSim2Config:
         self._yr: int = yr
 
         self._config: c_void_p = pybooksim2.create_config_torus_2d(subnets, x, y, xr, yr)
+        
+    def peak_bandwidth_per_router(self) -> float:
+        return self._flit_size * self._subnets
 
     def create_icnt(self) -> c_void_p:
         return pybooksim2.create_icnt(config=self._config)
+    
+    def update_field(self, field: str, value: Any):
+        pybooksim2.update_config(self._config, field, value)
     
     def summary(self) -> dict[str, Any]:
         return {
