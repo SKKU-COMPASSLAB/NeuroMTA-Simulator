@@ -98,15 +98,15 @@ class TenstorrentConfig(dict):
         
         icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
             shape=icnt_shape,                       # - 12x16 torus
-            subnets=5,                              # - 2 subnets (full-duplex)
-            flit_size=parse_mem_cap_str("64B"),     # - 32B flit size (the unit of flow control)
-            max_payload_size=4,                     # - 4 in flits in maximum as a payload = 8KB
-            booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 32B * 2 * 1GHz = 64GB/s
+            subnets=5,                              # - 5 subnets
+            flit_size=parse_mem_cap_str("64B"),     # - 64B flit size (the unit of flow control)
+            max_payload_size=4,                     # - 4 in flits in maximum as a payload = 256B
+            booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 64B * 5 * 1GHz = 320GB/s
             booksim2_kwargs={
                 "in_ports": 32,
                 "out_ports": 32,
-                "input_speedup": 32,   # experimental: double the input speedup to improve bandwidth
-                "output_speedup": 32,  # experimental: double the output speedup to improve bandwidth
+                "input_speedup": 32,
+                "output_speedup": 32,
             }
         )
         

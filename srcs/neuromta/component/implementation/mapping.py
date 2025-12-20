@@ -466,10 +466,6 @@ class CompiledMapping:
                     
                     if stage_idx not in barrier_target_stages:
                         barrier_target_stages.append(stage_idx)
-            
-            # print(f"[Broadcast Optimization] Stage {stage_idx}: Load balance counts:")
-            # for core_id in core_ids:
-            #     print(f"  Core {core_id}: {load_balance_cnt[core_id]} loads after optimization.")
         
         for stage_idx in barrier_target_stages:
             target_core_ids = core_ids

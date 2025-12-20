@@ -215,34 +215,34 @@ if __name__ == "__main__":
     n_workers = min(args.n_workers, len(benchmarks))
     worker_sem = mp.Semaphore(n_workers)
     
-    # processes: list[BenchmarkProcess] = []
-    # for benchmark in benchmarks:
-    #     p = BenchmarkProcess(benchmark, config, (0, 0), (8, 8), return_dict, worker_sem, compilation_summary_dir)
-    #     p.start()
-    #     processes.append(p)
+    processes: list[BenchmarkProcess] = []
+    for benchmark in benchmarks:
+        p = BenchmarkProcess(benchmark, config, (0, 0), (8, 8), return_dict, worker_sem, compilation_summary_dir)
+        p.start()
+        processes.append(p)
         
-    # for p in processes:
-    #     p.join()
+    for p in processes:
+        p.join()
     
-    # with open(output_path, "w") as f:
-    #     f.write("Benchmark,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
-    #     for benchmark in benchmarks:
-    #         result = return_dict[benchmark.signature]
+    with open(output_path, "w") as f:
+        f.write("Benchmark,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
+        for benchmark in benchmarks:
+            result = return_dict[benchmark.signature]
             
-    #         timestamp    = result["timestamp"]
-    #         total_ops    = result["total_ops"]
-    #         l1_traffic   = result["l1_traffic"]
-    #         main_traffic = result["main_traffic"]
+            timestamp    = result["timestamp"]
+            total_ops    = result["total_ops"]
+            l1_traffic   = result["l1_traffic"]
+            main_traffic = result["main_traffic"]
             
-    #         ops_per_cycle   = total_ops / timestamp
-    #         l1_bandwidth    = l1_traffic / timestamp
-    #         main_bandwidth  = main_traffic / timestamp
-    #         total_bandwidth = l1_bandwidth + main_bandwidth
-    #         arith_intensity = (total_ops / (main_traffic + l1_traffic)) if (main_traffic + l1_traffic) != 0 else 0
+            ops_per_cycle   = total_ops / timestamp
+            l1_bandwidth    = l1_traffic / timestamp
+            main_bandwidth  = main_traffic / timestamp
+            total_bandwidth = l1_bandwidth + main_bandwidth
+            arith_intensity = (total_ops / (main_traffic + l1_traffic)) if (main_traffic + l1_traffic) != 0 else 0
             
-    #         f.write(f"{benchmark.signature},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
+            f.write(f"{benchmark.signature},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
     
-    # print(f"Benchmark results saved to '{output_path}'.")
+    print(f"Benchmark results saved to '{output_path}'.")
     
     if visualize is not None:
         global_context_config: GlobalContextConfig = config["global_config"]
@@ -265,7 +265,6 @@ if __name__ == "__main__":
         visualize.draw(
             peak_perf = 2 * 8 * 8 * 32 * 32,
             peak_mem_bw = dramsim_config.peak_bandwidth() / 1e9,  # Convert to GB/s
-            # peak_noc_bw = dramsim_config.peak_bandwidth() / 1e9,  # Convert to GB/s
             peak_noc_bw = booksim_config.peak_bandwidth_per_router() * 16,
             src_path=output_path,
             img_path=img_path,

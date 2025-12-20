@@ -4,16 +4,18 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
-PEAK_PERFORMANCE   = 4 * 2 * (128 * 128)  # 8 Cores | 128x128 MXU | MAC = 2 OPs 
-PEAK_BANDWIDTH = 512  # theoretical peak bandwidth in GB/cycle
+PEAK_PERFORMANCE   = 2 * (4 * 4) * (32 * 32)  # 4x4 Core Grid | 32x32 MXU | MAC = 2 OPs 
+PEAK_BANDWIDTH = 387.88  # theoretical peak bandwidth in GB/cycle
 
 
-def draw(peak_perf: int, peak_bw: int, src_path: str, img_path: str, img_title: str):
-    ai_x = np.logspace(-3, 3, 500) 
+def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_path: str, img_title: str):
+    ai_x = np.logspace(-2, 4, 500)
 
-    bandwidth_limit = ai_x * peak_bw                # Bandwidth-bound: P = AI * PEAK_BANDWIDTH
+    mem_bw_limit = ai_x * peak_mem_bw               # Bandwidth-bound: P = AI * PEAK_BANDWIDTH
+    noc_bw_limit = ai_x * peak_noc_bw               # NoC Bandwidth-bound: P = AI * PEAK_NOC_BANDWIDTH
     compute_limit = np.full_like(ai_x, peak_perf)   # Compute-bound:   P = PEAK_COMPUTE
-    roofline = np.minimum(bandwidth_limit, compute_limit)   # Roofline is determined by the lower of the two limits.
+    mem_roofline = np.minimum(mem_bw_limit, compute_limit)   # Roofline is determined by the lower of the two limits.
+    noc_roofline = np.minimum(noc_bw_limit, compute_limit)   # Roofline is determined by the lower of the two limits.
 
     workloads = {}
     df = pd.read_csv(src_path)
@@ -32,7 +34,8 @@ def draw(peak_perf: int, peak_bw: int, src_path: str, img_path: str, img_title: 
         workloads[name] = {'AI': ai, 'PERF': perf}
 
     plt.figure(figsize=(8, 5.5))
-    plt.loglog(ai_x, roofline, color='red', linewidth=1, label='Theoretical Peak')
+    plt.loglog(ai_x, mem_roofline, color='red', linewidth=0.8, label='Memory Roofline', linestyle='-')
+    plt.loglog(ai_x, noc_roofline, color='red', linewidth=0.8, label='NoC Roofline', linestyle='--')
     
     mem_bound_marker = 'o'
     comp_bound_marker = '^'
@@ -41,10 +44,11 @@ def draw(peak_perf: int, peak_bw: int, src_path: str, img_path: str, img_title: 
     mem_bound_cnt = 0
     comp_bound_cnt = 0
     
-    AI_balance = peak_perf / peak_bw
+    mem_ai_balance = peak_perf / peak_mem_bw
+    noc_ai_balance = peak_perf / peak_noc_bw
 
     for i, (name, data) in enumerate(workloads.items()):
-        if data['AI'] < AI_balance:
+        if data['AI'] < mem_ai_balance or data['AI'] < noc_ai_balance:
             index = mem_bound_cnt
             mem_bound_cnt += 1
             
@@ -69,30 +73,44 @@ def draw(peak_perf: int, peak_bw: int, src_path: str, img_path: str, img_title: 
             label=name
         )
     
-    # Plot the machine balance point
-    plt.loglog(
-        AI_balance, 
-        peak_perf, 
-        marker='*', 
-        color='red', 
-        markersize=13,
-        mec='black',
-        linestyle='', 
-        label=f'Machine Balance'
-    )
+    # # Plot the machine balance point
+    # plt.loglog(
+    #     mem_ai_balance, 
+    #     peak_perf, 
+    #     marker='*', 
+    #     color='red', 
+    #     markersize=13,
+    #     mec='black',
+    #     linestyle='', 
+    #     linewidth=0.7,
+    #     label=f'Machine Balance (Memory)'
+    # )
+    
+    # # Plot the machine balance point
+    # plt.loglog(
+    #     noc_ai_balance, 
+    #     peak_perf, 
+    #     marker='o', 
+    #     color='red', 
+    #     markersize=13,
+    #     mec='black',
+    #     linestyle='', 
+    #     linewidth=0.7,
+    #     label=f'Machine Balance (NoC)'
+    # )
     
     # Annotate the balance point
     plt.annotate(
-        f'Balance Point: ({AI_balance:.2f} OPs/Byte, {peak_perf:.2f} OPs/Cycle)',
-        xy=(AI_balance, peak_perf),
-        xytext=(AI_balance * 0.005, peak_perf * 2),
+        f'Memory Balance: ({mem_ai_balance:.2f} OPs/Byte, {peak_perf:.2f} OPs/Cycle)',
+        xy=(mem_ai_balance, peak_perf),
+        xytext=(mem_ai_balance * 0.005, peak_perf * 2),
         fontsize=10,
         horizontalalignment='left',
         verticalalignment='top'
     )
     
     # Draw dashed lines to indicate the balance point
-    plt.vlines(AI_balance, roofline.min() * 0.1, peak_perf, color='black', linestyle=':', alpha=1)
+    plt.vlines(mem_ai_balance, mem_roofline.min() * 0.1, peak_perf, color='black', linestyle=':', alpha=1)
 
     # Final plot adjustments
     plt.title(img_title, fontsize=11)
@@ -101,7 +119,7 @@ def draw(peak_perf: int, peak_bw: int, src_path: str, img_path: str, img_title: 
     plt.grid(True, which="both", ls="--", linewidth=0.5)
 
     plt.xlim(ai_x.min(), ai_x.max()) 
-    plt.ylim(roofline.min() * 0.1, peak_perf * 2.5)
+    plt.ylim(mem_roofline.min() * 0.1, peak_perf * 2.5)
 
     plt.legend(loc='lower right', fontsize=8)
     plt.tight_layout(pad=0.8)
@@ -122,7 +140,7 @@ if __name__ == "__main__":
     src_path = os.path.join(log_dir, f"{args.test_name}.csv")
     img_path = os.path.join(log_dir, f"{args.test_name}.png")
     
-    img_title = f"TPU Roofline Analysis - {args.test_name.replace('_', ' ').title()}"
+    img_title = f"Google TPU Roofline Analysis - {args.test_name.replace('_', ' ').title()}"
     if "linear" in args.test_name:
         img_title += " (M x N x K Dimensions)"
     

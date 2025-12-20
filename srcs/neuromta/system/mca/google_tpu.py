@@ -6,8 +6,12 @@ from neuromta.framework import *
 from neuromta.component import *
 
 from neuromta.component.companions.booksim import PYBOOKSIM2_AVAILABLE
-from neuromta.component.companions.dramsim import PYDRAMSIM3_AVAILABLE, DRAMSim3Config, create_new_dramsim_config_file
+from neuromta.component.companions.dramsim import PYDRAMSIM3_AVAILABLE, DRAMSim3Config
 
+try:
+    from pydramsim3 import create_new_dramsim_config_file
+except ImportError:
+    create_new_dramsim_config_file = None
 
 __all__ = [
     "GoogleTPUConfig",
@@ -44,14 +48,13 @@ class GoogleTPUConfig(dict):
         processor_clock_freq    = parse_freq_str("1GHz")
         main_mem_channel_size   = parse_mem_cap_str("2GB")
         l1_mem_bank_size        = parse_mem_cap_str("48MB")
-        n_main_mem_channels     = 32
         
-        n_dma_core = n_main_mem_channels
+        n_dma_core = 8
         n_npu_core = 8
         icnt_shape = (2, max(n_dma_core, n_npu_core))
         
-        n_dma_cmd_q_per_mem_ch = 8
-        n_main_mem_instances   = math.ceil(n_dma_core / n_dma_cmd_q_per_mem_ch)
+        n_main_mem_cmd_q_per_instance = 1
+        n_main_mem_instances   = math.ceil(n_dma_core / n_main_mem_cmd_q_per_instance)
         
         if PYDRAMSIM3_AVAILABLE:
             dramsim3_config_path    = GOOGLE_TPU_IP_DRAMSIM_CONFIG_FMT(config_name=config_name)
@@ -62,7 +65,7 @@ class GoogleTPUConfig(dict):
                 new_config_path=dramsim3_config_path,
                 system_params={
                     "channel_size": dramsim3_channel_size,
-                    "channels": n_dma_cmd_q_per_mem_ch,
+                    "channels": n_main_mem_cmd_q_per_instance * 4,
                 },
             )
             
@@ -70,7 +73,7 @@ class GoogleTPUConfig(dict):
                 config_path=dramsim3_config_path,
                 processor_clock_freq=processor_clock_freq,
                 n_instance=n_main_mem_instances,
-                n_cmd_q_per_instance=n_dma_cmd_q_per_mem_ch,
+                n_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
             )
         else:
             dramsim3_config = None
@@ -91,16 +94,25 @@ class GoogleTPUConfig(dict):
         
         icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
             shape=icnt_shape,                       # - 12x16 torus
-            subnets=6,                              # - 2 subnets (full-duplex)
-            flit_size=parse_mem_cap_str("32B"),     # - 32B flit size (the unit of flow control)
-            max_payload_size=2048,                   # - 256 in flits in maximum as a payload = 8KB
-            booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 32B * 2 * 1GHz = 64GB/s
+            subnets=5,                              # - 5 subnets
+            flit_size=parse_mem_cap_str("64B"),     # - 64B flit size (the unit of flow control)
+            max_payload_size=4,                     # - 4 in flits in maximum as a payload = 256B
+            booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 64B * 5 * 1GHz = 320GB/s
+            booksim2_kwargs={
+                "in_ports": 32,
+                "out_ports": 32,
+                "input_speedup": 32,
+                "output_speedup": 32,
+            }
         )
         
         global_config = GlobalContextConfig(
             n_npu_core=n_npu_core,
-            n_main_mem_channel=n_main_mem_channels,
             n_dma_core=n_dma_core,
+            
+            n_main_mem_instances=n_main_mem_instances,
+            n_main_mem_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
+            
             l1_mem_bank_size=l1_mem_bank_size,
             main_mem_bank_size=main_mem_channel_size,
             main_mem_config=main_mem_config,
