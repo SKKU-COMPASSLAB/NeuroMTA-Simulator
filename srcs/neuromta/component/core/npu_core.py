@@ -298,44 +298,44 @@ class NPUCore(Core):
                 for msg in dram_msgs:
                     self.async_rpc_wait_rsp_msg(msg)
                     
-        # # THREAD: NOC Transactions
-        # if self.icnt_context is not None:
-        #     with new_parallel_thread("NOC_TX"):
-        #         noc_msgs = []
+        # THREAD: NOC Transactions
+        if self.icnt_context is not None:
+            with new_parallel_thread("NOC_TX"):
+                noc_msgs = []
                 
-        #         if src_owner_core_id != self.core_id:
-        #             noc_msgs += [
-        #                 RPCMessage(
-        #                     src_core_id=self.core_id,
-        #                     dst_core_id=COMPANION_CORE_ID,
-        #                     cmd_id="send_companion_command",
-        #                 ).with_args(
-        #                     self.global_context.config.booksim_module_id,
-        #                     **arg
-        #                 )
-        #                 for arg in self.icnt_context.get_icnt_data_transfer_args(src_owner_core_id, self.core_id, row_size * row_num, is_write=False)
-        #             ]
+                if src_owner_core_id != self.core_id:
+                    noc_msgs += [
+                        RPCMessage(
+                            src_core_id=self.core_id,
+                            dst_core_id=COMPANION_CORE_ID,
+                            cmd_id="send_companion_command",
+                        ).with_args(
+                            self.global_context.config.booksim_module_id,
+                            **arg
+                        )
+                        for arg in self.icnt_context.get_icnt_data_transfer_args(src_owner_core_id, self.core_id, row_size * row_num, is_write=False)
+                    ]
                     
-        #         if dst_owner_core_id != self.core_id:
-        #             noc_msgs += [
-        #                 RPCMessage(
-        #                     src_core_id=self.core_id,
-        #                     dst_core_id=COMPANION_CORE_ID,
-        #                     cmd_id="send_companion_command",
-        #                 ).with_args(
-        #                     self.global_context.config.booksim_module_id,
-        #                     **arg
-        #                 )
+                if dst_owner_core_id != self.core_id:
+                    noc_msgs += [
+                        RPCMessage(
+                            src_core_id=self.core_id,
+                            dst_core_id=COMPANION_CORE_ID,
+                            cmd_id="send_companion_command",
+                        ).with_args(
+                            self.global_context.config.booksim_module_id,
+                            **arg
+                        )
                         
-        #                 for arg in self.icnt_context.get_icnt_data_transfer_args(self.core_id, dst_owner_core_id, row_size * row_num, is_write=True)
-        #             ]
+                        for arg in self.icnt_context.get_icnt_data_transfer_args(self.core_id, dst_owner_core_id, row_size * row_num, is_write=True)
+                    ]
                     
-        #         for msg in noc_msgs:
-        #             self.async_rpc_send_req_msg(msg)
+                for msg in noc_msgs:
+                    self.async_rpc_send_req_msg(msg)
                 
-        #         if not nowait:
-        #             for msg in noc_msgs:
-        #                 self.async_rpc_wait_rsp_msg(msg)
+                if not nowait:
+                    for msg in noc_msgs:
+                        self.async_rpc_wait_rsp_msg(msg)
         
         self.parallel_merge()
 
@@ -451,52 +451,52 @@ class NPUCore(Core):
                 for msg in dram_msgs:
                     self.async_rpc_wait_rsp_msg(msg)
                     
-        # # THREAD: NOC Transactions
-        # if self.icnt_context is not None:
-        #     with new_parallel_thread("NOC_TX"):
-        #         noc_msgs = []
+        # THREAD: NOC Transactions
+        if self.icnt_context is not None:
+            with new_parallel_thread("NOC_TX"):
+                noc_msgs = []
                 
-        #         if src_owner_core_id != self.core_id:
-        #             noc_msgs += [
-        #                 RPCMessage(
-        #                     src_core_id=self.core_id,
-        #                     dst_core_id=COMPANION_CORE_ID,
-        #                     cmd_id="send_companion_command",
-        #                 ).with_args(
-        #                     self.global_context.config.booksim_module_id,
-        #                     **arg
-        #                 )
-        #                 for arg in self.icnt_context.get_icnt_data_transfer_args(src_owner_core_id, self.core_id, row_size * row_num, is_write=False)
-        #             ]
+                if src_owner_core_id != self.core_id:
+                    noc_msgs += [
+                        RPCMessage(
+                            src_core_id=self.core_id,
+                            dst_core_id=COMPANION_CORE_ID,
+                            cmd_id="send_companion_command",
+                        ).with_args(
+                            self.global_context.config.booksim_module_id,
+                            **arg
+                        )
+                        for arg in self.icnt_context.get_icnt_data_transfer_args(src_owner_core_id, self.core_id, row_size * row_num, is_write=False)
+                    ]
                 
-        #         for dst_ptr in dst_ptrs:
-        #             dst_mem_info = self.global_context.get_mem_info_by_address(dst_ptr.addr)
+                for dst_ptr in dst_ptrs:
+                    dst_mem_info = self.global_context.get_mem_info_by_address(dst_ptr.addr)
                     
-        #             if dst_mem_info.mem_type == GlobalContextMemType.L1:
-        #                 dst_owner_core_id = dst_mem_info.owner_core_ids[0]
-        #             else:
-        #                 dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
+                    if dst_mem_info.mem_type == GlobalContextMemType.L1:
+                        dst_owner_core_id = dst_mem_info.owner_core_ids[0]
+                    else:
+                        dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
                         
-        #             if dst_owner_core_id != self.core_id:
-        #                 noc_msgs += [
-        #                     RPCMessage(
-        #                         src_core_id=self.core_id,
-        #                         dst_core_id=COMPANION_CORE_ID,
-        #                         cmd_id="send_companion_command",
-        #                     ).with_args(
-        #                         self.global_context.config.booksim_module_id,
-        #                         **arg
-        #                     )
+                    if dst_owner_core_id != self.core_id:
+                        noc_msgs += [
+                            RPCMessage(
+                                src_core_id=self.core_id,
+                                dst_core_id=COMPANION_CORE_ID,
+                                cmd_id="send_companion_command",
+                            ).with_args(
+                                self.global_context.config.booksim_module_id,
+                                **arg
+                            )
                             
-        #                     for arg in self.icnt_context.get_icnt_data_transfer_args(self.core_id, dst_owner_core_id, row_size * row_num, is_write=True)
-        #                 ]
+                            for arg in self.icnt_context.get_icnt_data_transfer_args(self.core_id, dst_owner_core_id, row_size * row_num, is_write=True)
+                        ]
                     
-        #         for msg in noc_msgs:
-        #             self.async_rpc_send_req_msg(msg)
+                for msg in noc_msgs:
+                    self.async_rpc_send_req_msg(msg)
                 
-        #         if not nowait:
-        #             for msg in noc_msgs:
-        #                 self.async_rpc_wait_rsp_msg(msg)
+                if not nowait:
+                    for msg in noc_msgs:
+                        self.async_rpc_wait_rsp_msg(msg)
                 
         self.parallel_merge()
 
