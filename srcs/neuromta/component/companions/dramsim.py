@@ -15,8 +15,8 @@ except ImportError as e:
 __all__ = [
     "PYDRAMSIM3_AVAILABLE",
     "DRAMSim3",
-    "DRAMSim3Config"
-    "create_new_dramsim_config_file",
+    "DRAMSim3Config",
+    # "create_new_dramsim_config_file",
 ]
 
 

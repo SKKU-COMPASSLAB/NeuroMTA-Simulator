@@ -8,6 +8,10 @@ from neuromta.component import *
 from neuromta.system.mta.tenstorrent import *
 
 
+TMP_DIR = os.path.join(os.curdir, ".tmp")
+os.makedirs(TMP_DIR, exist_ok=True)
+
+
 if __name__ == "__main__":
     torch.set_printoptions(linewidth=1024)
     logger.set_print_options(log_level=LogLevel.DEBUG)
@@ -96,7 +100,7 @@ if __name__ == "__main__":
         mapping_strategy=MCA_OperatorMapper.CONTIGUOUS
     )
     
-    tmp_ouput_path = os.path.join(os.curdir, ".tmp", "pipelined_mapping.json")
+    tmp_ouput_path = os.path.join(TMP_DIR, "pipelined_mapping.json")
     with open(tmp_ouput_path, "w") as f:
         json.dump(operator.summary(), f, indent=4)
         logger.info(f"Pipelined mapping summary saved to '{tmp_ouput_path}'.")
@@ -126,7 +130,7 @@ if __name__ == "__main__":
     print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
     
     if not torch.equal(simulated, reference):
-        mismatch_report = os.path.join(os.curdir, ".tmp", "mismatch_report.txt")
+        mismatch_report = os.path.join(TMP_DIR, "mismatch_report.txt")
         with open(mismatch_report, "w") as f:
             content = []
             for i in range(M):
