@@ -3,6 +3,7 @@ import argparse
 import multiprocessing as mp
 import torch
 import json
+import math
 
 from neuromta.framework import *
 from neuromta.component import *
@@ -176,20 +177,20 @@ class BenchmarkProcess(mp.Process):
     
 benchmarks = [
     # Benchmarks: Square Matrices with Varying Sizes
-    Benchmark(M=512 , N=512,  K=512,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=256 , N=256,  K=256,  Ms=2, Ns=2, Ks=2, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=128 , N=128,  K=128,  Ms=1, Ns=1, Ks=1, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=512 , N=512,  K=512,  Ms=4, Ns=4, Ks=4, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=256 , N=256,  K=256,  Ms=2, Ns=2, Ks=2, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=128 , N=128,  K=128,  Ms=1, Ns=1, Ks=1, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     
     # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
-    Benchmark(M=512,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=256,  N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=128,  N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=64,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=512,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=256,  N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=128,  N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=64,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
 ]
 
 if __name__ == "__main__":
@@ -261,20 +262,23 @@ if __name__ == "__main__":
         booksim_config = icnt_config.booksim2_config
         img_path = os.path.join(output_dir, f"{FILE_NAME}.png")
         
+        mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
+        noc_bisection_bw = booksim_config.peak_bandwidth_per_router() * config["processor_clock_freq"] / 1e9  # bisection bandwidth in GB/s
+        
         print(f"=== DRAMSim3 Configuration ===")
-        print(f"peak bandwidth: {dramsim_config.peak_bandwidth() / 1e9:.2f} GB/s")
+        print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
         print(f"number of channels per instance: {dramsim_config.n_cmd_q_per_instance}")
         print(f"number of instances: {dramsim_config.n_instance}")
         
         print(f"=== BookSim2 Configuration ===")
-        print(f"peak bandwidth per router: {booksim_config.peak_bandwidth_per_router():.2f} GB/s")
+        print(f"bisection bandwidth: {noc_bisection_bw:.2f} GB/s")
         print(f"number of subnets: {booksim_config._subnets}")
         print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
             peak_perf = 2 * 1 * 128 * 128,
-            peak_mem_bw = dramsim_config.peak_bandwidth() / 1e9,  # Convert to GB/s
-            peak_noc_bw = booksim_config.peak_bandwidth_per_router(),
+            peak_mem_bw = mem_peak_bw,  # Convert to GB/s
+            peak_noc_bw = noc_bisection_bw,  # bisection bandwidth in GB/s
             src_path=output_path,
             img_path=img_path,
             img_title="Google TPU Roofline Analysis - Single Op Benchmarks"

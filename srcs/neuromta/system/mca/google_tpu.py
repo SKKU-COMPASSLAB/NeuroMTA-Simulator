@@ -49,11 +49,11 @@ class GoogleTPUConfig(dict):
         main_mem_channel_size   = parse_mem_cap_str("2GB")
         l1_mem_bank_size        = parse_mem_cap_str("48MB")
         
-        n_dma_core = 8
+        n_dma_core = 32
         n_npu_core = 8
         icnt_shape = (2, max(n_dma_core, n_npu_core))
         
-        n_main_mem_cmd_q_per_instance = 1
+        n_main_mem_cmd_q_per_instance = 4
         n_main_mem_instances   = math.ceil(n_dma_core / n_main_mem_cmd_q_per_instance)
         
         if PYDRAMSIM3_AVAILABLE:
@@ -65,7 +65,7 @@ class GoogleTPUConfig(dict):
                 new_config_path=dramsim3_config_path,
                 system_params={
                     "channel_size": dramsim3_channel_size,
-                    "channels": n_main_mem_cmd_q_per_instance * 4,
+                    "channels": n_main_mem_cmd_q_per_instance,
                 },
             )
             

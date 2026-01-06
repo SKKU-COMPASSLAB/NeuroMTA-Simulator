@@ -1,12 +1,15 @@
 import os
 import argparse
-import threading
+import json
 import multiprocessing as mp
 import torch
 
 from neuromta.framework import *
 from neuromta.component import *
 from neuromta.system.mta.tenstorrent import *
+
+
+compilation_summary_dir = None  # Set to a valid directory path to enable compilation summaries
 
 
 class Benchmark:
@@ -74,14 +77,19 @@ class Benchmark:
             else:
                 self._main_traffic += b.total_size
         
-        MCA_OP_LINEAR(
+        op = MCA_OP_LINEAR(
             device, core_group, 
             spad_ld_pp_space, spad_st_pp_space, 
             ifm_b, wgt_b, bias_b, ofm_b, 
-            broadcast_optimize=True, 
+            broadcast_optimize=False, 
             auto_dispatch=True,
             mapping_strategy=self.mapping_strategy,
         )
+        
+        if compilation_summary_dir is not None:
+            summary_path = os.path.join(compilation_summary_dir, f"{self.signature}.json")
+            with open(summary_path, "wt") as f:
+                f.write(json.dumps(op.summary(), indent=4))
         
         device.run_kernels()
 
@@ -193,8 +201,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     output_dir = os.path.join(ROOT_DIR, ".logs")
+    compilation_summary_dir = os.path.join(output_dir, "compilation_summaries")
     output_path = os.path.join(output_dir, args.output)
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(compilation_summary_dir, exist_ok=True)
     
     manager = mp.Manager()
     return_dict = manager.dict()
@@ -235,25 +245,27 @@ if __name__ == "__main__":
     if visualize is not None:
         global_context_config: GlobalContextConfig = config["global_config"]
         icnt_config: IcntConfig = config["icnt_config"]
-        # icnt_config.booksim2_config._flit_size = parse_mem_cap_str("64B")  # TODO
         dramsim_config = global_context_config.main_mem_config.dramsim3_config
         booksim_config = icnt_config.booksim2_config
         img_path = os.path.join(output_dir, f"{FILE_NAME}.png")
         
+        mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
+        noc_bisection_bw = booksim_config.peak_bandwidth_per_router() * config["processor_clock_freq"] / 1e9 * 4  # bisection bandwidth in GB/s
+        
         print(f"=== DRAMSim3 Configuration ===")
-        print(f"peak bandwidth: {dramsim_config.peak_bandwidth() / 1e9:.2f} GB/s")
+        print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
         print(f"number of channels per instance: {dramsim_config.n_cmd_q_per_instance}")
         print(f"number of instances: {dramsim_config.n_instance}")
         
         print(f"=== BookSim2 Configuration ===")
-        print(f"peak bandwidth per router: {booksim_config.peak_bandwidth_per_router() * 16:.2f} GB/s")
+        print(f"bisection bandwidth: {noc_bisection_bw:.2f} GB/s")
         print(f"number of subnets: {booksim_config._subnets}")
         print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
             peak_perf = 2 * 4 * 4 * 32 * 32,
-            peak_mem_bw = dramsim_config.peak_bandwidth() / 1e9,  # Convert to GB/s
-            peak_noc_bw = booksim_config.peak_bandwidth_per_router() * 16,
+            peak_mem_bw = mem_peak_bw,
+            peak_noc_bw = noc_bisection_bw,
             src_path=output_path,
             img_path=img_path,
             img_title="Tenstorrent Roofline Analysis - Single Op Benchmarks"
