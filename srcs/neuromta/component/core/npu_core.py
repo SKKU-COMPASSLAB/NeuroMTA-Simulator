@@ -165,7 +165,7 @@ class NPUCore(Core):
             row_pattern = {i: i for i in range(row_num)}
             
         if container.is_mem_segment:
-            container.data = container.data.flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
+            container.data = container.data.flatten().view(torch.uint8).reshape(-1, cont_row_stride)
         else:
             container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
         

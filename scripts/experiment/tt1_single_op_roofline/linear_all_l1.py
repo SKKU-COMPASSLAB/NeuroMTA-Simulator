@@ -165,20 +165,20 @@ class BenchmarkProcess(mp.Process):
 
 benchmarks = [
     # Benchmarks: Square Matrices with Varying Sizes
-    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=256 , N=256,  K=256,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=128 , N=128,  K=128,  Ms=4, Ns=4, Ks=4, dtype=torch.int32, acc_dtype=torch.int32),
+    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=256 , N=256,  K=256,  Ms=4, Ns=4, Ks=4, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=128 , N=128,  K=128,  Ms=4, Ns=4, Ks=4, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     
     # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
-    Benchmark(M=512,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=256,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=128,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32),
-    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.int32, acc_dtype=torch.int32, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    Benchmark(M=512,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=256,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=128,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
 ]
 
 if __name__ == "__main__":

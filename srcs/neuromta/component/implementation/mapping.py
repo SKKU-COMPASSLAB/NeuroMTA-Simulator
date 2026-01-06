@@ -137,6 +137,27 @@ class TiledOperatorMapping(Dict[int, List[TiledOperatorSignature]]):
         
         return mapper
     
+    @staticmethod
+    def contiguous(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
+        core_ids = core_group.core_ids
+        mapper = TiledOperatorMapping(core_group=core_group)
+        
+        for core_id in core_ids:
+            mapper[core_id] = []
+        
+        n_cores      = len(core_ids)
+        ops_per_core = len(tiled_ops) // n_cores
+        remainder    = len(tiled_ops) % n_cores
+        
+        cursor = 0
+        for core_idx, core_id in enumerate(core_ids):
+            n_ops = ops_per_core + (1 if core_idx < remainder else 0)
+            for _ in range(n_ops):
+                mapper[core_id].append(tiled_ops[cursor])
+                cursor += 1
+        
+        return mapper
+    
     def summary(self) -> dict[int, list[str]]:
         return {core_id: [op.signature() for op in ops] for core_id, ops in self.items()}
             
@@ -567,6 +588,7 @@ class CompiledMapping:
 class MCA_OperatorMapper:
     OUTPUT_STATIONARY = "output_stationary"
     ROUND_ROBIN       = "round_robin"
+    CONTIGUOUS        = "contiguous"
     
     def __init__(
         self,
@@ -717,6 +739,100 @@ class MCA_OperatorMapper:
             spad_st_mem_space=spad_st_mem_space,
             tiled_ops=tiled_ops,
         )
+        
+    @staticmethod
+    def NATIVE_CONV2D(core_group: MCA_CoreGroup, spad_ld_mem_space: MCA_L1MemorySpace, spad_st_mem_space: MCA_L1MemorySpace, ifm: MCA_TensorBuffer, wgt: MCA_TensorBuffer, bias: MCA_TensorBuffer, ofm: MCA_TensorBuffer, stride: int, padding: int, dilation: int) -> 'MCA_OperatorMapper':
+        N, H, W, _ = ifm.shape
+        FH, FW, K, C = wgt.shape
+        OH = (H + 2 * padding - dilation * (FH - 1) - 1) // stride + 1
+        OW = (W + 2 * padding - dilation * (FW - 1) - 1) // stride + 1
+        
+        if C != ifm.shape[3]:
+            raise Exception(f"Input channel mismatch between IFM and WGT: {ifm.shape[3]} != {C}")
+        if K != bias.shape[1] != ofm.shape[3]:
+            raise Exception(f"Output channel mismatch between WGT, BIAS and OFM: {K} != {bias.shape[1]} != {ofm.shape[3]}")
+        if N != ofm.shape[0]:
+            raise Exception(f"Batch size mismatch between IFM and OFM: {N} != {ofm.shape[0]}")
+        if OH != ofm.shape[1]:
+            raise Exception(f"Output height mismatch between computed and OFM: {OH} != {ofm.shape[1]}")
+        if OW != ofm.shape[2]:
+            raise Exception(f"Output width mismatch between computed and OFM: {OW} != {ofm.shape[2]}")
+        
+        ifm_tile_shape = ifm.tile_shape
+        wgt_tile_shape = wgt.tile_shape
+        bias_tile_shape = bias.tile_shape
+        ofm_tile_shape = ofm.tile_shape
+        
+        if ifm_tile_shape[0] != ofm_tile_shape[0]:
+            raise Exception(f"IFM and OFM tile shape batch size mismatch: {ifm_tile_shape[0]} != {ofm_tile_shape[0]}")
+        if wgt_tile_shape[0] != ofm_tile_shape[1] or wgt_tile_shape[0] != bias_tile_shape[1]:
+            raise Exception(f"WGT and OFM tile shape channel size mismatch: {wgt_tile_shape[0]} != {ofm_tile_shape[1]} != {bias_tile_shape[1]}")
+        if wgt_tile_shape[1] != ifm_tile_shape[1]:
+            raise Exception(f"WGT and IFM tile shape feature size mismatch: {wgt_tile_shape[1]} != {ifm_tile_shape[1]}")
+        
+        ifm_tiles: dict[tuple[int, ...], TileSignature] = {
+            (y_s, x_s, y_t, x_t): TileSignature("ifm", ifm, y_s, x_s, y_t, x_t)
+            for y_s in range(ifm.shard_grid[0])
+            for x_s in range(ifm.shard_grid[1])
+            for y_t in range(ifm.tile_grid_per_shard[0])
+            for x_t in range(ifm.tile_grid_per_shard[1])
+        }
+        
+        wgt_tiles: dict[tuple[int, ...], TileSignature] = {
+            (y_s, x_s, y_t, x_t): TileSignature("wgt", wgt, y_s, x_s, y_t, x_t)
+            for y_s in range(wgt.shard_grid[0])
+            for x_s in range(wgt.shard_grid[1])
+            for y_t in range(wgt.tile_grid_per_shard[0])
+            for x_t in range(wgt.tile_grid_per_shard[1])
+        }
+        
+        bias_tiles: dict[tuple[int, ...], TileSignature] = {
+            (0, x_s, 0, x_t): TileSignature("bias", bias, 0, x_s, 0, x_t)
+            for x_s in range(bias.shard_grid[1])
+            for x_t in range(bias.tile_grid_per_shard[1])
+        }
+        
+        ofm_tiles: dict[tuple[int, ...], TileSignature] = {
+            (y_s, x_s, y_t, x_t): TileSignature("ofm", ofm, y_s, x_s, y_t, x_t)
+            for y_s in range(ofm.shard_grid[0])
+            for x_s in range(ofm.shard_grid[1])
+            for y_t in range(ofm.tile_grid_per_shard[0])
+            for x_t in range(ofm.tile_grid_per_shard[1])
+        }
+        
+        tiled_ops: list[TiledOperatorSignature] = []
+        
+        for y_s in range(ofm.shard_grid[0]):
+            for x_s in range(ofm.shard_grid[1]):
+                for y_t in range(ofm.tile_grid_per_shard[0]):
+                    for x_t in range(ofm.tile_grid_per_shard[1]):
+                        i_tiles: list[tuple[TileSignature]] = []
+                        
+                        ofm_tile = ofm_tiles[(y_s, x_s, y_t, x_t)]
+                        
+                        o_nhw_start = y_s * ofm.tile_shape[0] * ofm.tile_grid_per_shard[0] + y_t * ofm.tile_shape[0]
+                        o_nhw_end   = o_nhw_start + ofm.tile_shape[0]
+                        
+                        for o_nhw in range(o_nhw_start, o_nhw_end):
+                            o_n = o_nhw // (OH * OW)
+                            o_h = (o_nhw % (OH * OW)) // OW
+                            o_w = (o_nhw % (OH * OW)) % OW
+                            o_k = x_s * ofm.tile_shape[1] * ofm.tile_grid_per_shard[1] + x_t * ofm.tile_shape[1]
+                            
+                            for f_h in range(FH):
+                                for f_w in range(FW):
+                                    i_h = o_h * stride - padding + f_h * dilation
+                                    i_w = o_w * stride - padding + f_w * dilation
+                                    
+                                    if (i_h < 0) or (i_h >= H) or (i_w < 0) or (i_w >= W):
+                                        continue  # skip out-of-bound input tiles    
+
+                        tiled_op = TiledOperatorSignature(
+                            i_tiles=[tuple(i_tiles)],
+                            o_tile=ofm_tile
+                        )
+                        
+                        tiled_ops.append(tiled_op)
         
     def compile(self, mapping_strategy: Callable | str = OUTPUT_STATIONARY) -> CompiledMapping:
         if isinstance(mapping_strategy, str):

@@ -437,6 +437,8 @@ class KernelPrototype:
     def dispatch(self, slot_id: str="MAIN"):
         self.core.dispatch_main_kernel(slot_id, self)
         
+        return self
+        
     def compile(self) -> 'Kernel':
         with Kernel(kernel_id=self.compiled_kernel_id) as kernel:
             try:
