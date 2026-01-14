@@ -15,19 +15,31 @@ compilation_summary_dir = None  # Set to a valid directory path to enable compil
 class Benchmark:
     def __init__(
         self, 
-        M:  int, N:  int, K:  int,
-        Ms: int, Ns: int, Ks: int,
+        N, H, W, C,
+        FH, FW, K,
+        STRIDE, PADDING, DILATION,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
         mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
     ):
-        self.M: int = M
-        self.N: int = N
-        self.K: int = K
+        self.N = N
+        self.H = H
+        self.W = W
+        self.C = C
+        self.FH = FH
+        self.FW = FW
+        self.K = K
+        self.STRIDE = STRIDE
+        self.PADDING = PADDING
+        self.DILATION = DILATION
         
-        self.Ms: int = Ms
-        self.Ns: int = Ns
-        self.Ks: int = Ks
+        self.OH = (H + 2 * PADDING[0] - DILATION[0] * (FH - 1) - 1) // STRIDE[0] + 1
+        self.OW = (W + 2 * PADDING[1] - DILATION[1] * (FW - 1) - 1) // STRIDE[1] + 1
+        
+        self.ifm_shape = (N, H, W, C)
+        self.wgt_shape = (FH, FW, K, C)
+        self.bias_shape = (K,)
+        self.ofm_shape = (N, self.OH, self.OW, K)
         
         self.dtype:     torch.dtype = dtype
         self.acc_dtype: torch.dtype = acc_dtype
@@ -37,44 +49,37 @@ class Benchmark:
         self._timestamp:    int = 0
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
-        self._total_ops:    int = (self.M * self.N * self.K) * 2 + (self.M * self.N)  # MACs + Bias Add
+        self._total_ops:    int = 2 * N * H * W * K * FH * FW * C  # MACs counted as 2 operations (mul + add)
         
     def run(self, device: TenstorrentDevice, core_group: MTA_CoreGrid):
-        if (self.M // 32) % self.Ms != 0:
-            self.Ms = 1
-        if (self.N // 32) % self.Ns != 0:
-            self.Ns = 1
-        if (self.K // 32) % self.Ks != 0:
-            self.Ks = 1
-            
-        ifm  = torch.randint(low=0, high=128, size=(self.M, self.K), dtype=self.dtype)
-        wgt  = torch.randint(low=0, high=128, size=(self.N, self.K), dtype=self.dtype)
-        bias = torch.randint(low=0, high=256, size=(self.N,), dtype=self.dtype)
+        Ws = 4
+        Cs = 4
+        Ks = 4
         
-        Mt = self.M // self.Ms
-        Nt = self.N // self.Ns
-        Kt = self.K // self.Ks
+        if (self.W % Ws != 0) or (self.OW % Ws != 0): Ws = 1
+        if self.C % Cs != 0: Cs = 1
+        if self.K % Ks != 0: Ks = 1
         
-        _ifm_size_per_core  = math.ceil(self.Ms / core_group.shape[0]) * math.ceil(self.Ks / core_group.shape[1]) * (Mt * Kt * self.dtype.itemsize)
-        _ofm_size_per_core  = math.ceil(self.Ms / core_group.shape[0]) * math.ceil(self.Ns / core_group.shape[1]) * (Mt * Nt * self.acc_dtype.itemsize)
+        ifm  = torch.randint(low=0, high=128, size=self.ifm_shape,  dtype=self.dtype)
+        wgt  = torch.randint(low=0, high=128, size=self.wgt_shape,  dtype=self.dtype)
+        bias = torch.randint(low=0, high=256, size=self.bias_shape, dtype=self.dtype)
         
-        _l1_total_per_core     = parse_mem_cap_str("1.2MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
-        _l1_data_size_per_core = math.ceil((_ifm_size_per_core + _ofm_size_per_core))
-        _spad_size_per_core    = _l1_total_per_core - _l1_data_size_per_core  # remaining L1 SPAD size per core
-        _spad_st_size_per_core = max(32*32*self.acc_dtype.itemsize, math.floor(_spad_size_per_core * 0.15))
-        _spad_ld_size_per_core = _spad_size_per_core - _spad_st_size_per_core
+        _main_mem_data_size    = parse_mem_cap_str("1GB")
+        _l1_data_size_per_core = parse_mem_cap_str("1MB")
+        _spad_st_size_per_core = parse_mem_cap_str("480KB")
+        _spad_ld_size_per_core = parse_mem_cap_str("32KB")
         
         logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD Load: {_spad_ld_size_per_core / 1024:.2f} KB, SPAD Store: {_spad_st_size_per_core / 1024:.2f} KB")
         
-        l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
-        main_data_mem_space  = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-        spad_ld_pp_space = device.create_l1_mem_space(_spad_ld_size_per_core, core_group=core_group)
-        spad_st_pp_space = device.create_l1_mem_space(_spad_st_size_per_core, core_group=core_group)
+        main_data_mem_space = device.create_main_mem_space(_main_mem_data_size)
+        l1_data_mem_space   = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
+        spad_ld_pp_space    = device.create_l1_mem_space(_spad_ld_size_per_core, core_group=core_group)
+        spad_st_pp_space    = device.create_l1_mem_space(_spad_st_size_per_core, core_group=core_group)
         
-        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks), blocked_mapping=True).allocate().update(ifm)
-        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks),                     ).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),                          ).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns), blocked_mapping=True).allocate()
+        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ifm_shape,  dtype=ifm.dtype,       shard_grid=(Ws, Cs)).allocate().update(ifm)
+        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=wgt.dtype,       shard_grid=(Ks, Cs)).allocate().update(wgt)
+        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=bias.dtype,      shard_grid=(1,  Ks)).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ofm_shape,  dtype=self.acc_dtype,  shard_grid=(Ws, Ks)).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
@@ -85,13 +90,13 @@ class Benchmark:
             else:
                 self._main_traffic += b.total_size
                 
-        op = MCA_OP_LINEAR(
-            device, core_group, 
-            spad_ld_pp_space, spad_st_pp_space, 
+        op = MCA_OP_CONV2D(
+            device, core_group, spad_ld_pp_space, spad_st_pp_space, 
             ifm_b, wgt_b, bias_b, ofm_b, 
+            stride=self.STRIDE, padding=self.PADDING, dilation=self.DILATION,
             broadcast_optimize=True, 
-            auto_dispatch=True,
-            mapping_strategy=self.mapping_strategy
+            auto_dispatch=True, 
+            mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY
         )
         
         if compilation_summary_dir is not None:
@@ -106,7 +111,6 @@ class Benchmark:
         device.reset_simulation()
         
         l1_data_mem_space.remove()
-        main_data_mem_space.remove()
         spad_ld_pp_space.remove()
         spad_st_pp_space.remove()
         
@@ -135,7 +139,12 @@ class Benchmark:
             ms_str = "rr"
         else:
             ms_str = "unk"
-        return f"{self.M}x{self.N}x{self.K}_{self.Ms}x{self.Ns}x{self.Ks}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
+            
+        S = self.STRIDE if isinstance(self.STRIDE, int) else self.STRIDE[0]
+        P = self.PADDING if isinstance(self.PADDING, int) else self.PADDING[0]
+        D = self.DILATION if isinstance(self.DILATION, int) else self.DILATION[0]
+        
+        return f"{self.N}x{self.H}x{self.W}x{self.C}_{self.FH}x{self.FW}x{self.K}_S{S}_P{P}_D{D}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
     
     
 class BenchmarkProcess(mp.Process):
@@ -172,24 +181,21 @@ class BenchmarkProcess(mp.Process):
 
 
 benchmarks = [
-    # Benchmarks: Square Matrices with Varying Sizes
-    Benchmark(M=2048, N=2048, K=2048, Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=1024, N=2048, K=2048, Ms=16, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=1024, N=1024, K=1024, Ms=16, Ns=16, Ks=16, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=512 , N=512,  K=512,  Ms=8, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=256 , N=256,  K=256,  Ms=4, Ns=4, Ks=4, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=128 , N=128,  K=128,  Ms=4, Ns=4, Ks=4, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    # AlexNet
+    Benchmark(N=1, H=224, W=224, C=3,   FH=11, FW=11, K=96,  STRIDE=(4, 4), PADDING=(2, 2), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=27,  W=27,  C=96,  FH=5,  FW=5,  K=256, STRIDE=(1, 1), PADDING=(2, 2), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=384, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
     
-    # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
-    Benchmark(M=512,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=256,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=128,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    # ResNet18
+    Benchmark(N=1, H=224, W=224, C=3,   FH=7,  FW=7,  K=64,  STRIDE=(2, 2), PADDING=(3, 3), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=64,  STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=128, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=128, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=512, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=7,   W=7,   C=512, FH=3,  FW=3,  K=512, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
 ]
 
 if __name__ == "__main__":
@@ -227,7 +233,7 @@ if __name__ == "__main__":
     
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), return_dict, worker_sem)
+        p = BenchmarkProcess(benchmark, config, (0, 0), (8, 8), return_dict, worker_sem)
         p.start()
         processes.append(p)
         
@@ -280,12 +286,12 @@ if __name__ == "__main__":
         print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
-            peak_perf = 4 * 4 * mxu_config.peak_op_per_cycle,  # 4x4 PE array
+            peak_perf = 8 * 8 * mxu_config.peak_op_per_cycle,  # 8x8 PE array
             peak_mem_bw = mem_peak_bw,
             peak_noc_bw = noc_bisection_bw,
             src_path=output_path,
             img_path=img_path,
-            img_title="Tenstorrent Roofline Analysis - Single Op Benchmarks"
+            img_title=f"{type(config).__name__} Roofline Analysis - {FILE_NAME}"
         )
         
         print(f"Roofline visualization saved to '{img_path}'.")

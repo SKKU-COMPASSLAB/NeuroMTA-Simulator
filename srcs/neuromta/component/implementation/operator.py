@@ -244,6 +244,7 @@ def MCA_OP_CONV2D(
     stride: Sequence[int],
     padding: Sequence[int],
     dilation: Sequence[int],
+    groups: int=1,
     
     broadcast_optimize: bool=True,
     broadcast_optimize_targets: list[str]=None,
@@ -267,7 +268,9 @@ def MCA_OP_CONV2D(
         stride=stride,
         padding=padding,
         dilation=dilation,
+        groups=groups,
         
+        # conv2d specific buffers
         wgt=wgt,
         bias=bias,
     ).compile(mapping_strategy=mapping_strategy)
@@ -322,7 +325,9 @@ def MCA_OP_MAXPOOL2D(
         stride=stride,
         padding=padding,
         dilation=dilation,
+        groups=1,   # groups should always be 1 for maxpooling
         
+        # reuse conv2d mapper for maxpooling
         window=window,
     ).compile(mapping_strategy=mapping_strategy)
     

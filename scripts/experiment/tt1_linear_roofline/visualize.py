@@ -56,15 +56,9 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
 
     for i, (name, data) in enumerate(workloads.items()):
         if data['AI'] < mem_ai_balance or data['AI'] < noc_ai_balance:
-            # index = mem_bound_cnt
-            # mem_bound_cnt += 1
-            
             marker = mem_bound_marker
             color = colors[i % len(colors)]
         else:
-            # index = comp_bound_cnt
-            # comp_bound_cnt += 1
-            
             marker = comp_bound_marker
             color = colors[i % len(colors)]
         
@@ -79,33 +73,7 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
             linestyle='', 
             label=name
         )
-    
-    # # Plot the machine balance point
-    # plt.loglog(
-    #     mem_ai_balance, 
-    #     peak_perf, 
-    #     marker='*', 
-    #     color='red', 
-    #     markersize=13,
-    #     mec='black',
-    #     linestyle='', 
-    #     linewidth=0.7,
-    #     label=f'Machine Balance (Memory)'
-    # )
-    
-    # # Plot the machine balance point
-    # plt.loglog(
-    #     noc_ai_balance, 
-    #     peak_perf, 
-    #     marker='o', 
-    #     color='red', 
-    #     markersize=13,
-    #     mec='black',
-    #     linestyle='', 
-    #     linewidth=0.7,
-    #     label=f'Machine Balance (NoC)'
-    # )
-    
+
     # Annotate the balance point
     plt.annotate(
         f'Memory Balance: ({mem_ai_balance:.2f} OPs/Byte, {peak_perf:.2f} OPs/Cycle)',

@@ -39,7 +39,6 @@ class MCA_TensorBuffer:
         self._layout_x = self._shape[-1]
         
         if self._layout_y % self._n_y_shards != 0:
-            print(self._shape, self._layout_y, self._n_y_shards, self._n_outer_shards, shard_grid)
             raise ValueError(f"Height {self._layout_y} is not divisible by number of height shards {self._n_y_shards}.")
         if self._layout_x % self._n_x_shards != 0:
             raise ValueError(f"Width {self._layout_x} is not divisible by number of width shards {self._n_x_shards}.")

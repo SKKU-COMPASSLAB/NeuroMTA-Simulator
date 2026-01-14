@@ -29,8 +29,6 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
         perf = ops / timestamp  # OPs/cycle
         ai = ops / (main_traffic + l1_traffic)  # OPs/Byte
         
-        name = name.split('_')[0] # extract only MNK dimensions
-        
         workloads[name] = {'AI': ai, 'PERF': perf}
 
     plt.figure(figsize=(8, 5.5))
@@ -39,7 +37,6 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
     
     mem_bound_marker = 'o'
     comp_bound_marker = '^'
-    # colors = ['blue', 'green', 'purple', 'orange', 'brown', 'cyan', 'magenta', 'yellow']
     colors = [
         '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
         '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', 
@@ -48,23 +45,14 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
         '#ffffff', '#000000', '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'
     ]
     
-    # mem_bound_cnt = 0
-    # comp_bound_cnt = 0
-    
     mem_ai_balance = peak_perf / peak_mem_bw
     noc_ai_balance = peak_perf / peak_noc_bw
 
     for i, (name, data) in enumerate(workloads.items()):
         if data['AI'] < mem_ai_balance or data['AI'] < noc_ai_balance:
-            # index = mem_bound_cnt
-            # mem_bound_cnt += 1
-            
             marker = mem_bound_marker
             color = colors[i % len(colors)]
         else:
-            # index = comp_bound_cnt
-            # comp_bound_cnt += 1
-            
             marker = comp_bound_marker
             color = colors[i % len(colors)]
         
@@ -79,32 +67,6 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
             linestyle='', 
             label=name
         )
-    
-    # # Plot the machine balance point
-    # plt.loglog(
-    #     mem_ai_balance, 
-    #     peak_perf, 
-    #     marker='*', 
-    #     color='red', 
-    #     markersize=13,
-    #     mec='black',
-    #     linestyle='', 
-    #     linewidth=0.7,
-    #     label=f'Machine Balance (Memory)'
-    # )
-    
-    # # Plot the machine balance point
-    # plt.loglog(
-    #     noc_ai_balance, 
-    #     peak_perf, 
-    #     marker='o', 
-    #     color='red', 
-    #     markersize=13,
-    #     mec='black',
-    #     linestyle='', 
-    #     linewidth=0.7,
-    #     label=f'Machine Balance (NoC)'
-    # )
     
     # Annotate the balance point
     plt.annotate(

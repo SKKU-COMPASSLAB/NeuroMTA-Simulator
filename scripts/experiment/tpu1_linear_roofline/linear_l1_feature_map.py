@@ -281,7 +281,7 @@ if __name__ == "__main__":
             peak_noc_bw = noc_bisection_bw,  # bisection bandwidth in GB/s
             src_path=output_path,
             img_path=img_path,
-            img_title="Google TPU Roofline Analysis - Single Op Benchmarks"
+            img_title=f"{type(config).__name__} Roofline Analysis - {FILE_NAME}"
         )
         
         print(f"Roofline visualization saved to '{img_path}'.")
