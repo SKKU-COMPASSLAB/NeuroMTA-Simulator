@@ -31,13 +31,15 @@ class MCA_TensorBuffer:
         if len(shard_grid) != 2:
             raise ValueError("shard_grid must be a sequence of two integers: (n_height_shards, n_width_shards).")
         
-        self._n_y_shards = shard_grid[0]
+        self._n_outer_shards = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1)
+        self._n_y_shards = shard_grid[0] * self._n_outer_shards   # merge leading dimensions into height shards
         self._n_x_shards = shard_grid[1]
         
         self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-1])
         self._layout_x = self._shape[-1]
         
         if self._layout_y % self._n_y_shards != 0:
+            print(self._shape, self._layout_y, self._n_y_shards, self._n_outer_shards, shard_grid)
             raise ValueError(f"Height {self._layout_y} is not divisible by number of height shards {self._n_y_shards}.")
         if self._layout_x % self._n_x_shards != 0:
             raise ValueError(f"Width {self._layout_x} is not divisible by number of width shards {self._n_x_shards}.")
@@ -70,7 +72,7 @@ class MCA_TensorBuffer:
             mem_space=self._mem_space,
             shape=self._shape,
             dtype=self._dtype,
-            shard_grid=(self._n_y_shards, self._n_x_shards),
+            shard_grid=(self._n_y_shards // self._n_outer_shards, self._n_x_shards),
             blocked_mapping=self._blocked_mapping
         )
         
@@ -87,7 +89,7 @@ class MCA_TensorBuffer:
         if tile_shape is None:
             tile_shape = (self._shard_y, self._shard_x)
         if not isinstance(tile_shape, Sequence):
-            tile_shape = (tile_shape, 1)
+            tile_shape = (1, tile_shape)
         if len(tile_shape) != 2:
             raise ValueError("tile_shape must be a sequence of two integers: (tile_height, tile_width).")
         
@@ -232,6 +234,15 @@ class MCA_TensorBuffer:
         
         return dst_ptr, row_size, row_num, src_row_stride, dst_row_stride
     
+    def get_shard_grid_from_tile_grid_idx(self, y_tile_idx: int, x_tile_idx: int) -> tuple[int, int, int, int]:
+        y_shard_idx = y_tile_idx // self._n_y_tiles_per_shard
+        x_shard_idx = x_tile_idx // self._n_x_tiles_per_shard
+        
+        y_tile_in_shard_idx = y_tile_idx % self._n_y_tiles_per_shard
+        x_tile_in_shard_idx = x_tile_idx % self._n_x_tiles_per_shard
+        
+        return y_shard_idx, x_shard_idx, y_tile_in_shard_idx, x_tile_in_shard_idx
+    
     @property
     def shape(self) -> Sequence[int]:
         return self._shape
@@ -247,6 +258,10 @@ class MCA_TensorBuffer:
     @property
     def shard_grid(self) -> tuple[int, int]:
         return (self._n_y_shards, self._n_x_shards)
+    
+    @property
+    def n_outer_shards(self) -> int:
+        return self._n_outer_shards  # number of shards in the leading dimensions -> n_y_shards // n_outer_shards = (# of actual height shards)
     
     @property
     def tile_grid(self) -> tuple[int, int]:

@@ -39,27 +39,34 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
     
     mem_bound_marker = 'o'
     comp_bound_marker = '^'
-    colors = ['blue', 'green', 'purple', 'orange', 'brown', 'cyan', 'magenta', 'yellow']
+    # colors = ['blue', 'green', 'purple', 'orange', 'brown', 'cyan', 'magenta', 'yellow']
+    colors = [
+        '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
+        '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', 
+        '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', 
+        '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', 
+        '#ffffff', '#000000', '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'
+    ]
     
-    mem_bound_cnt = 0
-    comp_bound_cnt = 0
+    # mem_bound_cnt = 0
+    # comp_bound_cnt = 0
     
     mem_ai_balance = peak_perf / peak_mem_bw
     noc_ai_balance = peak_perf / peak_noc_bw
 
     for i, (name, data) in enumerate(workloads.items()):
         if data['AI'] < mem_ai_balance or data['AI'] < noc_ai_balance:
-            index = mem_bound_cnt
-            mem_bound_cnt += 1
+            # index = mem_bound_cnt
+            # mem_bound_cnt += 1
             
             marker = mem_bound_marker
-            color = colors[index % len(colors)]
+            color = colors[i % len(colors)]
         else:
-            index = comp_bound_cnt
-            comp_bound_cnt += 1
+            # index = comp_bound_cnt
+            # comp_bound_cnt += 1
             
             marker = comp_bound_marker
-            color = colors[index % len(colors)]
+            color = colors[i % len(colors)]
         
         # Plot each workload point
         plt.loglog(
@@ -140,7 +147,7 @@ if __name__ == "__main__":
     src_path = os.path.join(log_dir, f"{args.test_name}.csv")
     img_path = os.path.join(log_dir, f"{args.test_name}.png")
     
-    img_title = f"Tenstorrent Roofline Analysis - {args.test_name.replace('_', ' ').title()}"
+    img_title = f"Google TPU Roofline Analysis - {args.test_name.replace('_', ' ').title()}"
     if "linear" in args.test_name:
         img_title += " (M x N x K Dimensions)"
     

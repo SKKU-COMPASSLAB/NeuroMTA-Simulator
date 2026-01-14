@@ -66,7 +66,7 @@ class TenstorrentConfig(dict):
                 system_params={
                     "channel_size": dramsim3_channel_size,
                     "channels": n_main_mem_cmd_q_per_instance,  # original config is for 3 channels
-                    "address_mapping": "rorababgchco",
+                    # "address_mapping": "rorababgchco",
                 },
                 dram_structure_params={
                     "bankgroups": 1  # TODO: more authentic way of doing this..?
@@ -149,12 +149,16 @@ class TenstorrentConfig(dict):
             icnt_config.update_core_map(coord, n)
         
         mxu_config = MXUConfig(
+            peak_op_per_cycle=4096,  # from the tenstorrent blackhole specsheet (refer to the official github repo)
+            preload_cycle=1,         # assume pipelining (additional 1 cycle for tail latency)
+            flush_cycle=1,           # assume pipelining (additional 1 cycle for tail latency)
+            
             pe_arr_height=32,
             pe_arr_width=32,
             seq_len=32,
             dtype=torch.float32,
             acc_dtype=torch.float32,
-            op_latency_per_byte=1,
+            op_latency_per_byte=0.5,  # the peak performance assumes bfloat16 (2 bytes per operation)
         )
         
         vpu_config = VPUConfig(

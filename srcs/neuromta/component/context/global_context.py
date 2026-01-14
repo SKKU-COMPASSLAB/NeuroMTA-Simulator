@@ -313,8 +313,6 @@ class GlobalContext:
                 self._core_info[(GlobalContextCoreType.DMA, d)] = core_info
                 
                 mem_info.add_owner_core(core_info)
-        
-        self._history: dict[int, int] = {}
             
         for l1_mem_bank_id in range(self._config._n_npu_core):
             base_addr = self._config._l1_mem_base_addr + (l1_mem_bank_id * self._config._l1_mem_bank_size)
@@ -357,10 +355,6 @@ class GlobalContext:
         inst_id = ch_id // self.config._n_main_mem_cmd_q_per_instance
         cmd_q_id = ch_id % self.config._n_main_mem_cmd_q_per_instance
         addr_offset = addr % (self.main_mem_channel_size * self.config._n_main_mem_cmd_q_per_instance)
-        
-        if inst_id not in self._history.keys():
-            self._history[inst_id] = 0
-        self._history[inst_id] += 1
         
         return {
             "inst_id": inst_id,

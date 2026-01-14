@@ -30,6 +30,8 @@ class Pointer:
         self._addr = value
     
     def __add__(self, offset: int) -> 'Pointer':
+        if isinstance(offset, torch.Tensor):
+            offset = offset.item()
         if not isinstance(offset, int):
             raise ValueError(f"Offset must be an integer, but got {type(offset)}.")
         if self._addr is None:

@@ -58,10 +58,11 @@ class TileSignature:
         
         
 class TiledOperatorSignature:
-    def __init__(self, i_tiles: Sequence[Sequence[TileSignature]], o_tile: TileSignature, op_kwargs: dict[str, Any]=None):
-        self.i_tiles    = i_tiles
-        self.o_tile     = o_tile
-        self.op_kwargs  = op_kwargs if op_kwargs is not None else {}
+    def __init__(self, i_tiles: Sequence[Sequence[TileSignature]], o_tile: TileSignature, op_kwargs: dict[str, Any]=None, op_metadata: Any=None):
+        self.i_tiles     = i_tiles
+        self.o_tile      = o_tile
+        self.op_kwargs   = op_kwargs if op_kwargs is not None else {}
+        self.op_metadata = op_metadata
         
     def copy(self) -> 'TiledOperatorSignature':
         i_tiles = [
@@ -69,7 +70,13 @@ class TiledOperatorSignature:
             for tile_pair in self.i_tiles
         ]
         o_tile = self.o_tile.override_spm_ptr(None)
-        return TiledOperatorSignature(i_tiles=i_tiles, o_tile=o_tile)
+        
+        return TiledOperatorSignature(
+            i_tiles=i_tiles, 
+            o_tile=o_tile, 
+            op_kwargs=self.op_kwargs.copy(), 
+            op_metadata=self.op_metadata
+        )
         
     @property
     def signature(self) -> str:
@@ -85,43 +92,76 @@ class TiledOperatorSignature:
 class TiledOperatorMapping(Dict[int, List[TiledOperatorSignature]]):
     def __init__(self, core_group: MCA_CoreGroup):
         self.core_group = core_group
-    
+        
     @staticmethod
     def output_stationary(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
+        # contiguous for output tile assignment
+        # reuse optimization for input and weight tile assignment
+        
+        # STEP 1: detemine cores
         core_ids = core_group.core_ids
         mapper = TiledOperatorMapping(core_group=core_group)
         
         for core_id in core_ids:
             mapper[core_id] = []
         
-        for op_idx, op in enumerate(tiled_ops):
-            flag = False
+        # STEP 2: collect unique output tiles
+        otile_coords_arr: list[tuple[int, ...]] = []
+        for op in tiled_ops:
+            if op.o_tile.coords not in otile_coords_arr:
+                otile_coords_arr.append(op.o_tile.coords)        
+        otile_coords_arr.sort()  # sort to ensure deterministic mapping
+        
+        # STEP 3: assign each output tile to a core in a contiguous manner
+        n_otile_per_core = math.ceil(len(otile_coords_arr) / len(core_ids))
+        
+        for cursor in range(len(otile_coords_arr)):
+            target_core_id = core_ids[cursor // n_otile_per_core]
+            otile_coords = otile_coords_arr[cursor]
             
-            # output stationary
-            ofm_mem_info = op.o_tile.mem_info
-            if ofm_mem_info.mem_type == GlobalContextMemType.L1 and ofm_mem_info.owner_core_ids[0] in core_ids:
-                target_core_id = ofm_mem_info.owner_core_ids[0]
-                flag = True
-            
-            # input stationary (prioritized)
-            if not flag:
-                for i in range(len(op.i_tiles[0])):
-                    if op.i_tiles[0][i].mem_info.mem_type == GlobalContextMemType.L1:
-                        i_mem_infos     = [tile_pair[i].mem_info for tile_pair in op.i_tiles]
-                        i_core_ids      = list(set([mem_info.owner_core_ids[0] for mem_info in i_mem_infos]))
-                        target_core_id  = i_core_ids[op_idx % len(i_core_ids)]
-                        
-                        if target_core_id in core_ids:
-                            flag = True
-                            break
-            
-            # round-robin assignment if none of the tiles are in L1
-            if not flag:
-                target_core_id = core_ids[op_idx % len(core_ids)]  
-                
-            mapper[target_core_id].append(op)
+            # assign all operators with the same output tile to the target core
+            for op in tiled_ops:
+                if op.o_tile.coords == otile_coords:
+                    mapper[target_core_id].append(op)
         
         return mapper
+    
+    # @staticmethod
+    # def output_stationary(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
+    #     core_ids = core_group.core_ids
+    #     mapper = TiledOperatorMapping(core_group=core_group)
+        
+    #     for core_id in core_ids:
+    #         mapper[core_id] = []
+        
+    #     for op_idx, op in enumerate(tiled_ops):
+    #         flag = False
+            
+    #         # output stationary
+    #         ofm_mem_info = op.o_tile.mem_info
+    #         if ofm_mem_info.mem_type == GlobalContextMemType.L1 and ofm_mem_info.owner_core_ids[0] in core_ids:
+    #             target_core_id = ofm_mem_info.owner_core_ids[0]
+    #             flag = True
+            
+    #         # input stationary (prioritized)
+    #         if not flag:
+    #             for i in range(len(op.i_tiles[0])):
+    #                 if op.i_tiles[0][i].mem_info.mem_type == GlobalContextMemType.L1:
+    #                     i_mem_infos     = [tile_pair[i].mem_info for tile_pair in op.i_tiles]
+    #                     i_core_ids      = list(set([mem_info.owner_core_ids[0] for mem_info in i_mem_infos]))
+    #                     target_core_id  = i_core_ids[op_idx % len(i_core_ids)]
+                        
+    #                     if target_core_id in core_ids:
+    #                         flag = True
+    #                         break
+            
+    #         # round-robin assignment if none of the tiles are in L1
+    #         if not flag:
+    #             target_core_id = core_ids[op_idx % len(core_ids)]  
+                
+    #         mapper[target_core_id].append(op)
+        
+    #     return mapper
     
     @staticmethod
     def round_robin(core_group: MCA_CoreGroup, tiled_ops: Sequence[TiledOperatorSignature]) -> 'TiledOperatorMapping':
@@ -321,6 +361,14 @@ class CompiledOperator:
         for cursor in range(len(tiled_ops)):
             # make a copy to avoid modifying the original
             op = tiled_ops[cursor].copy()  
+            
+            # NEW!: reorder input tiles for better reuse
+            def i_tile_reorder_key(i_tile: Sequence[TileSignature]):
+                total_coords = []
+                for tin in i_tile:
+                    total_coords.extend(tin.coords)
+                return tuple(total_coords)
+            op.i_tiles = tuple(sorted(list(op.i_tiles), key=i_tile_reorder_key))
             
             for inner_op_idx in range(len(op.i_tiles)):
                 total_ld_spad_usage = sum([tile.buf.tile_size for tile in op.i_tiles[inner_op_idx]])
@@ -741,55 +789,121 @@ class MCA_OperatorMapper:
         )
         
     @staticmethod
-    def NATIVE_CONV2D(core_group: MCA_CoreGroup, spad_ld_mem_space: MCA_L1MemorySpace, spad_st_mem_space: MCA_L1MemorySpace, ifm: MCA_TensorBuffer, wgt: MCA_TensorBuffer, bias: MCA_TensorBuffer, ofm: MCA_TensorBuffer, stride: int, padding: int, dilation: int) -> 'MCA_OperatorMapper':
-        N, H, W, _ = ifm.shape
-        FH, FW, K, C = wgt.shape
-        OH = (H + 2 * padding - dilation * (FH - 1) - 1) // stride + 1
-        OW = (W + 2 * padding - dilation * (FW - 1) - 1) // stride + 1
+    def CONV2D(
+        core_group: MCA_CoreGroup, spad_ld_mem_space: MCA_L1MemorySpace, spad_st_mem_space: MCA_L1MemorySpace, 
+        ifm: MCA_TensorBuffer, ofm: MCA_TensorBuffer, 
+        stride: Sequence[int], padding: Sequence[int], dilation: Sequence[int],
         
-        if C != ifm.shape[3]:
-            raise Exception(f"Input channel mismatch between IFM and WGT: {ifm.shape[3]} != {C}")
-        if K != bias.shape[1] != ofm.shape[3]:
-            raise Exception(f"Output channel mismatch between WGT, BIAS and OFM: {K} != {bias.shape[1]} != {ofm.shape[3]}")
-        if N != ofm.shape[0]:
-            raise Exception(f"Batch size mismatch between IFM and OFM: {N} != {ofm.shape[0]}")
-        if OH != ofm.shape[1]:
-            raise Exception(f"Output height mismatch between computed and OFM: {OH} != {ofm.shape[1]}")
-        if OW != ofm.shape[2]:
-            raise Exception(f"Output width mismatch between computed and OFM: {OW} != {ofm.shape[2]}")
+        # additional tensors and parameters for convolution and pooling
+        wgt: MCA_TensorBuffer=None, bias: MCA_TensorBuffer=None,
+        window: Sequence[int]=None,
+    ) -> 'MCA_OperatorMapper':
+        is_conv2d = True
+        if wgt is None or bias is None:
+            if window is None:
+                raise Exception("Either WGT and BIAS or WINDOW must be provided for CONV2D operator mapping.")
+            is_conv2d = False
         
-        ifm_tile_shape = ifm.tile_shape
-        wgt_tile_shape = wgt.tile_shape
-        bias_tile_shape = bias.tile_shape
-        ofm_tile_shape = ofm.tile_shape
+        if isinstance(stride, int):     stride   = (stride, stride)
+        if isinstance(padding, int):    padding  = (padding, padding)
+        if isinstance(dilation, int):   dilation = (dilation, dilation)
         
-        if ifm_tile_shape[0] != ofm_tile_shape[0]:
-            raise Exception(f"IFM and OFM tile shape batch size mismatch: {ifm_tile_shape[0]} != {ofm_tile_shape[0]}")
-        if wgt_tile_shape[0] != ofm_tile_shape[1] or wgt_tile_shape[0] != bias_tile_shape[1]:
-            raise Exception(f"WGT and OFM tile shape channel size mismatch: {wgt_tile_shape[0]} != {ofm_tile_shape[1]} != {bias_tile_shape[1]}")
-        if wgt_tile_shape[1] != ifm_tile_shape[1]:
-            raise Exception(f"WGT and IFM tile shape feature size mismatch: {wgt_tile_shape[1]} != {ifm_tile_shape[1]}")
+        if len(stride) != 2:
+            raise Exception(f"Stride must be an integer or a tuple of two integers, but got: {stride}")
+        if len(padding) != 2:
+            raise Exception(f"Padding must be an integer or a tuple of two integers, but got: {padding}")
+        if len(dilation) != 2:
+            raise Exception(f"Dilation must be an integer or a tuple of two integers, but got: {dilation}")
         
+        N, H, W, C = ifm.shape
+        if is_conv2d:
+            FH, FW, K, _ = wgt.shape
+        else:
+            FH, FW = window
+            K = C 
+        OH = (H + 2 * padding[0] - dilation[0] * (FH - 1) - 1) // stride[0] + 1
+        OW = (W + 2 * padding[1] - dilation[1] * (FW - 1) - 1) // stride[1] + 1
+        
+        if is_conv2d:
+            if C != ifm.shape[3]:
+                raise Exception(f"Input channel mismatch between IFM and WGT: {ifm.shape[3]} != {C}")
+            if K != bias.shape[1] != ofm.shape[3]:
+                raise Exception(f"Output channel mismatch between WGT, BIAS and OFM: {K} != {bias.shape[1]} != {ofm.shape[3]}")
+            if N != ofm.shape[0]:
+                raise Exception(f"Batch size mismatch between IFM and OFM: {N} != {ofm.shape[0]}")
+            if OH != ofm.shape[1]:
+                raise Exception(f"Output height mismatch between computed and OFM: {OH} != {ofm.shape[1]}")
+            if OW != ofm.shape[2]:
+                raise Exception(f"Output width mismatch between computed and OFM: {OW} != {ofm.shape[2]}")
+        else:
+            if C != ifm.shape[3]:
+                raise Exception(f"Input channel mismatch between IFM and WGT: {ifm.shape[3]} != {C}")
+            if N != ofm.shape[0]:
+                raise Exception(f"Batch size mismatch between IFM and OFM: {N} != {ofm.shape[0]}")
+            if OH != ofm.shape[1]:
+                raise Exception(f"Output height mismatch between computed and OFM: {OH} != {ofm.shape[1]}")
+            if OW != ofm.shape[2]:
+                raise Exception(f"Output width mismatch between computed and OFM: {OW} != {ofm.shape[2]}")
+        
+        if is_conv2d:
+            ifm_tile_shape = ifm.tile_shape
+            wgt_tile_shape = wgt.tile_shape
+            bias_tile_shape = bias.tile_shape
+            ofm_tile_shape = ofm.tile_shape
+            
+            if ifm_tile_shape[0] != ofm_tile_shape[0]:
+                raise Exception(f"IFM and OFM tile shape batch size mismatch: {ifm_tile_shape[0]} != {ofm_tile_shape[0]}")
+            if wgt_tile_shape[0] != ofm_tile_shape[1] or wgt_tile_shape[0] != bias_tile_shape[1]:
+                raise Exception(f"WGT and OFM tile shape channel size mismatch: {wgt_tile_shape[0]} != {ofm_tile_shape[1]} != {bias_tile_shape[1]}")
+            if wgt_tile_shape[1] != ifm_tile_shape[1]:
+                raise Exception(f"WGT and IFM tile shape feature size mismatch: {wgt_tile_shape[1]} != {ifm_tile_shape[1]}")
+        
+            ifm_y_outer_shards, ifm_y_inner_shards, ifm_x_shards = (ifm.n_outer_shards, *ifm.shard_grid)    # NH,  NHW,  C
+            wgt_y_outer_shards, wgt_y_inner_shards, wgt_x_shards = (wgt.n_outer_shards, *wgt.shard_grid)    # FHW, FHWK, C
+            bias_x_shards = bias.shard_grid[-1]                                                             # K
+            ofm_y_outer_shards, ofm_y_inner_shards, ofm_x_shards = (ofm.n_outer_shards, *ofm.shard_grid)    # NOH, NOHW, K
+            
+            if ifm_x_shards != wgt_x_shards:
+                raise Exception(f"IFM and WGT shard grid feature size mismatch in input channel C dimension: {ifm_x_shards} != {wgt_x_shards}")
+            if ofm_x_shards != bias_x_shards or ofm_x_shards != (wgt_y_inner_shards // wgt_y_outer_shards):
+                raise Exception(f"OFM, BIAS and WGT shard grid channel size mismatch in output channel K dimension: {ofm_x_shards} != {bias_x_shards} != {wgt_y_inner_shards // wgt_y_outer_shards}")
+            
+        else:
+            ifm_tile_shape = ifm.tile_shape
+            ofm_tile_shape = ofm.tile_shape
+            
+            if ifm_tile_shape[0] != ofm_tile_shape[0]:
+                raise Exception(f"IFM and OFM tile shape batch size mismatch: {ifm_tile_shape[0]} != {ofm_tile_shape[0]}")
+            if ofm_tile_shape[1] != ofm_tile_shape[1]:
+                raise Exception(f"OFM tile shape channel size mismatch: {ofm_tile_shape[1]} != {ofm_tile_shape[1]}")
+
+            ifm_y_outer_shards, ifm_y_inner_shards, ifm_x_shards = (ifm.n_outer_shards, *ifm.shard_grid)    # NH,  NHW,  C
+            ofm_y_outer_shards, ofm_y_inner_shards, ofm_x_shards = (ofm.n_outer_shards, *ofm.shard_grid)    # NOH, NOHW, C
+            
+            if ifm_x_shards != ofm_x_shards:
+                raise Exception(f"IFM and OFM shard grid feature size mismatch in input channel C dimension: {ifm_x_shards} != {ofm_x_shards}")
+            
+        if is_conv2d:
+            wgt_tiles: dict[tuple[int, ...], TileSignature] = {
+                (y_s, x_s, y_t, x_t): TileSignature("wgt", wgt, y_s, x_s, y_t, x_t)
+                for y_s in range(wgt.shard_grid[0])
+                for x_s in range(wgt.shard_grid[1])
+                for y_t in range(wgt.tile_grid_per_shard[0])
+                for x_t in range(wgt.tile_grid_per_shard[1])
+            }
+            
+            bias_tiles: dict[tuple[int, ...], TileSignature] = {
+                (0, x_s, 0, x_t): TileSignature("bias", bias, 0, x_s, 0, x_t)
+                for x_s in range(bias.shard_grid[1])
+                for x_t in range(bias.tile_grid_per_shard[1])
+            }
+            
         ifm_tiles: dict[tuple[int, ...], TileSignature] = {
             (y_s, x_s, y_t, x_t): TileSignature("ifm", ifm, y_s, x_s, y_t, x_t)
             for y_s in range(ifm.shard_grid[0])
             for x_s in range(ifm.shard_grid[1])
             for y_t in range(ifm.tile_grid_per_shard[0])
             for x_t in range(ifm.tile_grid_per_shard[1])
-        }
-        
-        wgt_tiles: dict[tuple[int, ...], TileSignature] = {
-            (y_s, x_s, y_t, x_t): TileSignature("wgt", wgt, y_s, x_s, y_t, x_t)
-            for y_s in range(wgt.shard_grid[0])
-            for x_s in range(wgt.shard_grid[1])
-            for y_t in range(wgt.tile_grid_per_shard[0])
-            for x_t in range(wgt.tile_grid_per_shard[1])
-        }
-        
-        bias_tiles: dict[tuple[int, ...], TileSignature] = {
-            (0, x_s, 0, x_t): TileSignature("bias", bias, 0, x_s, 0, x_t)
-            for x_s in range(bias.shard_grid[1])
-            for x_t in range(bias.tile_grid_per_shard[1])
         }
         
         ofm_tiles: dict[tuple[int, ...], TileSignature] = {
@@ -802,38 +916,118 @@ class MCA_OperatorMapper:
         
         tiled_ops: list[TiledOperatorSignature] = []
         
-        for y_s in range(ofm.shard_grid[0]):
-            for x_s in range(ofm.shard_grid[1]):
-                for y_t in range(ofm.tile_grid_per_shard[0]):
-                    for x_t in range(ofm.tile_grid_per_shard[1]):
-                        i_tiles: list[tuple[TileSignature]] = []
+        OW_N_TILES = ofm.tile_grid[0] // (N * OH)
+        K_N_TILES  = ofm.tile_grid[1]
+        C_N_TILES  = ifm.tile_grid[1]
+        W_N_TILES  = ifm.tile_grid[0] // (N * H)
+        
+        OW_N_TILES_PER_SHARD = ofm.tile_grid_per_shard[0]
+        W_N_TILES_PER_SHARD  = ifm.tile_grid_per_shard[0]
+        
+        for n_it in range(N):  # NO TILING over batch dimension
+            for oh_it in range(OH):  # NO TILING over output height dimension
+                for ow_tile_it in range(OW_N_TILES):  # TILING over output width (32 for Tenstorrent) & not aligned with input width dimension W
+                    for k_tile_it in range(K_N_TILES):  # TILING over output channel (32 for Tenstorrent)
+                        tiled_op = TiledOperatorSignature(i_tiles=[], o_tile=None)
                         
-                        ofm_tile = ofm_tiles[(y_s, x_s, y_t, x_t)]
+                        # GET OFM tile signature
+                        ofm_y_tile_idx = n_it * OH * OW_N_TILES + oh_it * OW_N_TILES + ow_tile_it
+                        ofm_x_tile_idx = k_tile_it
+                        ofm_tile_idx = ofm.get_shard_grid_from_tile_grid_idx(ofm_y_tile_idx, ofm_x_tile_idx)
                         
-                        o_nhw_start = y_s * ofm.tile_shape[0] * ofm.tile_grid_per_shard[0] + y_t * ofm.tile_shape[0]
-                        o_nhw_end   = o_nhw_start + ofm.tile_shape[0]
-                        
-                        for o_nhw in range(o_nhw_start, o_nhw_end):
-                            o_n = o_nhw // (OH * OW)
-                            o_h = (o_nhw % (OH * OW)) // OW
-                            o_w = (o_nhw % (OH * OW)) % OW
-                            o_k = x_s * ofm.tile_shape[1] * ofm.tile_grid_per_shard[1] + x_t * ofm.tile_shape[1]
-                            
-                            for f_h in range(FH):
-                                for f_w in range(FW):
-                                    i_h = o_h * stride - padding + f_h * dilation
-                                    i_w = o_w * stride - padding + f_w * dilation
-                                    
-                                    if (i_h < 0) or (i_h >= H) or (i_w < 0) or (i_w >= W):
-                                        continue  # skip out-of-bound input tiles    
+                        tiled_op.o_tile = ofm_tiles[ofm_tile_idx]
+                        tiled_op.i_tiles = []
+                        tiled_op.op_metadata = []
 
-                        tiled_op = TiledOperatorSignature(
-                            i_tiles=[tuple(i_tiles)],
-                            o_tile=ofm_tile
-                        )
+                        for fh_it in range(FH):  # NO TILING over filter height dimension
+                            for fw_it in range(FW):  # NO TILING over filter width dimension
+                                for c_tile_it in range(C_N_TILES):  # TILING over input channel (32 for Tenstorrent)
+                                    if not is_conv2d and c_tile_it != 0:
+                                        continue  # for pooling, only one input channel tile
+                                    
+                                    uop_i_tiles = []
+                                    uop_metadata = []
+                                    
+                                    # IFM width and height dimension calculation
+                                    h_it = oh_it * stride[0] - padding[0] + fh_it * dilation[0]   # output height to input height
+                                    if h_it < 0 or h_it >= H:
+                                        continue  # skip invalid output height indices due to padding
+                                    
+                                    ow_shard_it         = ow_tile_it // OW_N_TILES_PER_SHARD    # OW shard iterator: which OW shard the current OW tile belongs to
+                                    ow_rem_tile_it      = ow_tile_it % OW_N_TILES_PER_SHARD     # OW tile iterator within the current OW shard
+                                    ow_actual_tile_size = min(ofm.tile_shape[0], OW - (ow_shard_it * ofm.shard_shape[0] + ow_rem_tile_it * ofm.tile_shape[0]))              # actual OW tile size (may be smaller than ofm.tile_shape[0] at the boundary)
+                                    ow_stick_idx_vec    = ow_shard_it * ofm.shard_shape[0] + ow_rem_tile_it * ofm.tile_shape[0] + torch.arange(0, ow_actual_tile_size, 1)   # stick indices in OW dimension (with respect to the actual OFM tile size)
+                                    w_stick_idx_vec     = ow_stick_idx_vec * stride[1] - padding[1] + fw_it * dilation[1]    # stick indices in W dimension (converted from OW indices)
+                                    w_stick_valid_mask  = (w_stick_idx_vec >= 0) & (w_stick_idx_vec < W)                     # valid mask for W dimension sticks
+                                    
+                                    if is_conv2d:
+                                        # GET WGT tile signature
+                                        wgt_y_tile_idx = fh_it * FW * K_N_TILES + fw_it * K_N_TILES + k_tile_it
+                                        wgt_x_tile_idx = c_tile_it
+                                        wgt_tile_idx = wgt.get_shard_grid_from_tile_grid_idx(wgt_y_tile_idx, wgt_x_tile_idx)
+                                        
+                                        uop_i_tiles.append(wgt_tiles[wgt_tile_idx])
+                                        uop_metadata.append(None)  # No special metadata for WGT tile
+                                        
+                                        # GET PSUM tile signature (BIAS or partially merged OFM)
+                                        psum_tile_idx = bias.get_shard_grid_from_tile_grid_idx(0, k_tile_it)
+                                            
+                                        uop_i_tiles.append(bias_tiles[psum_tile_idx])
+                                        uop_metadata.append(None)  # No special metadata for WGT tile
+
+                                    # GET IFM tile signature with halo memcpy patterns
+                                    #   - Note that IFM tile indices depend on OFM tile indices due to stride, padding, dilation
+                                    #   - IFM cannot directly obtained by the tile granularity, instead need to be calculated from each
+                                    #     coordinate of the required IFM sticks (or channel-wise row vectors)
+                                    #   - Halo regions are handled by masking invalid coordinates and additional metadata indicating
+                                    #     the memory copy patterns before getting into the lowered Conv2d computation
+                                    ifm_tile_idx_with_memcpy_pattern: dict[tuple[int, ...], dict[int, int]] = {}
+                                    ifm_tile_idx_offset = n_it * H * W_N_TILES + h_it * W_N_TILES
+                                    
+                                    for w_stick_it, (w_stick_idx, w_stick_valid) in enumerate(zip(w_stick_idx_vec, w_stick_valid_mask)):
+                                        if not w_stick_valid:
+                                            continue
+                                        
+                                        w_stick_shard_it            = w_stick_idx // ifm.shard_shape[0]             # W stick shard iterator: which W shard the current W stick belongs to
+                                        w_stick_intra_shard_idx     = (w_stick_idx % ifm.shard_shape[0])            # W stick tile iterator within the current W shard
+                                        w_stick_intra_shard_tile_it = w_stick_intra_shard_idx // ifm.tile_shape[0]  # W stick intra-shard tile iterator
+                                        w_stick_intra_tile_offset   = w_stick_intra_shard_idx % ifm.tile_shape[0]   # W stick offset within the intra-shard tile
+                                        
+                                        ifm_y_tile_idx = int(ifm_tile_idx_offset + W_N_TILES_PER_SHARD * w_stick_shard_it + w_stick_intra_shard_tile_it)
+                                        ifm_x_tile_idx = c_tile_it
+                                        ifm_tile_idx = ifm.get_shard_grid_from_tile_grid_idx(ifm_y_tile_idx, ifm_x_tile_idx) 
+                                            
+                                        ifm_stick_src_offset = w_stick_intra_tile_offset
+                                        ifm_stick_dst_offset = w_stick_it
+                                        
+                                        if ifm_tile_idx not in ifm_tile_idx_with_memcpy_pattern:
+                                            ifm_tile_idx_with_memcpy_pattern[ifm_tile_idx] = {}
+                                    
+                                        ifm_tile_idx_with_memcpy_pattern[ifm_tile_idx][ifm_stick_dst_offset] = ifm_stick_src_offset
+                                        
+                                    if len(ifm_tile_idx_with_memcpy_pattern) == 0:
+                                        logger.warning(f"No valid IFM tiles found for the given OFM tile at (n_it={n_it}, oh_it={oh_it}, ow_tile_it={ow_tile_it}, k_tile_it={k_tile_it}) with the specified Conv2d parameters (stride={stride}, padding={padding}, dilation={dilation}).")
+                                        raise Exception("No valid IFM tiles found for the given OFM tile with the specified Conv2d parameters (stride, padding, dilation). Please check the configuration.")
+                                        
+                                    for ifm_tile_idx, memcpy_pattern in ifm_tile_idx_with_memcpy_pattern.items():
+                                        uop_i_tiles.append(ifm_tiles[ifm_tile_idx])
+                                        uop_metadata.append(memcpy_pattern)
+                                        
+                                    tiled_op.i_tiles.append(tuple(uop_i_tiles))
+                                    tiled_op.op_metadata.append(tuple(uop_metadata))
                         
+                        logger.debug(f"Generated CONV2D tiled_op for OFM tile idx {tiled_op.o_tile.coords} with {len(tiled_op.i_tiles)} uops")
                         tiled_ops.append(tiled_op)
         
+        logger.debug(f"mapper generated {len(tiled_ops)} in total")
+                               
+        return MCA_OperatorMapper(
+            core_group=core_group,
+            spad_ld_mem_space=spad_ld_mem_space,
+            spad_st_mem_space=spad_st_mem_space,
+            tiled_ops=tiled_ops,
+        )
+                                
     def compile(self, mapping_strategy: Callable | str = OUTPUT_STATIONARY) -> CompiledMapping:
         if isinstance(mapping_strategy, str):
             mapping_strategy = getattr(TiledOperatorMapping, mapping_strategy, None)

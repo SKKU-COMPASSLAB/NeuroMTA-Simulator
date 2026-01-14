@@ -1,13 +1,11 @@
 import os
-import math
 import pandas as pd
 import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
-PEAK_PERFORMANCE = 2 * (4 * 4) * (32 * 32)  # 4x4 Core Grid | 32x32 MXU | MAC = 2 OPs 
-PEAK_MEM_BANDWIDTH   = 1163.64  # theoretical peak bandwidth in GB/cycle
-PEAK_NOC_BANDWIDTH   = 5120.00  # theoretical peak NoC bandwidth in GB/cycle
+PEAK_PERFORMANCE   = 2 * (4 * 4) * (32 * 32)  # 4x4 Core Grid | 32x32 MXU | MAC = 2 OPs 
+PEAK_BANDWIDTH = 387.88  # theoretical peak bandwidth in GB/cycle
 
 
 def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_path: str, img_title: str):
@@ -24,8 +22,7 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
     for idx, row in df.iterrows():
         name:         str = row['Benchmark']
         ops:          int = row['Total OPs']
-        # timestamp:    int = row['Timestamp (cycles)']
-        timestamp:    int = math.ceil(row['Time (us)'] * 1000)  # convert us to ns assuming 1 cycle = 1 ns
+        timestamp:    int = row['Timestamp (cycles)']
         main_traffic: int = row['Main Memory Traffic (Bytes)']
         l1_traffic:   int = row['L1 Memory Traffic (Bytes)']
         
@@ -42,27 +39,34 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
     
     mem_bound_marker = 'o'
     comp_bound_marker = '^'
-    colors = ['blue', 'green', 'purple', 'orange', 'brown', 'cyan', 'magenta', 'yellow']
+    # colors = ['blue', 'green', 'purple', 'orange', 'brown', 'cyan', 'magenta', 'yellow']
+    colors = [
+        '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
+        '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', 
+        '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', 
+        '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', 
+        '#ffffff', '#000000', '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'
+    ]
     
-    mem_bound_cnt = 0
-    comp_bound_cnt = 0
+    # mem_bound_cnt = 0
+    # comp_bound_cnt = 0
     
     mem_ai_balance = peak_perf / peak_mem_bw
     noc_ai_balance = peak_perf / peak_noc_bw
 
     for i, (name, data) in enumerate(workloads.items()):
         if data['AI'] < mem_ai_balance or data['AI'] < noc_ai_balance:
-            index = mem_bound_cnt
-            mem_bound_cnt += 1
+            # index = mem_bound_cnt
+            # mem_bound_cnt += 1
             
             marker = mem_bound_marker
-            color = colors[index % len(colors)]
+            color = colors[i % len(colors)]
         else:
-            index = comp_bound_cnt
-            comp_bound_cnt += 1
+            # index = comp_bound_cnt
+            # comp_bound_cnt += 1
             
             marker = comp_bound_marker
-            color = colors[index % len(colors)]
+            color = colors[i % len(colors)]
         
         # Plot each workload point
         plt.loglog(
@@ -147,4 +151,4 @@ if __name__ == "__main__":
     if "linear" in args.test_name:
         img_title += " (M x N x K Dimensions)"
     
-    draw(PEAK_PERFORMANCE, PEAK_MEM_BANDWIDTH, PEAK_NOC_BANDWIDTH, src_path, img_path, img_title)
+    draw(PEAK_PERFORMANCE, PEAK_BANDWIDTH, src_path, img_path, img_title)

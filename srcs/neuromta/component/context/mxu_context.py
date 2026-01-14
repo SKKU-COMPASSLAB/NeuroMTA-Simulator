@@ -1,4 +1,5 @@
 import enum
+import math
 import torch
 
 
@@ -22,6 +23,11 @@ class MXUConfig:
     def __init__(
         self,
         
+        # performance parameters
+        peak_op_per_cycle: float = None,  # if None, then use seq_len instead
+        preload_cycle: int = None,  # if None, then use predetermined architecture parameters instead
+        flush_cycle: int = None,  # if None, then use predetermined architecture parameters instead
+        
         pe_arr_height: int = 32,
         pe_arr_width: int = 32,
         seq_len: int = 32,
@@ -31,11 +37,15 @@ class MXUConfig:
     ):
         super().__init__()
         
+        self.peak_op_per_cycle = peak_op_per_cycle
+        self.preload_cycle     = preload_cycle
+        self.flush_cycle       = flush_cycle
+        
         self.pe_arr_height  = pe_arr_height
         self.pe_arr_width   = pe_arr_width
         self.seq_len        = seq_len
-        self.dtype         = dtype
-        self.acc_dtype     = acc_dtype
+        self.dtype          = dtype
+        self.acc_dtype      = acc_dtype
         self.op_latency_per_byte = op_latency_per_byte
         
     def create_context(self) -> "MXUContext":
@@ -106,18 +116,30 @@ class MXUContext:
         self._pe_arr_regs: torch.Tensor = torch.zeros((self._config.pe_arr_height, self._config.pe_arr_width), dtype=self._acc_dtype)
 
     def get_preload_pe_arr_cycles(self) -> int:
+        if self._config.preload_cycle is not None:
+            return self._config.preload_cycle
         return self._config.pe_arr_width
     
     def get_preload_acc_regs_cycles(self) -> int:
+        if self._config.preload_cycle is not None:
+            return self._config.preload_cycle
         return self._config.seq_len
     
     def get_execute_cycles(self) -> int:
-        return self._config.seq_len # * self._config.op_latency_per_byte * self._config.dtype.itemsize
+        cycles = self.config.seq_len
+        if self.config.peak_op_per_cycle is not None:
+            total_ops = 2 * self.config.m_tile * self.config.n_tile * self.config.k_tile
+            cycles = int((total_ops + self.config.peak_op_per_cycle - 1) // self.config.peak_op_per_cycle)
+        return math.ceil(cycles * self.config.op_latency_per_byte * self.dtype.itemsize)
     
     def get_flush_pe_arr_cycles(self) -> int:
+        if self._config.flush_cycle is not None:
+            return self._config.flush_cycle
         return self._config.pe_arr_width
     
     def get_flush_acc_regs_cycles(self) -> int:
+        if self._config.flush_cycle is not None:
+            return self._config.flush_cycle
         return self._config.seq_len
 
     def get_pe_arr_regs(self, clear_regs: bool=True) -> torch.Tensor:

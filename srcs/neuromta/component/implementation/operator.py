@@ -14,6 +14,8 @@ __all__ = [
     "MCA_OP_LINEAR",
     "MCA_OP_RELU_INPLACE",
     "MCA_OP_LINEAR_RELU",
+    "MCA_OP_CONV2D",
+    "MCA_OP_MAXPOOL2D",
 ]
 
 
@@ -194,7 +196,7 @@ def MCA_OP_LINEAR_RELU(
     
     auto_dispatch: bool=False,
     
-    mapping_strategy: Callable | str = TiledOperatorMapping.output_stationary
+    mapping_strategy: Callable | str = MCA_OperatorMapper.CONTIGUOUS
 ) -> MCA_Operator:
     # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
     ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
@@ -220,6 +222,118 @@ def MCA_OP_LINEAR_RELU(
         compiled_mapping=mapping, 
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
         op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU]
+    )
+    
+    if auto_dispatch:
+        operator.dispatch()
+    
+    return operator
+
+
+def MCA_OP_CONV2D(
+    device: MCA_DeviceBase,
+    core_group: MCA_CoreGroup,
+    spad_ld_mem_space: MCA_L1MemorySpace,
+    spad_st_mem_space: MCA_L1MemorySpace,
+    
+    ifm:  MCA_TensorBuffer,
+    wgt:  MCA_TensorBuffer,
+    bias: MCA_TensorBuffer,
+    ofm:  MCA_TensorBuffer,
+    
+    stride: Sequence[int],
+    padding: Sequence[int],
+    dilation: Sequence[int],
+    
+    broadcast_optimize: bool=True,
+    broadcast_optimize_targets: list[str]=None,
+    
+    auto_dispatch: bool=False,
+    
+    mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
+) -> MCA_Operator:
+    # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
+    ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
+    wgt  = wgt.copy().tiling(tile_shape=device.mxu_config.wgt_tile_shape)
+    bias = bias.copy().tiling(tile_shape=(1, device.mxu_config.wgt_tile_shape[0]))
+    ofm  = ofm.copy().tiling(tile_shape=device.mxu_config.ofm_tile_shape)
+    
+    mapping = MCA_OperatorMapper.CONV2D(
+        core_group=core_group,
+        spad_ld_mem_space=spad_ld_mem_space,
+        spad_st_mem_space=spad_st_mem_space,
+        ifm=ifm,
+        ofm=ofm,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        
+        wgt=wgt,
+        bias=bias,
+    ).compile(mapping_strategy=mapping_strategy)
+    
+    if broadcast_optimize:
+        mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)
+    
+    operator = MCA_Operator(
+        device=device, 
+        compiled_mapping=mapping, 
+        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
+        op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D]
+    )
+    
+    if auto_dispatch:
+        operator.dispatch()
+    
+    return operator
+
+
+def MCA_OP_MAXPOOL2D(
+    device: MCA_DeviceBase,
+    core_group: MCA_CoreGroup,
+    spad_ld_mem_space: MCA_L1MemorySpace,
+    spad_st_mem_space: MCA_L1MemorySpace,
+    
+    ifm:  MCA_TensorBuffer,
+    ofm:  MCA_TensorBuffer,
+    
+    window: Sequence[int],
+    stride: Sequence[int],
+    padding: Sequence[int],
+    dilation: Sequence[int],
+    
+    broadcast_optimize: bool=True,
+    broadcast_optimize_targets: list[str]=None,
+    
+    auto_dispatch: bool=False,
+    
+    mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
+) -> MCA_Operator:
+    # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
+    ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
+    ofm  = ofm.copy().tiling(tile_shape=device.mxu_config.ofm_tile_shape)
+    
+    mapping = MCA_OperatorMapper.CONV2D(
+        core_group=core_group,
+        spad_ld_mem_space=spad_ld_mem_space,
+        spad_st_mem_space=spad_st_mem_space,
+        ifm=ifm,
+        ofm=ofm,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        
+        window=window,
+    ).compile(mapping_strategy=mapping_strategy)
+    
+    if broadcast_optimize:
+        mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)
+    
+    operator = MCA_Operator(
+        device=device, 
+        compiled_mapping=mapping, 
+        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
+        op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D]
     )
     
     if auto_dispatch:

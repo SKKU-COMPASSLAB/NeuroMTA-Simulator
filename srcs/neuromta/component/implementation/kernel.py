@@ -12,10 +12,14 @@ __all__ = [
     # KERNEL CORE STAGE
     "MCA_KERNEL_CORE_STAGE_PREPROCESSING",
     "MCA_KERNEL_CORE_STAGE_POSTPROCESSING",
+    
     "MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST",
     "MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST",
+    
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR",
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU",
+    "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D",
+    "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D",
 
     # KERNEL CORE OP
     "MCA_OP_CORE_TEMPLATE",
@@ -213,7 +217,92 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU(core: NPUCore, operat
             core.vpu_store_reg(ofm, 0, burst_len=burst_len, offset=0)
 
             core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
+            
 
+@jit_prototype    
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    for cmd in stage.compute_ops:
+        if not isinstance(cmd, CompiledCommand.TILED_OP):
+            raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
+        
+        op_sig = cmd.op_sig
+        inner_op_idx = cmd.inner_op_idx
+        
+        ifm_sig_arr = op_sig.i_tiles[inner_op_idx][2:]
+        ifm_memcpy_pattern_arr: list[dict[int, int]] = op_sig.op_metadata[inner_op_idx][2:]
+        wgt_sig  = op_sig.i_tiles[inner_op_idx][0]
+        bias_sig = op_sig.i_tiles[inner_op_idx][1]
+        ofm_sig = op_sig.o_tile
+        
+        ifm_tile_shape = ofm_sig.buf.tile_shape  # TODO: infer IFM tile shape from OFM tile shape and Conv2d params
+        ifm_tile_dtype = ifm_sig_arr[0].buf.dtype
+        
+        ifm  = DataContainer(shape=ifm_tile_shape,          dtype=ifm_tile_dtype)
+        wgt  = DataContainer(shape=wgt_sig.buf.tile_shape,  dtype=wgt_sig.buf.dtype)
+        bias = DataContainer(shape=bias_sig.buf.tile_shape, dtype=bias_sig.buf.dtype)
+        ofm  = DataContainer(shape=ofm_sig.buf.tile_shape,  dtype=ofm_sig.buf.dtype)
+        
+        preload_psum = (inner_op_idx == 0)
+        flush_ofm    = (inner_op_idx == len(op_sig.i_tiles) - 1)
+        
+        if inner_op_idx == 0:
+            core.mxu_reconfigure(dtype=ifm_tile_dtype, acc_dtype=ofm_sig.buf.dtype)
+        
+        for ifm_sig, ifm_memcpy_pattern in zip(ifm_sig_arr, ifm_memcpy_pattern_arr):
+            core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_tile_shape[-1] * ifm_tile_dtype.itemsize, row_pattern=ifm_memcpy_pattern)
+        core.local_mem_page_read(wgt_sig.spm_ptr, wgt, wgt_sig.buf.tile_size)
+        if preload_psum:
+            core.local_mem_page_read(bias_sig.spm_ptr, bias, bias_sig.buf.tile_size)
+        
+        core.mxu_tiled_gemm(
+            ifm, wgt, bias, ofm,
+            preload_psum=preload_psum,
+            flush_ofm=flush_ofm,
+            wgt_transposed=True,
+            psum_vectored=True,
+        )
+        
+        if flush_ofm:
+            core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
+
+
+@jit_prototype
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    for cmd in stage.compute_ops:
+        if not isinstance(cmd, CompiledCommand.TILED_OP):
+            raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
+        
+        op_sig = cmd.op_sig
+        inner_op_idx = cmd.inner_op_idx
+        
+        ifm_sig_arr = op_sig.i_tiles[inner_op_idx]
+        ifm_memcpy_pattern_arr: list[dict[int, int]] = op_sig.op_metadata[inner_op_idx]
+        ofm_sig = op_sig.o_tile
+        
+        ifm_tile_shape = ofm_sig.buf.tile_shape  # TODO: infer IFM tile shape from OFM tile shape and Conv2d params
+        ifm_tile_dtype = ifm_sig_arr[0].buf.dtype
+        
+        ifm  = DataContainer(shape=ifm_tile_shape,          dtype=ifm_tile_dtype)
+        ofm  = DataContainer(shape=ofm_sig.buf.tile_shape,  dtype=ofm_sig.buf.dtype)
+        
+        preload_psum = (inner_op_idx == 0)
+        flush_ofm    = (inner_op_idx == len(op_sig.i_tiles) - 1)
+        
+        if inner_op_idx == 0:
+            core.mxu_reconfigure(dtype=ifm_tile_dtype, acc_dtype=ofm_sig.buf.dtype)
+        
+        for ifm_sig, ifm_memcpy_pattern in zip(ifm_sig_arr, ifm_memcpy_pattern_arr):
+            core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_tile_shape[-1] * ifm_tile_dtype.itemsize, row_pattern=ifm_memcpy_pattern)
+        
+        core.mxu_tiled_maxpool(
+            ifm, ifm, ofm,
+            preload_psum=preload_psum,
+            flush_ofm=flush_ofm,
+        )
+        
+        if flush_ofm:
+            core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
+            
 
 @jit_prototype
 def MCA_OP_CORE_TEMPLATE(core: NPUCore, operator: CompiledOperator, stage: CompiledStage, op_compute_methods: list[Callable]):

@@ -47,12 +47,12 @@ if __name__ == "__main__":
     l1_mem_space   = device.create_l1_mem_space(size_per_bank=parse_mem_cap_str("1MB"), core_group=core_grid)
     main_mem_space = device.create_main_mem_space(size_per_channel=parse_mem_cap_str("1GB"))
                 
-    M, K = 14, 14
+    N, M, K = 2, 14, 14
     
-    original_tensor = torch.arange(M * K, dtype=torch.int32).reshape(M, K)
+    original_tensor = torch.arange(N * M * K, dtype=torch.int32).reshape(N, M, K)
     tensor_buffer = MCA_TensorBuffer(
         mem_space=l1_mem_space,
-        shape=(M, K), 
+        shape=(N, M, K), 
         dtype=torch.int32, 
         shard_grid=(2, 2),
         blocked_mapping=True,
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     
     copied_buffer = MCA_TensorBuffer(
         mem_space=l1_mem_space,
-        shape=(M, K), 
+        shape=(N, M, K), 
         dtype=torch.int32, 
         shard_grid=(2, 2),
         blocked_mapping=True,

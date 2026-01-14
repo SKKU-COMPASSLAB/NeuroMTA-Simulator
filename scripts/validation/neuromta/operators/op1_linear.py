@@ -22,12 +22,12 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_group = device.get_npu_core_group((0, 0), (4, 4))
+    core_group = device.get_npu_core_group((0, 0), (2, 2))
     
-    M, N, K = 1024, 1024, 1024
-    Ms, Ns, Ks = 32, 32, 32
-    dtype = torch.bfloat16
-    acc_dtype = torch.bfloat16
+    M, N, K = 120, 228, 126
+    Ms, Ns, Ks = 2, 2, 2
+    dtype = torch.int32
+    acc_dtype = torch.int32
     blocked_mapping = True  # Enable blocked mapping for better data locality
     broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
     sim_mode = "partial_l1"
@@ -97,7 +97,7 @@ if __name__ == "__main__":
         ifm_b, wgt_b, bias_b, ofm_b, 
         broadcast_optimize=broadcast_optimize, 
         auto_dispatch=True, 
-        mapping_strategy=MCA_OperatorMapper.CONTIGUOUS
+        mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY
     )
     
     tmp_ouput_path = os.path.join(TMP_DIR, "pipelined_mapping.json")
@@ -125,19 +125,9 @@ if __name__ == "__main__":
     simulated = ofm_b.restore()
     reference = torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
     
-    print(f"simulated:\n{simulated}")
-    print(f"reference:\n{reference}")
+    # print(f"simulated:\n{simulated}")
+    # print(f"reference:\n{reference}")
+    total_elements = ofm.numel()
+    num_mismatches = (simulated != reference).sum().item()
+    print(f"total elements: {total_elements}, mismatches: {num_mismatches}")
     print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
-    
-    if not torch.equal(simulated, reference):
-        mismatch_report = os.path.join(TMP_DIR, "mismatch_report.txt")
-        with open(mismatch_report, "w") as f:
-            content = []
-            for i in range(M):
-                for j in range(N):
-                    sim_val = simulated[i, j].item()
-                    ref_val = reference[i, j].item()
-                    if sim_val != ref_val:
-                        content.append(f"Mismatch at position ({i}, {j}): simulated={sim_val}, reference={ref_val}\n")
-            f.writelines(content)
-        logger.error(f"Mismatch report saved to '{mismatch_report}'.")

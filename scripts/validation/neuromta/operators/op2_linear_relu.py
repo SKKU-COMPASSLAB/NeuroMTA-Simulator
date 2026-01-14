@@ -24,17 +24,17 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
-    M, N, K = 1024, 1024, 1024
-    Ms, Ns, Ks = 32, 32, 32
-    dtype = torch.bfloat16
-    acc_dtype = torch.bfloat16
+    M, N, K = 36, 72, 64
+    Ms, Ns, Ks = 2, 2, 2
+    dtype = torch.int32
+    acc_dtype = torch.int32
     blocked_mapping = True  # Enable blocked mapping for better data locality
     broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
     sim_mode = "partial_l1"
     
-    ifm  = torch.randint(low=0, high=128, size=(M, K), dtype=dtype)
-    wgt  = torch.randint(low=0, high=128, size=(N, K), dtype=dtype)
-    bias = torch.randint(low=0, high=256, size=(N,), dtype=acc_dtype)
+    ifm  = torch.randint(low=-64, high=64, size=(M, K), dtype=dtype)
+    wgt  = torch.randint(low=-64, high=64, size=(N, K), dtype=dtype)
+    bias = torch.randint(low=-64, high=64, size=(N,), dtype=acc_dtype)
     ofm  = torch.zeros((M, N), dtype=acc_dtype)
     
     ifm_size  = ifm.numel() * ifm.dtype.itemsize
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"Unsupported simulation mode '{sim_mode}'")
     
-    operator = MCA_OP_LINEAR(
+    operator = MCA_OP_LINEAR_RELU(
         device, core_group, spad_ld_pp_space, spad_st_pp_space, 
         ifm_b, wgt_b, bias_b, ofm_b, 
         broadcast_optimize=broadcast_optimize, 
@@ -123,21 +123,11 @@ if __name__ == "__main__":
     print(f"overall throughput: {throughput:.2f} OP/cycle")
     
     simulated = ofm_b.restore()
-    reference = torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
+    reference = torch.nn.functional.relu(torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias)
     
     print(f"simulated:\n{simulated}")
     print(f"reference:\n{reference}")
+    total_elements = ofm.numel()
+    num_mismatches = (simulated != reference).sum().item()
+    print(f"total elements: {total_elements}, mismatches: {num_mismatches}")
     print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
-    
-    if not torch.equal(simulated, reference):
-        mismatch_report = os.path.join(TMP_DIR, "mismatch_report.txt")
-        with open(mismatch_report, "w") as f:
-            content = []
-            for i in range(M):
-                for j in range(N):
-                    sim_val = simulated[i, j].item()
-                    ref_val = reference[i, j].item()
-                    if sim_val != ref_val:
-                        content.append(f"Mismatch at position ({i}, {j}): simulated={sim_val}, reference={ref_val}\n")
-            f.writelines(content)
-        logger.error(f"Mismatch report saved to '{mismatch_report}'.")
