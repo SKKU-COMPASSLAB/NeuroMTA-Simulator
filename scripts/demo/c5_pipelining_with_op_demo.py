@@ -22,8 +22,6 @@ if __name__ == "__main__":
     core_group2 = device.get_npu_core_group((0, 4), (4, 4))
     
     M, N, K = 512, 512, 512
-    Ms, Ns, Ks = 4, 4, 4
-    Mt, Nt, Kt = 32, 32, 32
     dtype     = torch.int32
     acc_dtype = torch.int32
     
@@ -52,16 +50,16 @@ if __name__ == "__main__":
     spad_ld_pp_space2 = device.create_l1_mem_space(parse_mem_cap_str("192KB"), core_group=core_group2)
     spad_st_pp_space2 = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group2)
     
+
+    ifm1_b  = MCA_TensorBuffer(mem_space=ifm_mem_space1,  shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(128, 128)).allocate().update(ifm)
+    wgt1_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(128, 128)).allocate().update(wgt)
+    bias1_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   128)).allocate().update(bias)
     
-    ifm1_b  = MCA_TensorBuffer(mem_space=ifm_mem_space1,  shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks), blocked_mapping=True).allocate().update(ifm)
-    wgt1_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks), blocked_mapping=True).allocate().update(wgt)
-    bias1_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns), blocked_mapping=True).allocate().update(bias)
+    ifm2_b  = MCA_TensorBuffer(mem_space=ofm_mem_space1,  shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(128, 128)).allocate()
+    wgt2_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=acc_dtype,  shard_shape=(128, 128)).allocate().update(wgt.to(acc_dtype))
+    bias2_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   128)).allocate().update(bias)
     
-    ifm2_b  = MCA_TensorBuffer(mem_space=ofm_mem_space1,  shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns), blocked_mapping=True).allocate()
-    wgt2_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=acc_dtype,  shard_grid=(Ns, Ks), blocked_mapping=True).allocate().update(wgt.to(acc_dtype))
-    bias2_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns), blocked_mapping=True).allocate().update(bias)
-    
-    ofm_b   = MCA_TensorBuffer(mem_space=ofm_mem_space2,  shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns), blocked_mapping=True).allocate()
+    ofm_b   = MCA_TensorBuffer(mem_space=ofm_mem_space2,  shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(128, 128)).allocate()
     
     operator1 = MCA_OP_LINEAR(
         device=device,

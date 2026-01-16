@@ -54,7 +54,7 @@ if __name__ == "__main__":
         mem_space=l1_mem_space,
         shape=(N, M, K), 
         dtype=torch.int32, 
-        shard_grid=(2, 2),
+        shard_shape=(7, 7),
         blocked_mapping=True,
     ).tiling(tile_shape=(8, 8))
     
@@ -62,7 +62,7 @@ if __name__ == "__main__":
         mem_space=l1_mem_space,
         shape=(N, M, K), 
         dtype=torch.int32, 
-        shard_grid=(2, 2),
+        shard_shape=(7, 7),
         blocked_mapping=True,
     ).tiling(tile_shape=(8, 8))
     

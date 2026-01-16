@@ -46,7 +46,7 @@ if __name__ == "__main__":
         shape=(M, K), 
         dtype=torch.int32, 
         
-        shard_grid=(2, 2),
+        shard_shape=(16, 16),
         
         blocked_mapping=True,
     ).tiling(tile_shape=(8, 8))

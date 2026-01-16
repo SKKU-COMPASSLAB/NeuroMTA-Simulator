@@ -20,31 +20,33 @@ if __name__ == "__main__":
     
     l1_mem_space   = device.create_l1_mem_space(size_per_bank=parse_mem_cap_str("1MB"), core_group=core_grid)
     main_mem_space = device.create_main_mem_space(size_per_channel=parse_mem_cap_str("1GB"))
+                
+    N, M, K = 2, 14, 14
     
-    M, K = 128, 128
-    
-    original_tensor = torch.arange(M * K, dtype=torch.int32).reshape(M, K)
+    original_tensor = torch.arange(N * M * K, dtype=torch.int32).reshape(N, M, K)
     tensor_buffer = MCA_TensorBuffer(
         mem_space=l1_mem_space,
-        
-        shape=(M, K), 
+        shape=(N, M, K), 
         dtype=torch.int32, 
-
-        shard_shape=(64, 64),
-        
+        shard_shape=(7, 7),
         blocked_mapping=True,
-    ).tiling(tile_shape=(32, 32))
+    ).tiling(tile_shape=(8, 8))
     
     tensor_buffer.allocate()
     tensor_buffer.update(original_tensor)
-    restored_tensor = tensor_buffer.restore()
     
-    for h in range(tensor_buffer._n_y_shards):
-        for w in range(tensor_buffer._n_x_shards):
-            ptr = tensor_buffer.get_shard_ptr(h, w)
-            shard = device.mem_get_data(ptr, size=128 * 128 // 4 * 4, dtype=torch.int32)
-            print(f"shard ({h}, {w}):\n{shard.reshape(M // 2, K // 2)}")
+    reshaped_buffer = tensor_buffer.reshape(N * K, M)
+    reshaped_tensor = reshaped_buffer.restore()
     
-    print(f"original tensor:\n{original_tensor}")
-    print(f"restored tensor:\n{restored_tensor}")
-    print(f"test {'passed' if torch.equal(original_tensor, restored_tensor) else 'failed'}")
+    core = device.get_npu_core(core_id=core_grid[0])
+    spm_ptr = l1_mem_space.allocate(core.core_id, size=parse_mem_cap_str("64KB"))
+    
+    device.run_kernels()
+    
+    print("Original Tensor:")
+    print(original_tensor)
+    
+    print("Reshaped Tensor:")
+    print(reshaped_tensor)
+    
+    print("test passed:", torch.equal(original_tensor.reshape(N * K, M), reshaped_tensor))

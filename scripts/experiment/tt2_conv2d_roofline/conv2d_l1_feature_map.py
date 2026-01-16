@@ -10,6 +10,7 @@ from neuromta.system.mta.tenstorrent import *
 
 
 compilation_summary_dir = None  # Set to a valid directory path to enable compilation summaries
+use_collective_tile_load = False
 
 
 class Benchmark:
@@ -52,13 +53,15 @@ class Benchmark:
         self._total_ops:    int = 2 * N * H * W * K * FH * FW * C  # MACs counted as 2 operations (mul + add)
         
     def run(self, device: TenstorrentDevice, core_group: MTA_CoreGrid):
-        Ws = 4
-        Cs = 4
-        Ks = 4
+        Wt = 32
+        OWt = 32
+        Ct = 32
+        Kt = 32
         
-        if (self.W % Ws != 0) or (self.OW % Ws != 0): Ws = 1
-        if self.C % Cs != 0: Cs = 1
-        if self.K % Ks != 0: Ks = 1
+        if (self.W % Wt != 0): Wt = self.W
+        if (self.OW % OWt != 0): OWt = self.OW
+        if self.C % Ct != 0: Ct = self.C
+        if self.K % Kt != 0: Kt = self.K
         
         ifm  = torch.randint(low=0, high=128, size=self.ifm_shape,  dtype=self.dtype)
         wgt  = torch.randint(low=0, high=128, size=self.wgt_shape,  dtype=self.dtype)
@@ -76,10 +79,10 @@ class Benchmark:
         spad_ld_pp_space    = device.create_l1_mem_space(_spad_ld_size_per_core, core_group=core_group)
         spad_st_pp_space    = device.create_l1_mem_space(_spad_st_size_per_core, core_group=core_group)
         
-        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ifm_shape,  dtype=ifm.dtype,       shard_grid=(Ws, Cs)).allocate().update(ifm)
-        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=wgt.dtype,       shard_grid=(Ks, Cs)).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=bias.dtype,      shard_grid=(1,  Ks)).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ofm_shape,  dtype=self.acc_dtype,  shard_grid=(Ws, Ks)).allocate()
+        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,      dtype=ifm.dtype,       shard_shape=(Wt,  Ct)).allocate().update(ifm)
+        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,      dtype=wgt.dtype,       shard_shape=(Kt,  Ct)).allocate().update(wgt)
+        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,     dtype=bias.dtype,      shard_shape=(1,   Kt)).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ofm_shape, dtype=self.acc_dtype,  shard_shape=(OWt, Kt)).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
@@ -96,7 +99,8 @@ class Benchmark:
             stride=self.STRIDE, padding=self.PADDING, dilation=self.DILATION,
             broadcast_optimize=True, 
             auto_dispatch=True, 
-            mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY
+            mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY,
+            use_collective_tile_load=use_collective_tile_load
         )
         
         if compilation_summary_dir is not None:

@@ -90,7 +90,7 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
     plt.xlim(ai_x.min(), ai_x.max()) 
     plt.ylim(mem_roofline.min() * 0.1, peak_perf * 2.5)
 
-    plt.legend(loc='lower right', fontsize=8)
+    plt.legend(loc='lower right', fontsize=7)
     plt.tight_layout(pad=0.8)
     plt.savefig(img_path, dpi=500)
     

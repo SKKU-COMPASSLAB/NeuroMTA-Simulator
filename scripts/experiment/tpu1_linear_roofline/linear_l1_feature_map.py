@@ -61,7 +61,6 @@ class Benchmark:
         
         _l1_total_per_core     = parse_mem_cap_str("16MB")  # total L1 memory size per core
         _l1_data_size_per_core = math.ceil((_ifm_size_per_core + _ofm_size_per_core))
-        # _spad_size_per_core    = _l1_total_per_core - _l1_data_size_per_core  # remaining L1 SPAD size per core
         _spad_size_per_core    = parse_mem_cap_str("1.5MB")
         if (_spad_size_per_core + _l1_data_size_per_core) > _l1_total_per_core:
             raise MemoryError(f"Insufficient L1 memory per core for benchmark {self.signature}: Required L1 Data + SPAD = {(_spad_size_per_core + _l1_data_size_per_core) / 1024:.2f} KB, Available = {_l1_total_per_core / 1024:.2f} KB")
@@ -75,10 +74,10 @@ class Benchmark:
         spad_ld_pp_space = device.create_l1_mem_space(_spad_ld_size_per_core, core_group=core_group)
         spad_st_pp_space = device.create_l1_mem_space(_spad_st_size_per_core, core_group=core_group)
         
-        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks)).allocate().update(ifm)
-        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks)).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns)     ).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns)).allocate()
+        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(Mt, Kt)).allocate().update(ifm)
+        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(Nt, Kt)).allocate().update(wgt)
+        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,  Nt)).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(Mt, Nt)).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0

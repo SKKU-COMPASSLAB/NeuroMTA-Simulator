@@ -47,6 +47,10 @@ class Benchmark:
         if (self.K // 32) % self.Ks != 0:
             self.Ks = 1
             
+        Mt = self.M // self.Ms
+        Nt = self.N // self.Ns
+        Kt = self.K // self.Ks
+            
         ifm  = torch.randint(low=0, high=128, size=(self.M, self.K), dtype=self.dtype)
         wgt  = torch.randint(low=0, high=128, size=(self.N, self.K), dtype=self.dtype)
         bias = torch.randint(low=0, high=256, size=(self.N,), dtype=self.dtype)
@@ -63,10 +67,10 @@ class Benchmark:
         
         logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD Load: {_spad_ld_size_per_core / 1024:.2f} KB, SPAD Store: {_spad_st_size_per_core / 1024:.2f} KB")
         
-        ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_grid=(self.Ms, self.Ks)).allocate().update(ifm)
-        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_grid=(self.Ns, self.Ks)).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_grid=(1,  self.Ns),    ).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_grid=(self.Ms, self.Ns)).allocate()
+        ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(Mt, Kt)).allocate().update(ifm)
+        wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(Nt, Kt)).allocate().update(wgt)
+        bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,  Nt)).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(Mt, Nt)).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0

@@ -21,7 +21,6 @@ if __name__ == "__main__":
     core_group = device.get_npu_core_group(0, 1)
     
     M, N, K = 512, 512, 512
-    Ms, Ns, Ks = 2, 2, 2
     Mt, Nt, Kt = 128, 128, 128
     dtype = torch.int8
     acc_dtype = torch.int32
@@ -43,10 +42,10 @@ if __name__ == "__main__":
     spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
     spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks)).tiling(tile_shape=(Mt, Kt)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)).tiling(tile_shape=(Nt, Kt)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns)).tiling(tile_shape=(1,  Nt)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns)).tiling(tile_shape=(Mt, Nt)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(Mt, Kt)).tiling(tile_shape=(Mt, Kt)).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(Nt, Kt)).tiling(tile_shape=(Nt, Kt)).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  Nt)).tiling(tile_shape=(1,  Nt)).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(Mt, Nt)).tiling(tile_shape=(Mt, Nt)).allocate()
     
     mapper = MCA_OperatorMapper.LINEAR(
         core_group=core_group,

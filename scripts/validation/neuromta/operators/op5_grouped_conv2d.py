@@ -32,6 +32,10 @@ if __name__ == "__main__":
     OH = (H + 2 * PADDING[0] - DILATION[0] * (FH - 1) - 1) // STRIDE[0] + 1
     OW = (W + 2 * PADDING[1] - DILATION[1] * (FW - 1) - 1) // STRIDE[1] + 1
     
+    Cs = 32
+    Ks = 32
+    Ws = 32
+    
     dtype = torch.int16
     acc_dtype = torch.int16
     blocked_mapping = True  # Enable blocked mapping for better data locality
@@ -53,10 +57,10 @@ if __name__ == "__main__":
     spad_ld_pp_space    = device.create_l1_mem_space(parse_mem_cap_str("480KB"), core_group=core_group)
     spad_st_pp_space    = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(4, 4), blocked_mapping=False).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(4, 1), blocked_mapping=False).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1, 4), blocked_mapping=False).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(4, 4), blocked_mapping=False).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(Ws, Cs), blocked_mapping=False).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(Ks, Cs), blocked_mapping=False).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  Ks), blocked_mapping=False).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(Ws, Ks), blocked_mapping=False).allocate()
     
     operator = MCA_OP_CONV2D(
         device, core_group, spad_ld_pp_space, spad_st_pp_space, 

@@ -98,4 +98,14 @@ class logger:
     @classmethod
     def critical(cls, message: str):
         cls.log(message, LogLevel.CRITICAL)
+    
+    @classmethod
+    def get_current_log_level(cls) -> LogLevel:
+        global _global_current_log_level
+        return _global_current_log_level
+
+    @classmethod
+    def is_current_debug_log_level(cls) -> bool:
+        global _global_current_log_level
+        return _global_current_log_level == LogLevel.DEBUG
 

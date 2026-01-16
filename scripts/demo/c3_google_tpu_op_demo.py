@@ -21,7 +21,6 @@ if __name__ == "__main__":
     core_group = device.get_npu_core_group(0, 4)
     
     M, N, K = 128, 1024, 1024
-    Ms, Ns, Ks = 1, 8, 8
     dtype = torch.int32
     acc_dtype = torch.int32
     
@@ -41,10 +40,10 @@ if __name__ == "__main__":
     spad_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("30MB"), core_group=core_group)
     spad_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("2MB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(128, 128)).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(128, 128)).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   128)).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(128, 128)).allocate()
     
     operator = MCA_OP_LINEAR(device, core_group, spad_ld_pp_space, spad_st_pp_space, ifm_b, wgt_b, bias_b, ofm_b, auto_dispatch=True)
         

@@ -13,9 +13,10 @@ os.makedirs(TMP_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
-    # torch.set_printoptions(linewidth=1024, threshold=10000)
-    torch.set_printoptions(linewidth=1024)
+    torch.set_printoptions(profile="full", linewidth=2048)
+    # torch.set_printoptions(linewidth=1024)
     logger.set_print_options(log_level=LogLevel.DEBUG)
+    torch.manual_seed(0)
     
     config = TenstorrentConfig.BLACKHOLE()
     device = TenstorrentDevice(**config)
@@ -25,11 +26,21 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (8, 8))
     
-    N, H, W, C = 1, 128, 128, 128
-    FH, FW, K = 3, 3, 128
-    STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
+    N, H, W, C = 1, 224, 224, 3
+    FH, FW, K = 11, 11, 96
+    STRIDE, PADDING, DILATION = (2, 2), (3, 3), (1, 1)
     OH = (H + 2 * PADDING[0] - DILATION[0] * (FH - 1) - 1) // STRIDE[0] + 1
     OW = (W + 2 * PADDING[1] - DILATION[1] * (FW - 1) - 1) // STRIDE[1] + 1
+    
+    Wt = 32
+    OWt = 32
+    Ct = 32
+    Kt = 32
+    
+    if (W % Wt != 0): Wt = W
+    if (OW % OWt != 0): OWt = OW
+    if C % Ct != 0: Ct = C
+    if K % Kt != 0: Kt = K
     
     dtype = torch.int16
     acc_dtype = torch.int16
@@ -52,10 +63,10 @@ if __name__ == "__main__":
     spad_ld_pp_space    = device.create_l1_mem_space(parse_mem_cap_str("480KB"), core_group=core_group)
     spad_st_pp_space    = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(4, 4), blocked_mapping=False).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(4, 4), blocked_mapping=False).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1, 4), blocked_mapping=False).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(4, 4), blocked_mapping=False).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(Wt,  Ct), blocked_mapping=False).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(Kt,  Ct), blocked_mapping=False).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   Kt), blocked_mapping=False).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OWt, Kt), blocked_mapping=False).allocate()
     
     operator = MCA_OP_CONV2D(
         device, core_group, spad_ld_pp_space, spad_st_pp_space, 
@@ -63,7 +74,8 @@ if __name__ == "__main__":
         stride=STRIDE, padding=PADDING, dilation=DILATION,
         broadcast_optimize=broadcast_optimize, 
         auto_dispatch=True, 
-        mapping_strategy=MCA_OperatorMapper.CONTIGUOUS
+        mapping_strategy=MCA_OperatorMapper.CONTIGUOUS,
+        use_collective_tile_load=False,
     )
     
     tmp_ouput_path = os.path.join(TMP_DIR, "pipelined_mapping.json")

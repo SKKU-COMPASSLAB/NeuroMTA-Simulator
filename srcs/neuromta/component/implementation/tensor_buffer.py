@@ -16,7 +16,8 @@ class MCA_TensorBuffer:
         shape: Sequence[int],    # shape of the tensor
         dtype: torch.dtype,      # data type of the tensor
         
-        shard_grid: Sequence[int]=(1, 1),  # (n_height_shards, n_width_shards)
+        # shard_grid: Sequence[int]=(1, 1),  # (n_height_shards, n_width_shards)
+        shard_shape: Sequence[int]=None,  # (shard_height, shard_width)
         
         blocked_mapping: bool=False,    # whether to use blocked mapping for height and width shards (only if the buffer is L1 memory and mem_ids are provided as MTA_CoreGrid)
     ):
@@ -26,25 +27,44 @@ class MCA_TensorBuffer:
         self._dtype = dtype
         
         # Sharding Factors
-        if not isinstance(shard_grid, Sequence):
-            shard_grid = (shard_grid, 1)
-        if len(shard_grid) != 2:
-            raise ValueError("shard_grid must be a sequence of two integers: (n_height_shards, n_width_shards).")
+        if shard_shape is None:
+            shard_shape = (self._shape[-2], self._shape[-1])  # no sharding by default
+        elif isinstance(shard_shape, int):
+            shard_shape = (shard_shape, shard_shape)
+        elif len(shard_shape) != 2:
+            raise ValueError("shard_shape must be a sequence of two integers: (shard_height, shard_width).")
+        else:
+            shard_shape = tuple(shard_shape)
         
-        self._n_outer_shards = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1)
-        self._n_y_shards = shard_grid[0] * self._n_outer_shards   # merge leading dimensions into height shards
-        self._n_x_shards = shard_grid[1]
+        self._shard_y = shard_shape[0]
+        self._shard_x = shard_shape[1]
         
         self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-1])
         self._layout_x = self._shape[-1]
         
-        if self._layout_y % self._n_y_shards != 0:
-            raise ValueError(f"Height {self._layout_y} is not divisible by number of height shards {self._n_y_shards}.")
-        if self._layout_x % self._n_x_shards != 0:
-            raise ValueError(f"Width {self._layout_x} is not divisible by number of width shards {self._n_x_shards}.")
+        if self._shape[-2] % self._shard_y != 0:
+            raise ValueError(f"Height {self._shape[-2]} is not divisible by shard height {self._shard_y}.")
+        if self._shape[-1] % self._shard_x != 0:
+            raise ValueError(f"Width {self._shape[-1]} is not divisible by shard width {self._shard_x}.")
         
-        self._shard_y = self._layout_y // self._n_y_shards
-        self._shard_x = self._layout_x // self._n_x_shards
+        self._n_outer_shards = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1)
+        self._n_y_shards = self._layout_y // self._shard_y
+        self._n_x_shards = self._layout_x // self._shard_x
+        
+        # self._n_outer_shards = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1)
+        # self._n_y_shards = shard_grid[0] * self._n_outer_shards   # merge leading dimensions into height shards
+        # self._n_x_shards = shard_grid[1]
+        
+        # self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-1])
+        # self._layout_x = self._shape[-1]
+        
+        # if self._layout_y % self._n_y_shards != 0:
+        #     raise ValueError(f"Height {self._layout_y} is not divisible by number of height shards {self._n_y_shards}.")
+        # if self._layout_x % self._n_x_shards != 0:
+        #     raise ValueError(f"Width {self._layout_x} is not divisible by number of width shards {self._n_x_shards}.")
+        
+        # self._shard_y = self._layout_y // self._n_y_shards
+        # self._shard_x = self._layout_x // self._n_x_shards
         
         # Tiling Factors
         self._tile_y = self._shard_y
@@ -66,12 +86,43 @@ class MCA_TensorBuffer:
         
         self._is_allocated = False
         
+    def reshape(self, *new_shape: int) -> "MCA_TensorBuffer":
+        if new_shape[-1] != self._shape[-1]:
+            raise ValueError("Reshaping is only supported for leading dimensions. The last dimension (width) must remain unchanged.")
+        
+        new_total_y_size = functools.reduce(lambda x, y: x * y, new_shape[:-1], 1)
+        cur_total_y_size = functools.reduce(lambda x, y: x * y, self._shape[:-1], 1)
+        
+        if new_total_y_size != cur_total_y_size:
+            raise ValueError("Reshaping must preserve the total number of elements in the tensor.")
+        
+        if new_shape[-2] % self._shard_y != 0:
+            raise ValueError(f"New height {new_shape[-2]} is not divisible by shard height {self._shard_y}. It implies that the reshaping would change the memory layout of the tensor, which requires additional memory copy operations.")
+        
+        new_n_y_shards = new_shape[-2] // self._shard_y  # shard size should be preserved
+        
+        new_buffer = MCA_TensorBuffer(
+            mem_space=self._mem_space,
+            shape=new_shape,
+            dtype=self._dtype,
+            shard_grid=(new_n_y_shards, self._n_x_shards),
+            blocked_mapping=self._blocked_mapping
+        )
+        
+        for y in range(new_buffer.shard_grid[0]):
+            for x in range(new_buffer.shard_grid[1]):
+                new_buffer._shard_ptrs[y][x].addr = self._shard_ptrs[y][x].addr
+                
+        new_buffer.tiling(tile_shape=(self._tile_y, self._tile_x))
+        
+        return new_buffer
+        
     def copy(self) -> "MCA_TensorBuffer":
         new_buffer = MCA_TensorBuffer(
             mem_space=self._mem_space,
             shape=self._shape,
             dtype=self._dtype,
-            shard_grid=(self._n_y_shards // self._n_outer_shards, self._n_x_shards),
+            shard_shape=(self._shard_y, self._shard_x),
             blocked_mapping=self._blocked_mapping
         )
         
@@ -249,6 +300,10 @@ class MCA_TensorBuffer:
     @property
     def dtype(self) -> torch.dtype:
         return self._dtype
+    
+    @property
+    def numel(self) -> int:
+        return functools.reduce(lambda x, y: x * y, self._shape, 1)
     
     @property
     def layout_shape(self) -> tuple[int, int]:

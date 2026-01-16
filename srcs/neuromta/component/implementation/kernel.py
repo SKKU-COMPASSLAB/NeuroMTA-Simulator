@@ -20,6 +20,7 @@ __all__ = [
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU",
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D",
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D",
+    "MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY",
 
     # KERNEL CORE OP
     "MCA_OP_CORE_TEMPLATE",
@@ -88,6 +89,18 @@ def MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core: NPUCore, operator: CompiledOperat
             else:
                 core.mem_init(tile_sig.spm_ptr, tile_sig.buf.tile_size)
                 core.local_mem_copy(tile_sig.spm_ptr, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
+        elif isinstance(cmd, CompiledCommand.COLLECTIVE_TILE_LOAD):
+            collective_tile_sig = cmd.collective_tile_sig
+            core.mem_init(collective_tile_sig.spm_ptr, collective_tile_sig.buf.tile_size)
+            
+            for tile_sig, memcpy_pattern in zip(collective_tile_sig.src_tiles, collective_tile_sig.memcpy_patterns):
+                src_ptr, row_size, row_num, src_row_stride, dst_row_stride = tile_sig.buf.get_tile_ptr_read_args(*tile_sig.coords)
+                
+                for dst_row_idx, src_row_idx in memcpy_pattern.items():
+                    dst_row_ptr = collective_tile_sig.spm_ptr + dst_row_idx * dst_row_stride
+                    src_row_ptr = src_ptr + src_row_idx * src_row_stride
+
+                    core.local_mem_copy(dst_row_ptr, src_row_ptr, row_size, 1, src_row_stride, dst_row_stride, nowait=True)
         else:
             raise NotImplementedError(f"DMA Load command {type(cmd)} is not implemented.")
         
@@ -228,14 +241,24 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, operator: Compiled
         op_sig = cmd.op_sig
         inner_op_idx = cmd.inner_op_idx
         
-        ifm_sig_arr = op_sig.i_tiles[inner_op_idx][2:]
-        ifm_memcpy_pattern_arr: list[dict[int, int]] = op_sig.op_metadata[inner_op_idx][2:]
-        wgt_sig  = op_sig.i_tiles[inner_op_idx][0]
-        bias_sig = op_sig.i_tiles[inner_op_idx][1]
-        ofm_sig = op_sig.o_tile
+        uop_kwargs = op_sig.op_kwargs["ifm_load_kwargs"][inner_op_idx]
+        use_collective_tile_load = uop_kwargs.get("use_collective_tile_load", False)
         
-        ifm_tile_shape = ofm_sig.buf.tile_shape  # TODO: infer IFM tile shape from OFM tile shape and Conv2d params
-        ifm_tile_dtype = ifm_sig_arr[0].buf.dtype
+        if use_collective_tile_load:
+            ifm_tile_count = 1
+            ifm_sig = op_sig.i_tiles[inner_op_idx][0]
+            ifm_tile_shape = ifm_sig.buf.tile_shape
+            ifm_tile_dtype = ifm_sig.buf.dtype
+        else:
+            ifm_tile_count = uop_kwargs["ifm_tile_count"]
+            ifm_sig_arr = op_sig.i_tiles[inner_op_idx][:ifm_tile_count]
+            ifm_memcpy_pattern_arr = uop_kwargs["memcpy_pattern"]
+            ifm_tile_shape = ifm_sig_arr[0].buf.tile_shape  # TODO: infer IFM tile shape from OFM tile shape and Conv2d params
+            ifm_tile_dtype = ifm_sig_arr[0].buf.dtype
+            
+        wgt_sig  = op_sig.i_tiles[inner_op_idx][ifm_tile_count]
+        bias_sig = op_sig.i_tiles[inner_op_idx][ifm_tile_count + 1]
+        ofm_sig = op_sig.o_tile
         
         ifm  = DataContainer(shape=ifm_tile_shape,          dtype=ifm_tile_dtype)
         wgt  = DataContainer(shape=wgt_sig.buf.tile_shape,  dtype=wgt_sig.buf.dtype)
@@ -248,8 +271,12 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, operator: Compiled
         if inner_op_idx == 0:
             core.mxu_reconfigure(dtype=ifm_tile_dtype, acc_dtype=ofm_sig.buf.dtype)
         
-        for ifm_sig, ifm_memcpy_pattern in zip(ifm_sig_arr, ifm_memcpy_pattern_arr):
-            core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_tile_shape[-1] * ifm_tile_dtype.itemsize, row_pattern=ifm_memcpy_pattern)
+        if use_collective_tile_load:
+            core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_sig.buf.tile_size)
+        else:
+            for ifm_sig, ifm_memcpy_pattern in zip(ifm_sig_arr, ifm_memcpy_pattern_arr):
+                core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_tile_shape[-1] * ifm_tile_dtype.itemsize, row_pattern=ifm_memcpy_pattern)
+        
         core.local_mem_page_read(wgt_sig.spm_ptr, wgt, wgt_sig.buf.tile_size)
         if preload_psum:
             core.local_mem_page_read(bias_sig.spm_ptr, bias, bias_sig.buf.tile_size)
@@ -275,12 +302,22 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, operator: Compi
         op_sig = cmd.op_sig
         inner_op_idx = cmd.inner_op_idx
         
-        ifm_sig_arr = op_sig.i_tiles[inner_op_idx]
-        ifm_memcpy_pattern_arr: list[dict[int, int]] = op_sig.op_metadata[inner_op_idx]
-        ofm_sig = op_sig.o_tile
+        uop_kwargs = op_sig.op_kwargs["ifm_load_kwargs"][inner_op_idx]
+        use_collective_tile_load = uop_kwargs.get("use_collective_tile_load", False)
         
-        ifm_tile_shape = ofm_sig.buf.tile_shape  # TODO: infer IFM tile shape from OFM tile shape and Conv2d params
-        ifm_tile_dtype = ifm_sig_arr[0].buf.dtype
+        if use_collective_tile_load:
+            ifm_tile_count = 1
+            ifm_sig = op_sig.i_tiles[inner_op_idx][0]
+            ifm_tile_shape = ifm_sig.buf.tile_shape
+            ifm_tile_dtype = ifm_sig.buf.dtype
+        else:
+            ifm_tile_count = uop_kwargs["ifm_tile_count"]
+            ifm_sig_arr = op_sig.i_tiles[inner_op_idx][:ifm_tile_count]
+            ifm_memcpy_pattern_arr = uop_kwargs["memcpy_pattern"]
+            ifm_tile_shape = ifm_sig_arr[0].buf.tile_shape  # TODO: infer IFM tile shape from OFM tile shape and Conv2d params
+            ifm_tile_dtype = ifm_sig_arr[0].buf.dtype
+            
+        ofm_sig = op_sig.o_tile
         
         ifm  = DataContainer(shape=ifm_tile_shape,          dtype=ifm_tile_dtype)
         ofm  = DataContainer(shape=ofm_sig.buf.tile_shape,  dtype=ofm_sig.buf.dtype)
@@ -291,8 +328,11 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, operator: Compi
         if inner_op_idx == 0:
             core.mxu_reconfigure(dtype=ifm_tile_dtype, acc_dtype=ofm_sig.buf.dtype)
         
-        for ifm_sig, ifm_memcpy_pattern in zip(ifm_sig_arr, ifm_memcpy_pattern_arr):
-            core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_tile_shape[-1] * ifm_tile_dtype.itemsize, row_pattern=ifm_memcpy_pattern)
+        if use_collective_tile_load:
+            core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_sig.buf.tile_size)
+        else:
+            for ifm_sig, ifm_memcpy_pattern in zip(ifm_sig_arr, ifm_memcpy_pattern_arr):
+                core.local_mem_page_read(ifm_sig.spm_ptr, ifm, ifm_tile_shape[-1] * ifm_tile_dtype.itemsize, row_pattern=ifm_memcpy_pattern)
         
         core.mxu_tiled_maxpool(
             ifm, ifm, ofm,
@@ -303,6 +343,25 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, operator: Compi
         if flush_ofm:
             core.local_mem_page_write(ofm_sig.spm_ptr, ofm, ofm_sig.buf.tile_size)
             
+
+@jit_prototype
+def MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY(core: NPUCore, operator: CompiledOperator, stage: CompiledStage):
+    for cmd in stage.compute_ops:
+        if not isinstance(cmd, CompiledCommand.TILED_OP):
+            raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
+        
+        op_sig = cmd.op_sig
+        inner_op_idx = cmd.inner_op_idx
+        
+        src_sig = op_sig.i_tiles[inner_op_idx][0]
+        dst_sig = op_sig.o_tile
+        
+        container = DataContainer(shape=src_sig.buf.tile_shape, dtype=src_sig.buf.dtype)
+        
+        core.local_mem_page_read(src_sig.spm_ptr, container, src_sig.buf.tile_size)
+        core.local_mem_page_write(dst_sig.spm_ptr, container, dst_sig.buf.tile_size)
+        
+
 
 @jit_prototype
 def MCA_OP_CORE_TEMPLATE(core: NPUCore, operator: CompiledOperator, stage: CompiledStage, op_compute_methods: list[Callable]):
@@ -321,4 +380,3 @@ def MCA_OP_CORE_TEMPLATE(core: NPUCore, operator: CompiledOperator, stage: Compi
     core.parallel_merge()
     
     MCA_KERNEL_CORE_STAGE_POSTPROCESSING(core, operator, stage)
-

@@ -104,7 +104,6 @@ if __name__ == "__main__":
     core = device.get_npu_core(core_id=core_id)
             
     M, N, K = 100, 100, 100
-    Ms, Ns, Ks = 2, 2, 2
     dtype = torch.int32
     acc_dtype = torch.int32
     
@@ -119,9 +118,9 @@ if __name__ == "__main__":
     l1_mem_space   = device.create_l1_mem_space(size_per_bank=parse_mem_cap_str("1MB"), core_group=core_group)
     main_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks), blocked_mapping=True).allocate().tiling((32, 32)).update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks)                      ).allocate().tiling((32, 32)).update(wgt)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns), blocked_mapping=True).allocate().tiling((32, 32))
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(50, 50), blocked_mapping=True).allocate().tiling((32, 32)).update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=main_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(50, 50)                      ).allocate().tiling((32, 32)).update(wgt)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(50, 50), blocked_mapping=True).allocate().tiling((32, 32))
     
     ifm_l1_ptr = l1_mem_space.allocate(core_id, parse_mem_cap_str("4KB"))
     wgt_l1_ptr = l1_mem_space.allocate(core_id, parse_mem_cap_str("4KB"))

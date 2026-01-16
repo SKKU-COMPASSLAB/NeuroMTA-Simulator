@@ -21,7 +21,6 @@ if __name__ == "__main__":
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
     M, N, K = 512, 512, 512
-    Ms, Ns, Ks = 8, 8, 8
     dtype = torch.int32
     acc_dtype = torch.int32
     blocked_mapping = True  # Enable blocked mapping for better data locality
@@ -45,10 +44,10 @@ if __name__ == "__main__":
     # relu_ld_pp_space   = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
     # relu_st_pp_space   = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_grid=(Ms, Ks), blocked_mapping=blocked_mapping).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_grid=(Ns, Ks), blocked_mapping=blocked_mapping).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_grid=(1,  Ns), blocked_mapping=blocked_mapping).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_grid=(Ms, Ns), blocked_mapping=blocked_mapping).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(128, 128), blocked_mapping=blocked_mapping).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(128, 128), blocked_mapping=blocked_mapping).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   128), blocked_mapping=blocked_mapping).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(128, 128), blocked_mapping=blocked_mapping).allocate()
     
     # operator = MCA_OP_LINEAR(device, core_group, spad_ld_pp_space, spad_st_pp_space, ifm_b, wgt_b, bias_b, ofm_b, broadcast_optimize=broadcast_optimize)
     # operator2 = MCA_OP_RELU_INPLACE(device, core_group, relu_ld_pp_space, relu_st_pp_space, ofm_b)
@@ -60,7 +59,7 @@ if __name__ == "__main__":
     
     operator.dispatch()
     
-    tmp_ouput_path = os.path.join(os.curdir, ".tmp", "pipelined_mapping.json")
+    tmp_ouput_path = os.path.join(os.curdir, ".tmp", "merged_mapping.json")
     with open(tmp_ouput_path, "w") as f:
         json.dump(operator.summary(), f, indent=4)
         logger.info(f"Pipelined mapping summary saved to '{tmp_ouput_path}'.")
