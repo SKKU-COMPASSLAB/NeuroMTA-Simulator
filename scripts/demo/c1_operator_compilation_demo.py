@@ -5,7 +5,8 @@ import torch
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mca.google_tpu import *
+from neuromta.system.hardware.google_tpu import *
+from neuromta.system.software.google_tpu import *
 
 
 if __name__ == "__main__":
@@ -47,7 +48,7 @@ if __name__ == "__main__":
     bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  Nt)).tiling(tile_shape=(1,  Nt)).allocate().update(bias)
     ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(Mt, Nt)).tiling(tile_shape=(Mt, Nt)).allocate()
     
-    mapper = MCA_OperatorMapper.LINEAR(
+    mapper = MCA_MAPPER_LINEAR(
         core_group=core_group,
         spad_ld_mem_space=spad_ld_pp_space,
         spad_st_mem_space=spad_st_pp_space,

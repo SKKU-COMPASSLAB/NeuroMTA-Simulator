@@ -8,6 +8,11 @@ from neuromta.component.context.global_context import *
 from neuromta.component.implementation.hardware import *
 
 
+__all__ = [
+    "MCA_TensorBuffer",
+]
+
+
 class MCA_TensorBuffer:
     def __init__(
         self, 
@@ -16,7 +21,6 @@ class MCA_TensorBuffer:
         shape: Sequence[int],    # shape of the tensor
         dtype: torch.dtype,      # data type of the tensor
         
-        # shard_grid: Sequence[int]=(1, 1),  # (n_height_shards, n_width_shards)
         shard_shape: Sequence[int]=None,  # (shard_height, shard_width)
         
         blocked_mapping: bool=False,    # whether to use blocked mapping for height and width shards (only if the buffer is L1 memory and mem_ids are provided as MTA_CoreGrid)
@@ -50,21 +54,6 @@ class MCA_TensorBuffer:
         self._n_outer_shards = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1)
         self._n_y_shards = self._layout_y // self._shard_y
         self._n_x_shards = self._layout_x // self._shard_x
-        
-        # self._n_outer_shards = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1)
-        # self._n_y_shards = shard_grid[0] * self._n_outer_shards   # merge leading dimensions into height shards
-        # self._n_x_shards = shard_grid[1]
-        
-        # self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-1])
-        # self._layout_x = self._shape[-1]
-        
-        # if self._layout_y % self._n_y_shards != 0:
-        #     raise ValueError(f"Height {self._layout_y} is not divisible by number of height shards {self._n_y_shards}.")
-        # if self._layout_x % self._n_x_shards != 0:
-        #     raise ValueError(f"Width {self._layout_x} is not divisible by number of width shards {self._n_x_shards}.")
-        
-        # self._shard_y = self._layout_y // self._n_y_shards
-        # self._shard_x = self._layout_x // self._n_x_shards
         
         # Tiling Factors
         self._tile_y = self._shard_y

@@ -53,52 +53,27 @@ class TenstorrentConfig(dict):
         n_npu_core = 12 * 14
         n_dma_core = 12 * 2
         
-        n_main_mem_cmd_q_per_instance = 3
-        n_main_mem_instances = math.ceil(n_dma_core / n_main_mem_cmd_q_per_instance)
-
-        if PYDRAMSIM3_AVAILABLE:
-            dramsim3_config_path    = TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name)
-            dramsim3_channel_size   = main_mem_channel_size // (1024 * 1024)    # GB -> MB
-            
-            create_new_dramsim_config_file(
-                src_config_path="GDDR6_8Gb_x16.ini",
-                new_config_path=dramsim3_config_path,
-                system_params={
-                    "channel_size": dramsim3_channel_size,
-                    "channels": n_main_mem_cmd_q_per_instance,  # original config is for 3 channels
-                    # "address_mapping": "rorababgchco",
-                },
-                dram_structure_params={
-                    "bankgroups": 1  # TODO: more authentic way of doing this..?
-                }
-            )
-            
-            dramsim3_config = DRAMSim3Config(
-                config_path=dramsim3_config_path,
-                processor_clock_freq=processor_clock_freq,
-                n_instance=n_main_mem_instances,
-                n_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
-            )
-        else:
-            dramsim3_config = None
+        n_main_mem_instances = 1
+        n_main_mem_channel_per_instance = 8
+        n_main_mem_cmd_q_per_instance = 24
 
         main_mem_config = MainMemoryConfig(
-            # STATIC MEMORY CONFIG (used if pydramsim is not available)
-            transfer_speed=7000,         # MT/s (DDR6 typical speed)
-            ch_io_width=32,              # bits (DDR6 typical channel width)
-            ch_num=n_main_mem_instances, # channels (example for DDR6)
-            burst_len=32,                # bytes (typical burst length)
-            is_ddr=True,
+            # STATIC MEMORY CONFIG
             processor_clock_freq=processor_clock_freq,
+            n_instance=n_main_mem_instances,
+            channel_size=main_mem_channel_size,
+            n_channel_per_instance=n_main_mem_channel_per_instance,
+            n_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
             
             # DRAMSIM CONFIG
             dramsim3_enable=PYDRAMSIM3_AVAILABLE,
-            dramsim3_config=dramsim3_config,
+            dramsim3_src_config_path="GDDR6_8Gb_x16.ini",
+            dramsim3_dst_config_path=TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name),
         )
         
         icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
             shape=icnt_shape,                       # - 12x16 torus
-            subnets=5,                              # - 5 subnets
+            subnets=2,                              # - 5 subnets
             flit_size=parse_mem_cap_str("64B"),     # - 64B flit size (the unit of flow control)
             max_payload_size=4,                     # - 4 in flits in maximum as a payload = 256B
             booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 64B * 5 * 1GHz = 320GB/s
@@ -113,12 +88,7 @@ class TenstorrentConfig(dict):
         global_config = GlobalContextConfig(
             n_npu_core=n_npu_core,
             n_dma_core=n_dma_core,
-            
-            n_main_mem_instances=n_main_mem_instances,
-            n_main_mem_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
-            
             l1_mem_bank_size=l1_mem_bank_size,
-            main_mem_bank_size=main_mem_channel_size,
             main_mem_config=main_mem_config,
         )
 

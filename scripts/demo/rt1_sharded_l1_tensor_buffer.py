@@ -3,7 +3,8 @@ import torch
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mta.tenstorrent import *
+from neuromta.system.hardware.tenstorrent import *
+from neuromta.system.software.tenstorrent import *
 
 
 if __name__ == "__main__":

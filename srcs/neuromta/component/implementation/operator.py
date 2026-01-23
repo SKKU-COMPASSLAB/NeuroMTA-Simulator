@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Any, Callable
 
 from neuromta.framework import *
 from neuromta.component.core import *
@@ -10,13 +10,7 @@ import neuromta.component.implementation.kernel as mca_kernel_lib
 
 __all__ = [
     "MCA_Operator",
-    
-    "MCA_OP_LINEAR",
-    "MCA_OP_RELU_INPLACE",
-    "MCA_OP_LINEAR_RELU",
-    "MCA_OP_CONV2D",
-    "MCA_OP_MAXPOOL2D",
-    "MCA_OP_FLATTEN",
+    "mca_operator_method",
 ]
 
 
@@ -94,299 +88,63 @@ class MCA_Operator:
     @property
     def compiled_mapping(self) -> CompiledMapping:
         return self._compiled_mapping
+    
+
+def mca_operator_method(func: Callable[..., tuple[MCA_OperatorMapper, Callable, list[Callable]]]):
+    def _mca_operator_method_wrapper(
+        device: MCA_DeviceBase, 
+        core_group: MCA_CoreGroup, 
+        spad_ld_mem_space: MCA_L1MemorySpace, 
+        spad_st_mem_space: MCA_L1MemorySpace,
         
+        *args, 
         
-def MCA_OP_LINEAR(
-    device: MCA_DeviceBase,
-    core_group: MCA_CoreGroup,
-    spad_ld_mem_space: MCA_L1MemorySpace,
-    spad_st_mem_space: MCA_L1MemorySpace,
-    
-    ifm:  MCA_TensorBuffer,
-    wgt:  MCA_TensorBuffer,
-    bias: MCA_TensorBuffer,
-    ofm:  MCA_TensorBuffer,
-    
-    broadcast_optimize: bool=True,
-    broadcast_optimize_targets: list[str]=None,
-    
-    auto_dispatch: bool=False,
-    
-    mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
-) -> MCA_Operator:
-    # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
-    ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
-    wgt  = wgt.copy().tiling(tile_shape=device.mxu_config.wgt_tile_shape)
-    bias = bias.copy().tiling(tile_shape=(1, device.mxu_config.wgt_tile_shape[0]))
-    ofm  = ofm.copy().tiling(tile_shape=device.mxu_config.ofm_tile_shape)
-    
-    mapping = MCA_OperatorMapper.LINEAR(
-        core_group=core_group,
-        spad_ld_mem_space=spad_ld_mem_space,
-        spad_st_mem_space=spad_st_mem_space,
-        ifm=ifm,
-        wgt=wgt,
-        bias=bias,
-        ofm=ofm,
-    ).compile(mapping_strategy=mapping_strategy)
-    
-    if broadcast_optimize:
-        mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)
-    
-    operator = MCA_Operator(
-        device=device, 
-        compiled_mapping=mapping, 
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
-        op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR]
-    )
-    
-    if auto_dispatch:
-        operator.dispatch()
-    
-    return operator
-
-
-def MCA_OP_RELU_INPLACE(
-    device: MCA_DeviceBase,
-    core_group: MCA_CoreGroup,
-    spad_ld_mem_space: MCA_L1MemorySpace,
-    spad_st_mem_space: MCA_L1MemorySpace,
-    
-    ifm:  MCA_TensorBuffer,
-    
-    auto_dispatch: bool=False,
-    
-    mapping_strategy: Callable | str = TiledOperatorMapping.output_stationary
-) -> MCA_Operator:
-    # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
-    ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
-    
-    mapping = MCA_OperatorMapper.UNARY_INPLACE(
-        core_group=core_group,
-        spad_ld_mem_space=spad_ld_mem_space,
-        spad_st_mem_space=spad_st_mem_space,
-        ifm=ifm,
-    ).compile(mapping_strategy=mapping_strategy)
-    
-    operator = MCA_Operator(
-        device=device, 
-        compiled_mapping=mapping, 
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
-        op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU_INPLACE]
-    )
-    
-    if auto_dispatch:
-        operator.dispatch()
+        broadcast_optimize: bool=True,
+        broadcast_optimize_targets: list[str]=None,
+        auto_dispatch: bool=False,
+        mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY,
         
-    return operator
-
-
-def MCA_OP_LINEAR_RELU(
-    device: MCA_DeviceBase,
-    core_group: MCA_CoreGroup,
-    spad_ld_mem_space: MCA_L1MemorySpace,
-    spad_st_mem_space: MCA_L1MemorySpace,
-    
-    ifm:  MCA_TensorBuffer,
-    wgt:  MCA_TensorBuffer,
-    bias: MCA_TensorBuffer,
-    ofm:  MCA_TensorBuffer,
-    
-    broadcast_optimize: bool=True,
-    broadcast_optimize_targets: list[str]=None,
-    
-    auto_dispatch: bool=False,
-    
-    mapping_strategy: Callable | str = MCA_OperatorMapper.CONTIGUOUS
-) -> MCA_Operator:
-    # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
-    ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
-    wgt  = wgt.copy().tiling(tile_shape=device.mxu_config.wgt_tile_shape)
-    bias = bias.copy().tiling(tile_shape=(1, device.mxu_config.wgt_tile_shape[0]))
-    ofm  = ofm.copy().tiling(tile_shape=device.mxu_config.ofm_tile_shape)
-    
-    mapping = MCA_OperatorMapper.LINEAR(
-        core_group=core_group,
-        spad_ld_mem_space=spad_ld_mem_space,
-        spad_st_mem_space=spad_st_mem_space,
-        ifm=ifm,
-        wgt=wgt,
-        bias=bias,
-        ofm=ofm,
-    ).compile(mapping_strategy=mapping_strategy)
-    
-    if broadcast_optimize:
-        mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)
-    
-    operator = MCA_Operator(
-        device=device, 
-        compiled_mapping=mapping, 
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
-        op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU]
-    )
-    
-    if auto_dispatch:
-        operator.dispatch()
-    
-    return operator
-
-
-def MCA_OP_CONV2D(
-    device: MCA_DeviceBase,
-    core_group: MCA_CoreGroup,
-    spad_ld_mem_space: MCA_L1MemorySpace,
-    spad_st_mem_space: MCA_L1MemorySpace,
-    
-    ifm:  MCA_TensorBuffer,
-    wgt:  MCA_TensorBuffer,
-    bias: MCA_TensorBuffer,
-    ofm:  MCA_TensorBuffer,
-    
-    stride: Sequence[int],
-    padding: Sequence[int],
-    dilation: Sequence[int],
-    groups: int=1,
-    
-    broadcast_optimize: bool=True,
-    broadcast_optimize_targets: list[str]=None,
-    
-    auto_dispatch: bool=False,
-    
-    mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY,
-    
-    use_collective_tile_load: bool=False,
-) -> MCA_Operator:
-    # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
-    ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
-    wgt  = wgt.copy().tiling(tile_shape=device.mxu_config.wgt_tile_shape)
-    bias = bias.copy().tiling(tile_shape=(1, device.mxu_config.wgt_tile_shape[0]))
-    ofm  = ofm.copy().tiling(tile_shape=device.mxu_config.ofm_tile_shape)
-    
-    mapping = MCA_OperatorMapper.CONV2D(
-        core_group=core_group,
-        spad_ld_mem_space=spad_ld_mem_space,
-        spad_st_mem_space=spad_st_mem_space,
-        ifm=ifm,
-        ofm=ofm,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=groups,
+        **kwargs,
+    ) -> MCA_Operator:
+        mapping, op_template, op_compute_methods = func(
+            device, 
+            core_group, 
+            spad_ld_mem_space, 
+            spad_st_mem_space,
+            
+            *args, 
+            **kwargs,
+        )
         
-        # conv2d specific buffers
-        wgt=wgt,
-        bias=bias,
-        use_collective_tile_load=use_collective_tile_load,
-    ).compile(mapping_strategy=mapping_strategy)
-    
-    if broadcast_optimize:
-        mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)
-    
-    operator = MCA_Operator(
-        device=device, 
-        compiled_mapping=mapping, 
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
-        op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D]
-    )
-    
-    if auto_dispatch:
-        operator.dispatch()
-    
-    return operator
-
-
-def MCA_OP_MAXPOOL2D(
-    device: MCA_DeviceBase,
-    core_group: MCA_CoreGroup,
-    spad_ld_mem_space: MCA_L1MemorySpace,
-    spad_st_mem_space: MCA_L1MemorySpace,
-    
-    ifm:  MCA_TensorBuffer,
-    ofm:  MCA_TensorBuffer,
-    
-    window: Sequence[int],
-    stride: Sequence[int],
-    padding: Sequence[int],
-    dilation: Sequence[int],
-    
-    broadcast_optimize: bool=True,
-    broadcast_optimize_targets: list[str]=None,
-    
-    auto_dispatch: bool=False,
-    
-    mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY,
-    
-    use_collective_tile_load: bool=False,
-) -> MCA_Operator:
-    # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
-    ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
-    ofm  = ofm.copy().tiling(tile_shape=device.mxu_config.ofm_tile_shape)
-    
-    mapping = MCA_OperatorMapper.CONV2D(
-        core_group=core_group,
-        spad_ld_mem_space=spad_ld_mem_space,
-        spad_st_mem_space=spad_st_mem_space,
-        ifm=ifm,
-        ofm=ofm,
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-        groups=1,   # groups should always be 1 for maxpooling
+        if not isinstance(mapping, MCA_OperatorMapper):
+            raise ValueError(f"The mapping algorithm function must return an MCA_OperatorMapper as the first element, but got {type(mapping)}.")
         
-        # reuse conv2d mapper for maxpooling
-        window=window,
-        use_collective_tile_load=use_collective_tile_load,
-    ).compile(mapping_strategy=mapping_strategy)
-    
-    if broadcast_optimize:
-        mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)
-    
-    operator = MCA_Operator(
-        device=device, 
-        compiled_mapping=mapping, 
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
-        op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D]
-    )
-    
-    if auto_dispatch:
-        operator.dispatch()
-    
-    return operator
-
-
-def MCA_OP_FLATTEN(
-    device: MCA_DeviceBase,
-    core_group: MCA_CoreGroup,
-    spad_ld_mem_space: MCA_L1MemorySpace,
-    spad_st_mem_space: MCA_L1MemorySpace,
-    
-    ifm:  MCA_TensorBuffer,
-    ofm:  MCA_TensorBuffer,
-    
-    auto_dispatch: bool=False,
-    
-    mapping_strategy: Callable | str = TiledOperatorMapping.output_stationary
-) -> MCA_Operator:
-    # copy before tiling (to avoid modifying the original buffers) -> other operators may use different tiling schemes
-    ifm  = ifm.copy().tiling(tile_shape=device.mxu_config.ifm_tile_shape)
-    ofm  = ofm.copy().tiling(tile_shape=device.mxu_config.ofm_tile_shape)
-    
-    mapping = MCA_OperatorMapper.FLATTEN(
-        core_group=core_group,
-        spad_ld_mem_space=spad_ld_mem_space,
-        spad_st_mem_space=spad_st_mem_space,
-        ifm=ifm,
-        ofm=ofm,
-    ).compile(mapping_strategy=mapping_strategy)
-    
-    operator = MCA_Operator(
-        device=device, 
-        compiled_mapping=mapping, 
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE, 
-        op_compute_methods=[mca_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY]
-    )
-    
-    if auto_dispatch:
-        operator.dispatch()
+        if op_template is None:
+            op_template = mca_kernel_lib.MCA_OP_CORE_TEMPLATE
+        elif not isinstance(op_template, Callable):
+            raise ValueError(f"The mapping algorithm function must return a Callable as the second element, but got {type(op_template)}.")
         
-    return operator
+        if isinstance(op_compute_methods, Callable):
+            if not check_jit_prototype(op_compute_methods):
+                raise ValueError(f"The operation template '{op_compute_methods.__name__}' is not a valid JIT prototype.")
+            op_compute_methods = [op_compute_methods]
+        elif not isinstance(op_compute_methods, list) or not all(isinstance(m, Callable) for m in op_compute_methods):
+            raise ValueError(f"The mapping algorithm function must return a list of Callables as the third element, but got {type(op_compute_methods)}.")
+        
+        compiled_mapping = mapping.compile(mapping_strategy=mapping_strategy)
+        
+        if broadcast_optimize:
+            compiled_mapping.apply_broadcast_optimization(buf_targets=broadcast_optimize_targets)
+            
+        operator = MCA_Operator(
+            device=device, 
+            compiled_mapping=compiled_mapping, 
+            op_template=op_template, 
+            op_compute_methods=op_compute_methods
+        )
+        
+        if auto_dispatch:
+            operator.dispatch()
+            
+        return operator
+    return _mca_operator_method_wrapper

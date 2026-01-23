@@ -5,7 +5,8 @@ import torch
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mta.tenstorrent import *
+from neuromta.system.hardware.tenstorrent import *
+from neuromta.system.software.tenstorrent import *
 
 
 if __name__ == "__main__":
@@ -21,8 +22,8 @@ if __name__ == "__main__":
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
     M, N, K = 512, 512, 512
-    dtype = torch.int32
-    acc_dtype = torch.int32
+    dtype = torch.int16
+    acc_dtype = torch.int16
     blocked_mapping = True  # Enable blocked mapping for better data locality
     broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
     

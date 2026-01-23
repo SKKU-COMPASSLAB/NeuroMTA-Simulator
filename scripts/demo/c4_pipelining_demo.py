@@ -5,7 +5,8 @@ import torch
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mta.tenstorrent import *
+from neuromta.system.hardware.tenstorrent import *
+from neuromta.system.software.tenstorrent import *
 
 
 if __name__ == "__main__":
@@ -61,7 +62,7 @@ if __name__ == "__main__":
     
     ofm_b   = MCA_TensorBuffer(mem_space=ofm_mem_space2,  shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(128, 128)).allocate()
     
-    mapping1 = MCA_OperatorMapper.LINEAR(
+    mapping1 = MCA_MAPPER_LINEAR(
         core_group=core_group1,
         spad_ld_mem_space=spad_ld_pp_space1,
         spad_st_mem_space=spad_st_pp_space1,
@@ -71,7 +72,7 @@ if __name__ == "__main__":
         ofm=ifm2_b,
     ).compile()
     
-    mapping2 = MCA_OperatorMapper.LINEAR(
+    mapping2 = MCA_MAPPER_LINEAR(
         core_group=core_group2,
         spad_ld_mem_space=spad_ld_pp_space2,
         spad_st_mem_space=spad_st_pp_space2,
@@ -89,13 +90,15 @@ if __name__ == "__main__":
     operator1 = MCA_Operator(
         device=device,
         compiled_mapping=mapping1, 
-        method=mca_kernel_lib.MCA_KERNEL_CORE_OP_LINEAR
+        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        op_compute_methods=[MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR]
     )
     
     operator2 = MCA_Operator(
         device=device,
         compiled_mapping=mapping2, 
-        method=mca_kernel_lib.MCA_KERNEL_CORE_OP_LINEAR
+        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        op_compute_methods=[MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR]
     )
     
     tmp_ouput_path = os.path.join(os.curdir, ".tmp", "pipelined_mapping_operator1.json")

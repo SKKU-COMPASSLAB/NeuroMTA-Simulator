@@ -80,19 +80,38 @@ __all__ = [
 class DRAMSim3Config:
     def __init__(
         self, 
-        config_path: str, 
+        # config_path: str, 
+        src_config_path: str,
+        dst_config_path: str,
         processor_clock_freq: int,
         n_instance: int,
+        channel_size: int,
+        n_channel_per_instance: int,
         n_cmd_q_per_instance: int,
     ):  
-        if not os.path.isfile(config_path):
-            config_path = pydramsim3.PYDRAMSIM_MSYS_CONFIG_PATH(config_path)
-        if not os.path.isfile(config_path):
-            raise FileNotFoundError(f"DRAMSim3 config file '{config_path}' not found.")
+        if not os.path.isfile(src_config_path):
+            src_config_path = pydramsim3.PYDRAMSIM_MSYS_CONFIG_PATH(src_config_path)
+        if not os.path.isfile(src_config_path):
+            raise FileNotFoundError(f"DRAMSim3 config file '{src_config_path}' not found.")
+        
+        pydramsim3.create_new_dramsim_config_file(
+            src_config_path=src_config_path,
+            new_config_path=dst_config_path,
+            system_params={
+                "channel_size": channel_size // (1024 * 1024),  # GB -> MB
+                "channels": n_channel_per_instance,
+                # "address_mapping": "rorababgchco",
+            },
+            dram_structure_params={
+                "bankgroups": 1  # TODO: more authentic way of doing this..?
+            }
+        )
 
-        self.config_path = config_path
+        self.config_path = dst_config_path
         self.processor_clock_freq = processor_clock_freq
         self.n_instance = n_instance
+        self.channel_size = channel_size
+        self.n_channel_per_instance = n_channel_per_instance
         self.n_cmd_q_per_instance = n_cmd_q_per_instance
         
     def peak_bandwidth(self) -> float:

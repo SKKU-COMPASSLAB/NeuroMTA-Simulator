@@ -58,13 +58,7 @@ class GlobalContextMemType(enum.Enum):
     L2   = enum.auto()  # L2 memory (shared memory, for future use)
     L3   = enum.auto()  # L3 memory (shared memory, for future use)
     MAIN = enum.auto()  # Main memory (owned and managed by DMA engine)
-    
-    # def __eq__(self, value):
-    #     if isinstance(value, GlobalContextMemType):
-    #         return self.value == value.value
-    #     elif isinstance(value, str):
-    #         return self.name == value
-    #     return super().__eq__(value)
+
 
 class GlobalContextMemInfo:
     def __init__(self, mem_type: GlobalContextMemType, mem_id: int, base_addr: int, size: int):
@@ -143,6 +137,7 @@ class GlobalContextMemInfo:
         
         self._stack_base_addrs[stack_id] = None
         self._stack_write_ptrs[stack_id] = None
+        self._stack_sizes[stack_id]      = 0
         
         i = len(self._stack_sizes) - 1
         while i >= 0 and self._stack_sizes[i] == 0:
@@ -175,24 +170,73 @@ class MainMemoryConfig:
         # Default: HBM2 Configuration
         transfer_speed: int         = 1600, 
         ch_io_width: int            = 1024, 
-        ch_num: int                 = 1, 
         burst_len: int              = 256, 
         is_ddr: bool                = True, 
+        
         processor_clock_freq: int   = parse_freq_str("1GHz"),
+        n_instance: int             = 1,
+        channel_size: int           = parse_mem_cap_str("4GB"),
+        n_channel_per_instance: int = 1,
+        n_cmd_q_per_instance: int   = 8,
         
         # DRAMSim3 Configuation (if needed)
         dramsim3_enable: bool           = False,
-        dramsim3_config: DRAMSim3Config = None,
+        dramsim3_src_config_path: str   = "GDDR6_8Gb_x16.ini",
+        dramsim3_dst_config_path: str   = "dramsim3_config.ini",
     ):
         self.transfer_speed         = transfer_speed    # transfer speed per pin (MT/s)
         self.ch_io_width            = ch_io_width       # io channel width (bits)
-        self.ch_num                 = ch_num            # number of channels
         self.burst_len              = burst_len         # burst length
         self.is_ddr                 = is_ddr
         self.processor_clock_freq   = processor_clock_freq
+        
+        self._n_instance             = n_instance
+        self._channel_size           = channel_size
+        self._n_channel_per_instance = n_channel_per_instance
+        self._n_cmd_q_per_instance   = n_cmd_q_per_instance
 
-        self.dramsim3_config        = dramsim3_config
         self.dramsim3_enable        = dramsim3_enable
+        
+        if self.dramsim3_enable:
+            self.dramsim3_config = DRAMSim3Config(
+                src_config_path=dramsim3_src_config_path,
+                dst_config_path=dramsim3_dst_config_path,
+                processor_clock_freq=processor_clock_freq,
+                n_instance=n_instance,
+                channel_size=channel_size,
+                n_channel_per_instance=n_channel_per_instance,
+                n_cmd_q_per_instance=n_cmd_q_per_instance,
+            )
+        else:
+            self.dramsim3_config = None
+        
+    @property
+    def n_instance(self) -> int:
+        if self.dramsim3_enable and self.dramsim3_config is not None:
+            return self.dramsim3_config.n_instance
+        return self._n_instance
+        
+    @property
+    def channel_size(self) -> int:
+        if self.dramsim3_enable and self.dramsim3_config is not None:
+            return self.dramsim3_config.channel_size * (1024 * 1024)  # MB -> Byte
+        return self._channel_size
+    
+    @property
+    def n_channel_per_instance(self) -> int:
+        if self.dramsim3_enable and self.dramsim3_config is not None:
+            return self.dramsim3_config.n_channel_per_instance
+        return self._n_channel_per_instance
+    
+    @property
+    def n_cmd_q_per_instance(self) -> int:
+        if self.dramsim3_enable and self.dramsim3_config is not None:
+            return self.dramsim3_config.n_cmd_q_per_instance
+        return self._n_cmd_q_per_instance
+    
+    @property
+    def n_channels(self) -> int:
+        return self.n_instance * self.n_channel_per_instance
 
     def get_cycles(self, size: int) -> int:
         self.transfer_speed_bytes = (self.transfer_speed * (2 ** 20) * self.ch_io_width * self.ch_num // 8)  # Byte/s
@@ -224,31 +268,18 @@ class GlobalContextConfig:
         n_npu_core: int,
         n_dma_core: int,
         
-        n_main_mem_instances: int,
-        n_main_mem_cmd_q_per_instance: int,
-        
         l1_mem_bank_size: int,
-        main_mem_bank_size: int,
         
         main_mem_config: MainMemoryConfig,
-        
         main_mem_min_alloc_size: int = parse_mem_cap_str("32B"),
     ):
         self._n_npu_core = n_npu_core
         self._n_dma_core = n_dma_core
         
-        self._n_main_mem_instances = n_main_mem_instances
-        self._n_main_mem_cmd_q_per_instance = n_main_mem_cmd_q_per_instance
-        
         self._l1_mem_bank_size   = l1_mem_bank_size
-        self._main_mem_channel_size = main_mem_bank_size
         
         self._main_mem_config = main_mem_config    
-        
         self._main_mem_min_alloc_size = main_mem_min_alloc_size
-        
-        if self._n_dma_core != (self._n_main_mem_instances * self._n_main_mem_cmd_q_per_instance):
-            raise ValueError("The number of DMA cores must be equal to n_main_mem_instances * n_main_mem_cmd_q_per_instance.")
         
         self._l1_mem_base_addr   = 0x0000
         self._main_mem_base_addr = self._l1_mem_base_addr + (self._n_npu_core * self._l1_mem_bank_size)
@@ -278,10 +309,7 @@ class GlobalContextConfig:
         return {
             "n_npu_core": self._n_npu_core,
             "n_dma_core": self._n_dma_core,
-            "n_main_mem_instances": self._n_main_mem_instances,
-            "n_main_mem_cmd_q_per_instance": self._n_main_mem_cmd_q_per_instance,
             "l1_mem_bank_size": self._l1_mem_bank_size,
-            "main_mem_bank_size": self._main_mem_channel_size,
             "main_mem_min_alloc_size": self._main_mem_min_alloc_size,
             "main_mem_base_addr": hex(self._main_mem_base_addr),
             "l1_mem_base_addr": hex(self._l1_mem_base_addr),
@@ -300,18 +328,39 @@ class GlobalContext:
         self._core_info: dict[Any, GlobalContextCoreInfo] = {}
         self._mem_info:  dict[Any, GlobalContextMemInfo]  = {}
         
+        # for main_inst_id in range(self.n_main_mem_instances):
+        #     base_addr = self._config._main_mem_base_addr + (main_inst_id * self.main_mem_channel_size * self._config._n_main_mem_cmd_q_per_instance)
+        #     size = self.main_mem_channel_size * self._config._n_main_mem_cmd_q_per_instance
+            
+        #     mem_info = GlobalContextMemInfo(GlobalContextMemType.MAIN, main_inst_id, base_addr, size)
+        #     self._mem_info[(GlobalContextMemType.MAIN, main_inst_id)] = mem_info
+            
+        #     for cmd_q_id in range(self._config._n_main_mem_cmd_q_per_instance):
+        #         d = self._config._dma_core_ids[main_inst_id * self._config._n_main_mem_cmd_q_per_instance + cmd_q_id]
+        #         core_info = GlobalContextCoreInfo(GlobalContextCoreType.DMA, d)
+        #         self._core_info[(GlobalContextCoreType.DMA, d)] = core_info
+                
+        #         mem_info.add_owner_core(core_info)
+        
         for main_inst_id in range(self.n_main_mem_instances):
-            base_addr = self._config._main_mem_base_addr + (main_inst_id * self.main_mem_channel_size * self._config._n_main_mem_cmd_q_per_instance)
-            size = self.main_mem_channel_size * self._config._n_main_mem_cmd_q_per_instance
+            inst_base_addr = self._config._main_mem_base_addr + (main_inst_id * self.main_mem_channel_size * self._config.main_mem_config.n_channel_per_instance)
             
-            mem_info = GlobalContextMemInfo(GlobalContextMemType.MAIN, main_inst_id, base_addr, size)
-            self._mem_info[(GlobalContextMemType.MAIN, main_inst_id)] = mem_info
+            for ch_id in range(self._config.main_mem_config.n_channel_per_instance):
+                mem_id = main_inst_id * self._config.main_mem_config.n_channel_per_instance + ch_id
+                base_addr = inst_base_addr + (ch_id * self.main_mem_channel_size)
+                size = self.main_mem_channel_size
+                
+                mem_info = GlobalContextMemInfo(GlobalContextMemType.MAIN, mem_id, base_addr, size)
+                self._mem_info[(GlobalContextMemType.MAIN, mem_id)] = mem_info
             
-            for cmd_q_id in range(self._config._n_main_mem_cmd_q_per_instance):
-                d = self._config._dma_core_ids[main_inst_id * self._config._n_main_mem_cmd_q_per_instance + cmd_q_id]
+            for cmd_q_id in range(self._config.main_mem_config.n_cmd_q_per_instance):
+                d = self._config._dma_core_ids[main_inst_id * self._config.main_mem_config.n_cmd_q_per_instance + cmd_q_id]
                 core_info = GlobalContextCoreInfo(GlobalContextCoreType.DMA, d)
                 self._core_info[(GlobalContextCoreType.DMA, d)] = core_info
                 
+                ch_id = cmd_q_id % self._config.main_mem_config.n_channel_per_instance
+                mem_id = main_inst_id * self._config.main_mem_config.n_channel_per_instance + ch_id
+                mem_info = self._mem_info[(GlobalContextMemType.MAIN, mem_id)]
                 mem_info.add_owner_core(core_info)
             
         for l1_mem_bank_id in range(self._config._n_npu_core):
@@ -350,11 +399,11 @@ class GlobalContext:
         if not self.config.main_mem_config.dramsim3_enable:
             return None
         
-        addr = ptr.addr
+        addr = ptr.addr - self.main_mem_base_addr
         ch_id = addr // self.main_mem_channel_size
-        inst_id = ch_id // self.config._n_main_mem_cmd_q_per_instance
-        cmd_q_id = ch_id % self.config._n_main_mem_cmd_q_per_instance
-        addr_offset = addr % (self.main_mem_channel_size * self.config._n_main_mem_cmd_q_per_instance)
+        inst_id = ch_id // self.config.main_mem_config.n_channel_per_instance
+        cmd_q_id = ch_id % self.config.main_mem_config.n_channel_per_instance
+        addr_offset = addr % (self.main_mem_channel_size * self.config.main_mem_config.n_channel_per_instance)
         
         return {
             "inst_id": inst_id,
@@ -363,6 +412,10 @@ class GlobalContext:
             "size": size,
             "is_write": is_write,
         }
+        
+    @property
+    def n_dma_engine_per_channel(self) -> int:
+        return self._config._n_dma_core // self._config.main_mem_config.n_channels
     
     @property
     def config(self) -> GlobalContextConfig:
@@ -394,7 +447,7 @@ class GlobalContext:
     
     @property
     def n_main_mem_cmd_q_per_instance(self) -> int:
-        return self._config._n_main_mem_cmd_q_per_instance
+        return self._config.main_mem_config.n_cmd_q_per_instance
     
     @property
     def main_mem_base_addr(self) -> int:
@@ -402,19 +455,19 @@ class GlobalContext:
     
     @property
     def main_mem_channel_size(self) -> int:
-        return self._config._main_mem_channel_size
+        return self._config.main_mem_config.channel_size
     
     @property
     def n_main_mem_instances(self) -> int:
-        return self._config._n_main_mem_instances
+        return self._config.main_mem_config.n_instance
     
     @property
     def n_main_mem_cmd_q_per_instance(self) -> int:
-        return self._config._n_main_mem_cmd_q_per_instance
+        return self._config.main_mem_config.n_cmd_q_per_instance
     
     @property
     def main_mem_size(self) -> int:
-        return self.n_main_mem_instances * self.n_main_mem_cmd_q_per_instance * self._config._main_mem_channel_size
+        return self.n_main_mem_instances * self._config.main_mem_config.n_channel_per_instance * self._config.main_mem_config.channel_size
     
     
 if __name__ == "__main__":

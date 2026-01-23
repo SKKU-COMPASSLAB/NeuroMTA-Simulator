@@ -6,7 +6,8 @@ import torch
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mta.tenstorrent import *
+from neuromta.system.hardware.tenstorrent import *
+from neuromta.system.software.tenstorrent import *
 
 
 compilation_summary_dir = None  # Set to a valid directory path to enable compilation summaries
@@ -237,7 +238,7 @@ if __name__ == "__main__":
     
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (8, 8), return_dict, worker_sem)
+        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), return_dict, worker_sem)
         p.start()
         processes.append(p)
         
@@ -290,7 +291,7 @@ if __name__ == "__main__":
         print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
-            peak_perf = 8 * 8 * mxu_config.peak_op_per_cycle,  # 8x8 PE array
+            peak_perf = 4 * 4 * mxu_config.peak_op_per_cycle,  # 4x4 PE array
             peak_mem_bw = mem_peak_bw,
             peak_noc_bw = noc_bisection_bw,
             src_path=output_path,

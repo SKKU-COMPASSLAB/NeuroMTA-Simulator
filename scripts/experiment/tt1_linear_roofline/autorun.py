@@ -8,7 +8,7 @@ if __name__ == "__main__":
     ROOT = os.path.abspath(os.path.dirname(__file__))
     
     commands = [
-        f"python3 {ROOT}/linear_all_l1.py -n 12",
+        # f"python3 {ROOT}/linear_all_l1.py -n 12",
         f"python3 {ROOT}/linear_all_main.py -n 12",
         f"python3 {ROOT}/linear_l1_feature_map.py -n 12",
     ]

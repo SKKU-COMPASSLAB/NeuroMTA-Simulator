@@ -135,50 +135,71 @@ class Device:
         cycle_resolution:   int  = 1,   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
         max_steps:          int  = -1,  # the maximum number of steps to run
         max_timestamp:      int  = -1,  # the maximum timestamp to run
-        sync_target_cores:  Sequence[int] = None,  # the target cores to synchronize after each step; if None, all cores are synchronized
+        # sync_target_cores:  Sequence[int] = None,  # the target cores to synchronize after each step; if None, all cores are synchronized
+        
+        sync_target_core_groups: Sequence[Sequence[int]] = None,  # the target core groups to synchronize after each step; if None, all cores are synchronized
     ):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
         
-        core_ids = list(self._cores.keys()) if sync_target_cores is None else sync_target_cores
+        # core_ids = list(self._cores.keys()) if sync_target_cores is None else sync_target_cores
+        if sync_target_core_groups is None:
+            core_ids = list(self._cores.keys())
+            sync_target_core_groups = [core_ids]
+        else:
+            core_ids = []
+            for group in sync_target_core_groups:
+                core_ids.extend(group)
+                
         step_cnt = 0
 
-        while not all(self.initialized_cores[core_id].is_idle for core_id in core_ids):
+        # while not all(self.initialized_cores[core_id].is_idle for core_id in core_ids):
+        while True:
             self.run_single_step(cycle_resolution=cycle_resolution)
             
             # break condition: step count  
             step_cnt += 1
             if step_cnt >= max_steps > 0:
-                logger.info(f"Reached maximum steps: {max_steps}. Stopping simulation.")
+                logger.debug(f"Reached maximum steps: {max_steps}. Stopping simulation.")
                 break
             
             # break condition: timestamp
             if self.timestamp >= max_timestamp > 0:
-                logger.info(f"Reached maximum timestamp: {max_timestamp}. Stopping simulation.")
+                logger.debug(f"Reached maximum timestamp: {max_timestamp}. Stopping simulation.")
                 for core_id in core_ids:
                     core = self.initialized_cores[core_id]
                     if len(core._dispatched_main_kernels) == 0:
                         continue
-                    logger.info(f"Core '{core_id}'")
+                    logger.debug(f"Core '{core_id}'")
                     for slot_id, kernel in core._dispatched_main_kernels.items():
-                        logger.info(f"  KERNEL {kernel.callstack}")
+                        logger.debug(f"  KERNEL {kernel.callstack}")
                         step = kernel.current_step(core)
                         
                         def print_step_info(step):
                             if isinstance(step, Kernel):
                                 if step.is_finished(core):
                                     return
-                                logger.info(f"    calls KERNEL {step.callstack}")
+                                logger.debug(f"    calls KERNEL {step.callstack}")
                                 print_step_info(step.current_step(core))
                             elif isinstance(step, ThreadGroup):
                                 for sub_step in step:
                                     if not sub_step.is_finished(core):
-                                        logger.info(f"    calls THREAD {sub_step.callstack}" + (" (blocked)" if sub_step.is_blocked else ""))
+                                        logger.debug(f"    calls THREAD {sub_step.callstack}" + (" (blocked)" if sub_step.is_blocked else ""))
                                         print_step_info(sub_step.current_step(core))
                             else:
-                                logger.info(f"     -> COMMAND {step}")
+                                logger.debug(f"     -> COMMAND {step}")
                         
                         print_step_info(step)
+                break
+            
+            # break condition: IDLE synchronization targets
+            is_idle = False
+            for sync_group in sync_target_core_groups:
+                is_idle = all(self.initialized_cores[core_id].is_idle for core_id in sync_group)
+                if not is_idle:
+                    break
+            if is_idle:
+                logger.debug(f"All synchronization target cores are idle. Stopping simulation.")
                 break
 
     def register_command_debug_hook(self, hook: Callable):

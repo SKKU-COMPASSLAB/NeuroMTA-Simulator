@@ -7,7 +7,8 @@ import math
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mca.google_tpu import *
+from neuromta.system.hardware.google_tpu import *
+from neuromta.system.software.google_tpu import *
 
 
 compilation_summary_dir = None  # Set to a valid directory path to enable compilation summaries

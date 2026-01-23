@@ -37,8 +37,9 @@ class NPUCore(Core):
         self.mem_info   = self.core_info.owned_mem_info  # Assume that each NPU core owns only one memory
         self.mem_handle = self.mem_info.mem_handle
         
-        self._dma_engine_idx = self.core_id % self.global_context.n_main_mem_cmd_q_per_instance  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
+        # self._dma_engine_idx = self.core_id % self.global_context.n_main_mem_cmd_q_per_instance  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
         # self._dma_engine_idx = 0  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
+        self._dma_engine_idx = self.core_id % self.global_context.n_dma_engine_per_channel  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
         
         # synchronization variables
         self.ongoing_core_sync_msg: list[int] = []
@@ -631,6 +632,26 @@ class NPUCore(Core):
             ofm_tile = self.mxu_context.get_pe_arr_regs()
             dst.data = ofm_tile
             
+    @core_command_method
+    def mxu_tiled_elemwise_imm(
+        self,
+        
+        op: MXUElementwiseOp,
+        imm: int | float,
+        dst:  DataContainer[torch.Tensor],
+        
+        flush_ofm: bool=False,
+    ):
+        if not self.use_functional_model:
+            return  # Terminate the command to reduce the simulation time without actual MXU functional unit (do not return anything to make sure that the command is executed only once)
+        
+        self.mxu_context.execute_elemwise_imm(imm=imm, op=op)
+        
+        if flush_ofm:
+            ofm_tile = self.mxu_context.get_pe_arr_regs()
+            dst.data = ofm_tile
+        
+            
     #############################################################
     # VPU Commands
     #############################################################
@@ -764,6 +785,24 @@ class NPUCoreCycleModel(CoreCycleModel):
         preload_psum:   bool=False,
         flush_ofm:      bool=False,
         ifm_transposed: bool=False,
+    ):
+        total_cycles = 0
+        
+        total_cycles += self.core.mxu_context.get_execute_cycles()
+
+        if flush_ofm:
+            total_cycles += self.core.mxu_context.get_flush_pe_arr_cycles()
+                    
+        return total_cycles
+    
+    def mxu_tiled_elemwise_imm(
+        self,
+        
+        op: MXUElementwiseOp,
+        imm: int | float,
+        dst:  DataContainer[torch.Tensor],
+        
+        flush_ofm: bool=False,
     ):
         total_cycles = 0
         

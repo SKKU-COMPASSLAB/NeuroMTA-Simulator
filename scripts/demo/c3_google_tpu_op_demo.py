@@ -5,7 +5,9 @@ import torch
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mca.google_tpu import *
+from neuromta.system.hardware.google_tpu import *
+from neuromta.system.software.google_tpu import *
+
 
 
 if __name__ == "__main__":

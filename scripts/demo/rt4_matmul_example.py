@@ -3,7 +3,7 @@ import torch
 
 from neuromta.framework import *
 from neuromta.component import *
-from neuromta.system.mta.tenstorrent import *
+from neuromta.system.hardware.tenstorrent import *
 
 
 def check_valid(container: DataContainer[torch.Tensor], actual_data: torch.Tensor, coord: tuple[int, ...], mem_params: tuple[int, ...]):
