@@ -26,9 +26,9 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (8, 8))
     
-    N, H, W, C = 1, 256, 256, 32
+    N, H, W, C = 1, 60, 60, 64
     WINDOW = (2, 2)
-    STRIDE, PADDING, DILATION = WINDOW, (0, 0), (1, 1)
+    STRIDE, PADDING, DILATION = (2, 2), (0, 0), (1, 1)
     OH = (H + 2 * PADDING[0] - DILATION[0] * (WINDOW[0] - 1) - 1) // STRIDE[0] + 1
     OW = (W + 2 * PADDING[1] - DILATION[1] * (WINDOW[1] - 1) - 1) // STRIDE[1] + 1
     
@@ -52,8 +52,8 @@ if __name__ == "__main__":
     spad_ld_pp_space    = device.create_l1_mem_space(parse_mem_cap_str("480KB"), core_group=core_group)
     spad_st_pp_space    = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(Ws, Cs), blocked_mapping=False).allocate().update(ifm)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(Ws, Cs), blocked_mapping=False).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(W, Cs), blocked_mapping=False).allocate().update(ifm)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OW, Cs), blocked_mapping=False).allocate()
     
     operator = MCA_OP_MAXPOOL2D(
         device, core_group, spad_ld_pp_space, spad_st_pp_space, 

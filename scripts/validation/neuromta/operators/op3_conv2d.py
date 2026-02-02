@@ -27,14 +27,14 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (8, 8))
     
-    N, H, W, C = 1, 224, 224, 3
-    FH, FW, K = 11, 11, 96
-    STRIDE, PADDING, DILATION = (2, 2), (3, 3), (1, 1)
+    N, H, W, C = 1, 55, 55, 64
+    FH, FW, K = 3, 3, 64
+    STRIDE, PADDING, DILATION = (2, 2), (0, 0), (1, 1)
     OH = (H + 2 * PADDING[0] - DILATION[0] * (FH - 1) - 1) // STRIDE[0] + 1
     OW = (W + 2 * PADDING[1] - DILATION[1] * (FW - 1) - 1) // STRIDE[1] + 1
     
-    Wt = 32
-    OWt = 32
+    Wt = 55
+    OWt = 27
     Ct = 32
     Kt = 32
     

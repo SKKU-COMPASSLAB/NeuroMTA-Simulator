@@ -43,13 +43,19 @@ class MCA_TensorBuffer:
         self._shard_y = shard_shape[0]
         self._shard_x = shard_shape[1]
         
-        self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-1])
-        self._layout_x = self._shape[-1]
+        # self._pad_y = (self._shard_y - (self._shape[-2] % self._shard_y)) % self._shard_y
+        # self._pad_x = (self._shard_x - (self._shape[-1] % self._shard_x)) % self._shard_x
+        
+        # self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1) * (self._shape[-2] + self._pad_y)
+        # self._layout_x = self._shape[-1] + self._pad_x
         
         if self._shape[-2] % self._shard_y != 0:
             raise ValueError(f"Height {self._shape[-2]} is not divisible by shard height {self._shard_y}.")
         if self._shape[-1] % self._shard_x != 0:
             raise ValueError(f"Width {self._shape[-1]} is not divisible by shard width {self._shard_x}.")
+        
+        self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1) * self._shape[-2]
+        self._layout_x = self._shape[-1]
         
         self._n_outer_shards = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1)
         self._n_y_shards = self._layout_y // self._shard_y
@@ -207,6 +213,7 @@ class MCA_TensorBuffer:
         if not self._is_allocated:
             raise RuntimeError("Tensor buffer is not allocated. Call allocate() before update().")
         
+        # tensor = torch.nn.functional.pad(tensor, (0, self._pad_x, 0, self._pad_y))  # pad width and height dimensions
         tensor = tensor.flatten().to(dtype=self._dtype)
         tensor = tensor.reshape(self._layout_y, self._layout_x)
         tensor = tensor.reshape(self._n_y_shards, self._shard_y, self._n_x_shards, self._shard_x)
@@ -233,7 +240,9 @@ class MCA_TensorBuffer:
                 tensor[h, w] = shard_data
         
         tensor = tensor.permute(0, 2, 1, 3).reshape(self._layout_y, self._layout_x)
-        tensor = tensor.flatten().reshape(self._shape)
+        tensor = tensor.reshape(self._shape)
+        # tensor = tensor.flatten().reshape((self._shape[:-2] + (self._shape[-2] + self._pad_y, self._shape[-1] + self._pad_x)))
+        # tensor = tensor[..., :self._shape[-2], :self._shape[-1]]  # remove padding
         return tensor
     
     def get_shard_ptr(self, y_shard_idx: int, x_shard_idx: int) -> Pointer:

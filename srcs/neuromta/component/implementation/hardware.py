@@ -31,7 +31,26 @@ __all__ = [
 class MCA_CoreGroup(list):
     def __init__(self, core_ids: Sequence[int]):
         super().__init__(core_ids)
-        
+    
+    def merge(self, other: 'MCA_CoreGroup') -> 'MCA_CoreGroup':
+        new_core_ids = list(set(self) | set(other))
+        return MCA_CoreGroup(new_core_ids)
+    
+    def split(self, shape: int) -> list['MCA_CoreGroup']:
+        if shape <= 0:
+            raise ValueError("Core group split shape must be greater than 0.")
+        n_subgroups = (len(self) + shape - 1) // shape
+        subgroups = []
+        for i in range(n_subgroups):
+            start_idx = i * shape
+            end_idx = min((i + 1) * shape, len(self))
+            sub_core_ids = self[start_idx:end_idx]
+            subgroups.append(MCA_CoreGroup(sub_core_ids))
+        return subgroups
+    
+    def __add__(self, other: 'MCA_CoreGroup') -> 'MCA_CoreGroup':
+        return self.merge(other)
+    
     def __eq__(self, value):
         if not isinstance(value, MCA_CoreGroup):
             return False
@@ -45,10 +64,24 @@ class MCA_CoreGroup(list):
         if isinstance(item, list):
             return MCA_CoreGroup(item)
         return item
+    
+    @classmethod
+    def merge_core_groups(cls, core_groups: Sequence['MCA_CoreGroup']) -> 'MCA_CoreGroup':
+        merged_core_ids = set()
+        for cg in core_groups:
+            merged_core_ids.update(cg)
+        return MCA_CoreGroup(sorted(list(merged_core_ids)))
         
     @property
     def core_ids(self) -> Sequence[int]:
         return list(self)
+    
+    @property
+    def n_cores(self) -> int:
+        return len(self)
+    
+    def __str__(self):
+        return f"MCA_CoreGroup(n_cores: {self.n_cores}, core_ids: {self.core_ids})"
     
     
 class MCA_MemorySpace:
@@ -291,6 +324,36 @@ class MTA_CoreGrid(MCA_CoreGroup):
         
     def lower(self) -> MCA_CoreGroup:
         return MCA_CoreGroup(self.core_ids)
+    
+    def split(self, shape: tuple[int, int]) -> list['MTA_CoreGrid']:
+        n_rows, n_cols = self.shape
+        sub_n_rows, sub_n_cols = shape
+        
+        if sub_n_rows <= 0 or sub_n_cols <= 0:
+            raise ValueError("Core grid split shape dimensions must be greater than 0.")
+        
+        n_row_grids = (n_rows + sub_n_rows - 1) // sub_n_rows
+        n_col_grids = (n_cols + sub_n_cols - 1) // sub_n_cols
+        
+        subgrids = []
+        for c in range(n_col_grids):
+            for r in range(n_row_grids):
+                start_row = r * sub_n_rows
+                end_row = min((r + 1) * sub_n_rows, n_rows)
+                start_col = c * sub_n_cols
+                end_col = min((c + 1) * sub_n_cols, n_cols)
+                
+                grid_core_ids = []
+                for rr in range(start_row, end_row):
+                    for cc in range(start_col, end_col):
+                        idx = rr * n_cols + cc
+                        grid_core_ids.append(self.core_ids[idx])
+                
+                grid_offset = (self.offset[0] + start_row, self.offset[1] + start_col)
+                grid_shape = (end_row - start_row, end_col - start_col)
+                subgrids.append(MTA_CoreGrid(offset=grid_offset, shape=grid_shape, core_ids=grid_core_ids))
+        
+        return subgrids
         
     def __getitem__(self, idx: int) -> int:
         if isinstance(idx, tuple):
@@ -301,6 +364,9 @@ class MTA_CoreGrid(MCA_CoreGroup):
                 return MTA_CoreGrid(offset=(0, 0), shape=grid.shape, core_ids=core_ids)
             return core_ids[0]
         return super().__getitem__(idx)
+    
+    def __str__(self):
+        return f"MTA_CoreGroup(n_cores: {self.n_cores}, shape: {self.shape}, core_ids: {self.core_ids})"
 
 
 class MTA_DeviceBase(MCA_DeviceBase):

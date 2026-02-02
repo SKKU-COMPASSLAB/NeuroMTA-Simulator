@@ -177,6 +177,9 @@ def MCA_MAPPER_CONV2D(
     OH = (H + 2 * padding[0] - dilation[0] * (FH - 1) - 1) // stride[0] + 1
     OW = (W + 2 * padding[1] - dilation[1] * (FW - 1) - 1) // stride[1] + 1
     
+    # if is_conv2d:
+    #     print(ifm.shape, wgt.shape)
+    
     if is_conv2d:
         if C != ifm.shape[3]:
             raise Exception(f"Input channel mismatch between IFM and WGT: {ifm.shape[3]} != {C}")
@@ -351,7 +354,7 @@ def MCA_MAPPER_CONV2D(
                                             w_stick_intra_tile_offset   = w_stick_intra_shard_idx % ifm.tile_shape[0]   # W stick offset within the intra-shard tile
                                             
                                             ifm_y_tile_idx = int(ifm_tile_idx_offset + W_N_TILES_PER_SHARD * w_stick_shard_it + w_stick_intra_shard_tile_it)
-                                            ifm_x_tile_idx = c_tile_it
+                                            ifm_x_tile_idx = c_tile_it if is_conv2d else k_tile_it
                                             ifm_tile_idx = ifm.get_shard_grid_from_tile_grid_idx(ifm_y_tile_idx, ifm_x_tile_idx) 
                                                 
                                             ifm_stick_src_offset = w_stick_intra_tile_offset
