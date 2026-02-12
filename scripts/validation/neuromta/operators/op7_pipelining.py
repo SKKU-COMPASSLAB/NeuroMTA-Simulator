@@ -23,12 +23,11 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_group = device.get_npu_core_group((0, 0), (4, 4))
+    core_group = device.get_npu_core_group((0, 0), (4, 2))
     
-    M, N, K = 256, 256, 1024
+    M, N, K = 256, 256, 256
     dtype = torch.int16
     acc_dtype = torch.int16
-    blocked_mapping = True  # Enable blocked mapping for better data locality
     broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
     sim_mode = "partial_l1"
     
@@ -50,29 +49,42 @@ if __name__ == "__main__":
     spad_space_size     = spad_ld_space_size + spad_st_space_size
     spad_mem_space      = device.create_l1_mem_space(spad_space_size, core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32), blocked_mapping=False          ).tiling((32, 32)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32), blocked_mapping=False          ).tiling((1,  32)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32)).allocate()
+    ifm1_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(ifm)
+    wgt1_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
+    bias1_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
+    ofm1_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
+    wgt2_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
+    bias2_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
+    ofm2_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
     
-    operator = MCA_OP_LINEAR(
+    operator1 = MCA_OP_LINEAR(
         device, spad_ld_space_size, spad_st_space_size, 
-        ifm_b, wgt_b, bias_b, ofm_b, 
+        ifm1_b, wgt1_b, bias1_b, ofm1_b, 
+    )
+    
+    operator2 = MCA_OP_LINEAR(
+        device, spad_ld_space_size, spad_st_space_size, 
+        ofm1_b, wgt2_b, bias2_b, ofm2_b, 
     )
     
     compiler = MCA_OperatorGraphCompiler()
-    compiler.add_op(operator)
+    compiler.add_op(operator1)
+    compiler.add_op(operator2)
     
     op_recipes = {
-        operator.op_type: MCA_OperatorGraphCompiler.OperatorRecipe(
+        operator1.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
             spatial_reuse_target_buf_idx=1,
-            use_broadcast_optimize=broadcast_optimize,
-        )
+            use_broadcast_optimize=False,
+        ),
+        operator2.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
+            spatial_reuse_target_buf_idx=1,
+            use_broadcast_optimize=False,
+        ),
     }
     
     global_recipe=MCA_OperatorGraphCompiler.GlobalRecipe(
         global_core_group=core_group,
-        core_group_shape=(4, 4),
+        core_group_shape=(2, 2),
         spad_mem_space=spad_mem_space,
         op_recipes=op_recipes,
     )
@@ -100,12 +112,13 @@ if __name__ == "__main__":
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
     
-    total_ops = 2 * M * N * K
+    total_ops = 2 * M * N * K * 2
     throughput = (total_ops / device.timestamp)
     print(f"overall throughput: {throughput:.2f} OP/cycle")
     
-    simulated = ofm_b.restore()
+    simulated = ofm2_b.restore()
     reference = torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
+    reference = torch.matmul(reference.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
     
     print(f"simulated:\n{simulated}")
     print(f"reference:\n{reference}")

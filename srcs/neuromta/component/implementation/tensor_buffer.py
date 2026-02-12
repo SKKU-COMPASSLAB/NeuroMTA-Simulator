@@ -344,6 +344,10 @@ class MCA_TensorBuffer:
         return self._tile_y * self._tile_x * self._dtype.itemsize
     
     @property
+    def n_tiles(self) -> int:
+        return (self._n_y_tiles_per_shard * self._n_y_shards) * (self._n_x_tiles_per_shard * self._n_x_shards)
+    
+    @property
     def mem_space(self) -> MCA_MemorySpace:
         return self._mem_space
     

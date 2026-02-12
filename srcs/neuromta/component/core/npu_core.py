@@ -508,6 +508,16 @@ class NPUCore(Core):
     @core_command_method
     def mxu_reconfigure(self, dtype: torch.dtype, acc_dtype: torch.dtype):
         self.mxu_context.reconfigure_dtype(dtype=dtype, acc_dtype=acc_dtype)
+        
+    @core_command_method
+    def mxu_load_context(self, psum_cont: DataContainer[torch.Tensor]):
+        psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.config.ofm_tile_shape)
+        self.mxu_context.load_tile_pe_arr(psum_tile)
+        
+    @core_command_method
+    def mxu_store_context(self, psum_cont: DataContainer[torch.Tensor]):
+        psum_tile = self.mxu_context.get_pe_arr_regs()
+        psum_cont.data = psum_tile
     
     @core_command_method
     def mxu_tiled_gemm(
@@ -722,6 +732,12 @@ class NPUCoreCycleModel(CoreCycleModel):
         
     def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
         return row_num
+    
+    def mxu_load_context(self, psum_cont: DataContainer[torch.Tensor]):
+        return self.core.mxu_context.get_preload_pe_arr_cycles()
+        
+    def mxu_store_context(self, psum_cont: DataContainer[torch.Tensor]):
+        return self.core.mxu_context.get_flush_pe_arr_cycles()
 
     def mxu_tiled_gemm(
         self, 

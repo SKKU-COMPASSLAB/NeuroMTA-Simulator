@@ -22,7 +22,7 @@ class Benchmark:
         STRIDE, PADDING, DILATION,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
-        mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
+        mapping_strategy: str = TiledOperatorGraph.OUTPUT_STATIONARY
     ):
         self.N = N
         self.H = H
@@ -100,7 +100,7 @@ class Benchmark:
             stride=self.STRIDE, padding=self.PADDING, dilation=self.DILATION,
             broadcast_optimize=True, 
             auto_dispatch=True, 
-            mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY,
+            mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY,
             use_collective_tile_load=use_collective_tile_load
         )
         
@@ -138,9 +138,9 @@ class Benchmark:
     @property
     def signature(self) -> str:
         ms = self.mapping_strategy.lower()
-        if ms == MCA_OperatorMapper.OUTPUT_STATIONARY:
+        if ms == TiledOperatorGraph.OUTPUT_STATIONARY:
             ms_str = "os"
-        elif ms == MCA_OperatorMapper.ROUND_ROBIN:
+        elif ms == TiledOperatorGraph.ROUND_ROBIN:
             ms_str = "rr"
         else:
             ms_str = "unk"
@@ -187,20 +187,20 @@ class BenchmarkProcess(mp.Process):
 
 benchmarks = [
     # AlexNet
-    Benchmark(N=1, H=224, W=224, C=3,   FH=11, FW=11, K=96,  STRIDE=(4, 4), PADDING=(2, 2), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=27,  W=27,  C=96,  FH=5,  FW=5,  K=256, STRIDE=(1, 1), PADDING=(2, 2), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=384, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=224, W=224, C=3,   FH=11, FW=11, K=96,  STRIDE=(4, 4), PADDING=(2, 2), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=27,  W=27,  C=96,  FH=5,  FW=5,  K=256, STRIDE=(1, 1), PADDING=(2, 2), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=384, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
     
     # ResNet18
-    Benchmark(N=1, H=224, W=224, C=3,   FH=7,  FW=7,  K=64,  STRIDE=(2, 2), PADDING=(3, 3), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=64,  STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=128, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=128, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=512, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
-    Benchmark(N=1, H=7,   W=7,   C=512, FH=3,  FW=3,  K=512, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=224, W=224, C=3,   FH=7,  FW=7,  K=64,  STRIDE=(2, 2), PADDING=(3, 3), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=64,  STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=128, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=128, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=256, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=512, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
+    Benchmark(N=1, H=7,   W=7,   C=512, FH=3,  FW=3,  K=512, STRIDE=(1, 1), PADDING=(1, 1), DILATION=(1, 1), dtype=torch.int16, acc_dtype=torch.int16, mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY),
 ]
 
 if __name__ == "__main__":

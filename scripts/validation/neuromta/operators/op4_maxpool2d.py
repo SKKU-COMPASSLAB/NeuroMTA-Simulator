@@ -49,31 +49,53 @@ if __name__ == "__main__":
     
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-    spad_ld_pp_space    = device.create_l1_mem_space(parse_mem_cap_str("480KB"), core_group=core_group)
-    spad_st_pp_space    = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(W, Cs), blocked_mapping=False).allocate().update(ifm)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OW, Cs), blocked_mapping=False).allocate()
+    spad_ld_space_size  = parse_mem_cap_str("480KB")
+    spad_st_space_size  = parse_mem_cap_str("32KB")
+    spad_space_size     = spad_ld_space_size + spad_st_space_size
+    spad_mem_space      = device.create_l1_mem_space(spad_space_size, core_group=core_group)
+    
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(W,  Cs)).tiling((32, 32)).allocate().update(ifm)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OW, Cs)).tiling((32, 32)).allocate()
     
     operator = MCA_OP_MAXPOOL2D(
-        device, core_group, spad_ld_pp_space, spad_st_pp_space, 
+        device, spad_ld_space_size, spad_st_space_size, 
         ifm_b, ofm_b, 
         window=WINDOW, stride=STRIDE, padding=PADDING, dilation=DILATION,
-        broadcast_optimize=broadcast_optimize, 
-        auto_dispatch=True, 
-        mapping_strategy=MCA_OperatorMapper.CONTIGUOUS,
         use_collective_tile_load=False,
     )
     
-    tmp_ouput_path = os.path.join(TMP_DIR, "pipelined_mapping.json")
-    with open(tmp_ouput_path, "w") as f:
-        json.dump(operator.summary(), f, indent=4)
-        logger.info(f"Pipelined mapping summary saved to '{tmp_ouput_path}'.")
+    compiler = MCA_OperatorGraphCompiler()
+    compiler.add_op(operator)
+    
+    op_recipes = {
+        operator.op_type: MCA_OperatorGraphCompiler.OperatorRecipe(
+            spatial_reuse_target_buf_idx=0,
+            use_broadcast_optimize=broadcast_optimize,
+        )
+    }
+    
+    global_recipe=MCA_OperatorGraphCompiler.GlobalRecipe(
+        global_core_group=core_group,
+        core_group_shape=(4, 4),
+        spad_mem_space=spad_mem_space,
+        op_recipes=op_recipes,
+    )
+    
+    compiled_ops = compiler.compile(global_recipe, target_ops="ALL")
+    
+    for op_id, compiled_op in compiled_ops.items():
+        compiled_op.dispatch(device, slot_id="MAIN")
+        
+        tmp_output_path = os.path.join(TMP_DIR, f"op_summary_{op_id}.json")
+        with open(tmp_output_path, "w") as f:
+            json.dump(compiled_op.summary(), f, indent=4)
+            logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")
         
     with MonitoringWindow() as monitor:
         for core_id in core_group.core_ids:
             core = device.get_npu_core(core_id=core_id)
-            pbar_idx = monitor.add_core_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
+            pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
             monitor.pbar_handles[pbar_idx].bind_core(core)
         
         st = time.time()

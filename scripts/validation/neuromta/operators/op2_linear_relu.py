@@ -9,6 +9,10 @@ from neuromta.system.hardware.tenstorrent import *
 from neuromta.system.software.tenstorrent import *
 
 
+TMP_DIR = os.path.join(os.curdir, ".tmp")
+os.makedirs(TMP_DIR, exist_ok=True)
+
+
 if __name__ == "__main__":
     torch.set_printoptions(linewidth=1024)
     logger.set_print_options(log_level=LogLevel.DEBUG)
@@ -24,7 +28,6 @@ if __name__ == "__main__":
     M, N, K = 512, 512, 512
     dtype = torch.int16
     acc_dtype = torch.int16
-    blocked_mapping = True  # Enable blocked mapping for better data locality
     broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
     
     ifm  = torch.randint(low=-128, high=128, size=(M, K), dtype=dtype)
@@ -40,27 +43,53 @@ if __name__ == "__main__":
     ifm_mem_space      = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
     ofm_mem_space      = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
     param_mem_space    = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-    linear_ld_pp_space = device.create_l1_mem_space(parse_mem_cap_str("256KB"), core_group=core_group)
-    linear_st_pp_space = device.create_l1_mem_space(parse_mem_cap_str("32KB"), core_group=core_group)
     
-    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(128, 128), blocked_mapping=blocked_mapping).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(128, 128), blocked_mapping=blocked_mapping).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   128), blocked_mapping=blocked_mapping).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(128, 128), blocked_mapping=blocked_mapping).allocate()
+    spad_ld_space_size  = parse_mem_cap_str("256KB")
+    spad_st_space_size  = parse_mem_cap_str("256KB")
+    spad_space_size     = spad_ld_space_size + spad_st_space_size
+    spad_mem_space      = device.create_l1_mem_space(spad_space_size, core_group=core_group)
     
-    operator = MCA_OP_LINEAR_RELU(device, core_group, linear_ld_pp_space, linear_st_pp_space, ifm_b, wgt_b, bias_b, ofm_b, broadcast_optimize=broadcast_optimize)
+    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(128, 128)).allocate().tiling((32, 32)).update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(128, 128)).allocate().tiling((32, 32)).update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   128)).allocate().tiling((1,  32)).update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(128, 128)).allocate().tiling((32, 32))
     
-    operator.dispatch()
+    operator = MCA_OP_LINEAR_RELU(
+        device, spad_ld_space_size, spad_st_space_size, 
+        ifm_b, wgt_b, bias_b, ofm_b
+    )
     
-    tmp_ouput_path = os.path.join(os.curdir, ".tmp", "merged_mapping.json")
-    with open(tmp_ouput_path, "w") as f:
-        json.dump(operator.summary(), f, indent=4)
-        logger.info(f"Pipelined mapping summary saved to '{tmp_ouput_path}'.")
+    compiler = MCA_OperatorGraphCompiler()
+    compiler.add_op(operator)
+    
+    op_recipes = {
+        operator.op_type: MCA_OperatorGraphCompiler.OperatorRecipe(
+            spatial_reuse_target_buf_idx=1,
+            use_broadcast_optimize=broadcast_optimize,
+        )
+    }
+    
+    global_recipe=MCA_OperatorGraphCompiler.GlobalRecipe(
+        global_core_group=core_group,
+        core_group_shape=(4, 4),
+        spad_mem_space=spad_mem_space,
+        op_recipes=op_recipes,
+    )
+    
+    compiled_ops = compiler.compile(global_recipe, target_ops="ALL")
+    
+    for op_id, compiled_op in compiled_ops.items():
+        compiled_op.dispatch(device, slot_id="MAIN")
+        
+        tmp_output_path = os.path.join(TMP_DIR, f"op_summary_{op_id}.json")
+        with open(tmp_output_path, "w") as f:
+            json.dump(compiled_op.summary(), f, indent=4)
+            logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")
         
     with MonitoringWindow() as monitor:
         for core_id in core_group.core_ids:
             core = device.get_npu_core(core_id=core_id)
-            pbar_idx = monitor.add_core_pbar(desc=f"NPUCore {core_id:<3d}", ncols=60)
+            pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
             monitor.pbar_handles[pbar_idx].bind_core(core)
         
         st = time.time()

@@ -20,7 +20,7 @@ class Benchmark:
         Ms: int, Ns: int, Ks: int,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
-        mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
+        mapping_strategy: str = TiledOperatorGraph.OUTPUT_STATIONARY
     ):
         self.M: int = M
         self.N: int = N
@@ -125,9 +125,9 @@ class Benchmark:
     @property
     def signature(self) -> str:
         ms = self.mapping_strategy.lower()
-        if ms == MCA_OperatorMapper.OUTPUT_STATIONARY:
+        if ms == TiledOperatorGraph.OUTPUT_STATIONARY:
             ms_str = "os"
-        elif ms == MCA_OperatorMapper.ROUND_ROBIN:
+        elif ms == TiledOperatorGraph.ROUND_ROBIN:
             ms_str = "rr"
         else:
             ms_str = "unk"
@@ -181,11 +181,11 @@ benchmarks = [
     Benchmark(M=256,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     Benchmark(M=128,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
-    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=MCA_OperatorMapper.ROUND_ROBIN),
+    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
+    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
+    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
+    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
+    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
 ]
 
 if __name__ == "__main__":

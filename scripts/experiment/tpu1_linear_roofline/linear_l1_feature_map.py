@@ -21,7 +21,7 @@ class Benchmark:
         Ms: int, Ns: int, Ks: int,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
-        mapping_strategy: str = MCA_OperatorMapper.OUTPUT_STATIONARY
+        mapping_strategy: str = TiledOperatorGraph.OUTPUT_STATIONARY
     ):
         self.M: int = M
         self.N: int = N
@@ -133,9 +133,9 @@ class Benchmark:
     @property
     def signature(self) -> str:
         ms = self.mapping_strategy.lower()
-        if ms == MCA_OperatorMapper.OUTPUT_STATIONARY:
+        if ms == TiledOperatorGraph.OUTPUT_STATIONARY:
             ms_str = "os"
-        elif ms == MCA_OperatorMapper.ROUND_ROBIN:
+        elif ms == TiledOperatorGraph.ROUND_ROBIN:
             ms_str = "rr"
         else:
             ms_str = "unk"

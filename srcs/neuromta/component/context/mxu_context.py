@@ -184,6 +184,8 @@ class MXUContext:
         else:
             raise Exception(f"Unsupported elementwise operation: {op}.")
         
+        self._pe_arr_regs = self._pe_arr_regs.to(dtype=self._acc_dtype)
+        
     def execute_elemwise_imm(self, imm: int | float | torch.Tensor, op: MXUElementwiseOp) -> torch.Tensor:
         if not isinstance(imm, torch.Tensor):
             imm = torch.tensor(imm, dtype=self._acc_dtype)
@@ -198,6 +200,8 @@ class MXUContext:
             self._pe_arr_regs = self._pe_arr_regs / imm
         else:
             raise Exception(f"Unsupported elementwise operation: {op}.")
+        
+        self._pe_arr_regs = self._pe_arr_regs.to(dtype=self._acc_dtype)
         
     @property
     def acc_dtype(self) -> torch.dtype:
