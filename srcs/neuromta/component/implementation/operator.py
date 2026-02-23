@@ -217,16 +217,16 @@ class MCA_OperatorSignature:
     
 class MCA_CompiledOperatorGraph:
     class Command:
-        class _Base(metaclass=abc.ABCMeta):
+        class Base(metaclass=abc.ABCMeta):
             @abc.abstractmethod
             def signature(self) -> str:
                 raise NotImplementedError("Command signature method must be implemented by subclasses.")
             
-        class NOP(_Base):
+        class NOP(Base):
             def signature(self):
                 return "NOP"
         
-        class MEM_INIT(_Base):
+        class MEM_INIT(Base):
             def __init__(self, ptr: Pointer, size: int):
                 self.ptr = ptr
                 self.size = size
@@ -234,7 +234,7 @@ class MCA_CompiledOperatorGraph:
             def signature(self):
                 return f"MEM_INIT MEM@{self.ptr.addr} size={self.size}"
             
-        class MEM_BROADCAST_TILE(_Base):
+        class MEM_BROADCAST_TILE(Base):
             def __init__(self, buf_name: str, tile_sig: TileSignature, ptrs: list[Pointer]):
                 self.buf_name = buf_name
                 self.tile_sig = tile_sig
@@ -248,7 +248,7 @@ class MCA_CompiledOperatorGraph:
                 ptrs_str = ", ".join([f"SPM@{ptr.addr}" for ptr in self.ptrs])
                 return f"BROADCAST {self.tile_sig.signature} -> [{ptrs_str}]"
         
-        class MEM_LOAD_TILE(_Base):
+        class MEM_LOAD_TILE(Base):
             def __init__(self, buf_name: str, tile_sig: TileSignature, ptrs: list[Pointer]):
                 self.buf_name = buf_name
                 self.tile_sig = tile_sig
@@ -262,7 +262,7 @@ class MCA_CompiledOperatorGraph:
                 ptrs_str = ", ".join([f"SPM@{ptr.addr}" for ptr in self.ptrs])
                 return f"LOAD {self.tile_sig.signature} -> [{ptrs_str}]"
                 
-        class MEM_STORE_TILE(_Base):
+        class MEM_STORE_TILE(Base):
             def __init__(self, buf_name: str, tile_sig: TileSignature, ptr: Pointer, is_partial: bool=False):
                 self.buf_name = buf_name
                 self.tile_sig = tile_sig
@@ -273,12 +273,12 @@ class MCA_CompiledOperatorGraph:
                     self.ptr = Pointer(addr=self.ptr)
                     
             def signature(self):
-                sig = f"STORE {self.tile_sig.signature} -> SPM@{self.ptr.addr}"
+                sig = f"STORE SPM@{self.ptr.addr} -> {self.tile_sig.signature}"
                 if self.is_partial:
                     sig += " (partial)"
                 return sig
                 
-        class EXE_LOAD_CONTEXT(_Base):
+        class EXE_LOAD_CONTEXT(Base):
             def __init__(self, buf_name: str, tile_sig: TileSignature, ptr: Pointer):
                 self.buf_name = buf_name
                 self.tile_sig = tile_sig
@@ -290,7 +290,7 @@ class MCA_CompiledOperatorGraph:
             def signature(self):
                 return f"LOAD_CONTEXT SPM@{self.ptr.addr} -> {self.tile_sig.signature}"
 
-        class EXE_STORE_CONTEXT(_Base):
+        class EXE_STORE_CONTEXT(Base):
             def __init__(self, buf_name: str, tile_sig: TileSignature, ptr: Pointer):
                 self.buf_name = buf_name
                 self.tile_sig = tile_sig
@@ -302,7 +302,7 @@ class MCA_CompiledOperatorGraph:
             def signature(self):
                 return f"STORE_CONTEXT {self.tile_sig.signature} -> SPM@{self.ptr.addr}"
 
-        class EXE_UOP(_Base):
+        class EXE_UOP(Base):
             def __init__(self, op_id: str, tiled_op_idx: int, uop_idx: int, i_tile_ptrs: list[Pointer], o_tile_ptr: Pointer):
                 self.op_id = op_id
                 self.tiled_op_idx = tiled_op_idx
@@ -315,7 +315,7 @@ class MCA_CompiledOperatorGraph:
                 o_ptr_str = f"SPM@{self.o_tile_ptr.addr}"
                 return f"EXE_UOP {self.op_id} tiled_op_idx={self.tiled_op_idx} uop_idx={self.uop_idx} ({i_ptrs_str}) -> {o_ptr_str}"
                 
-        class BARRIER(_Base):
+        class BARRIER(Base):
             def __init__(self, var_arrived_count: str, var_block_state: str, total_arrivals: int):
                 self.var_arrived_count = var_arrived_count
                 self.var_block_state = var_block_state
@@ -339,11 +339,11 @@ class MCA_CompiledOperatorGraph:
             #   - Postprocessing commands can be executed simultaneously
             #   - However, memory store commands should always be executed before postprocessing commands
 
-            self.preprocessing_commands:    list[MCA_CompiledOperatorGraph.Command._Base] = []
-            self.mem_load_commands:         list[MCA_CompiledOperatorGraph.Command._Base] = []
-            self.execute_commands:          list[MCA_CompiledOperatorGraph.Command._Base] = []
-            self.mem_store_commands:        list[MCA_CompiledOperatorGraph.Command._Base] = []
-            self.postprocessing_commands:   list[MCA_CompiledOperatorGraph.Command._Base] = []
+            self.preprocessing_commands:    list[MCA_CompiledOperatorGraph.Command.Base] = []
+            self.mem_load_commands:         list[MCA_CompiledOperatorGraph.Command.Base] = []
+            self.execute_commands:          list[MCA_CompiledOperatorGraph.Command.Base] = []
+            self.mem_store_commands:        list[MCA_CompiledOperatorGraph.Command.Base] = []
+            self.postprocessing_commands:   list[MCA_CompiledOperatorGraph.Command.Base] = []
         
         @property
         def is_bubble(self) -> bool:

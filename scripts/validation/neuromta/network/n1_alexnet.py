@@ -11,7 +11,7 @@ from neuromta.system.software.tenstorrent import *
 
 
 FILEROOT = os.path.dirname(os.path.abspath(__file__))
-FILENAME = os.path.basename(__file__)
+FILENAME = os.path.splitext(os.path.basename(__file__))[0]
 LOGDIR = os.path.join(FILEROOT, ".logs")
 
 
@@ -63,13 +63,24 @@ if __name__ == "__main__":
             summary = entry.summary()
             os.makedirs(dirname, exist_ok=True)
             
+            entry_structure = []
+            
             for op_id, op_summary in summary.items():
                 filepath = os.path.join(dirname, f"{filename}_entry{entry_idx}_{op_id}.json")
                 with open(filepath, "w") as f:
                     json.dump(op_summary, f, indent=4)
                     logger.info(f"saved compiled summary for op {op_id} to {filepath}")
+                entry_structure.append({
+                    "op_id": op_id,
+                    "summary_filepath": filepath,
+                })
+                
+            structure_filepath = os.path.join(dirname, f"{filename}_entry{entry_idx}_structure.json")
+            with open(structure_filepath, "w") as f:
+                json.dump(entry_structure, f, indent=4)
+                logger.info(f"saved compiled entry structure for entry {entry_idx} to {structure_filepath}")
                     
-    save_compiled_entry_summary(graph, LOGDIR, FILENAME)
+    save_compiled_entry_summary(graph, os.path.join(LOGDIR, FILENAME), "summary")
     
     with MonitoringWindow() as monitor:
         for core_group_idx, core_group in enumerate(core_groups):
