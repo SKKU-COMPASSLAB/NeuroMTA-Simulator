@@ -107,7 +107,11 @@ class MCA_MemorySpace:
             stack_id = mem_info.create_stack(stack_size=size_per_owner)
             self._mem_id_to_stack_id_mappings[mem_id] = stack_id
             
+        self._is_removed = False
+            
     def empty_space(self, owner_id: int) -> int:
+        if self._is_removed:
+            raise ValueError(f"Memory space is already removed.")
         if owner_id not in self._owner_ids:
             raise ValueError(f"Owner ID {owner_id} is not part of this MCA_MainMemorySpace.")
         
@@ -117,25 +121,23 @@ class MCA_MemorySpace:
         return mem_info.empty_space(stack_id=stack_id)
     
     def allocate(self, owner_id: int, size: int) -> Pointer:
+        if self._is_removed:
+            raise ValueError(f"Memory space is already removed.")
         mem_id = self._owner_id_to_mem_id_mappings[owner_id]
         mem_info = self._device.global_context.get_mem_info(mem_type=self._mem_type, mem_id=mem_id)
         stack_id = self._mem_id_to_stack_id_mappings[mem_id]
         return mem_info.allocate_data(size=size, stack_id=stack_id)
             
     def remove(self):
+        if self._is_removed:
+            return
+        
         for owner_id in self._owner_ids:
             mem_id = self._owner_id_to_mem_id_mappings[owner_id]
             mem_info = self._device.global_context.get_mem_info(mem_type=self._mem_type, mem_id=mem_id)
             stack_id = self._mem_id_to_stack_id_mappings[mem_id]
             mem_info.remove_stack(stack_id=stack_id)
-            
-    def override_owner_ids(self, owner_ids: Sequence[int]) -> 'MCA_MemorySpace':
-        new_space = MCA_MemorySpace(device=self._device, mem_type=self._mem_type, size_per_owner=0, owner_ids=owner_ids)
-        for owner_id in owner_ids:
-            mem_id = self._owner_id_to_mem_id_mappings[owner_id]
-            new_space._owner_id_to_mem_id_mappings[owner_id] = self._owner_id_to_mem_id_mappings[owner_id]
-            new_space._mem_id_to_stack_id_mappings[mem_id] = self._mem_id_to_stack_id_mappings[mem_id]
-        return new_space
+        self._is_removed = True
             
     @property
     def device(self) -> 'MCA_DeviceBase':
@@ -152,6 +154,36 @@ class MCA_MemorySpace:
     @property
     def size_per_owner(self) -> int:
         return self._size_per_owner
+    
+    @property
+    def is_removed(self) -> bool:
+        return self._is_removed
+    
+    def override(self, new_owners) -> '_MCA_MemorySpaceOverrided':
+        return _MCA_MemorySpaceOverrided(original_mem_space=self, new_owners=new_owners)
+    
+class _MCA_MemorySpaceOverrided(MCA_MemorySpace):
+    def __init__(self, original_mem_space: MCA_MemorySpace, new_owners: Sequence[int]):
+        # do not call super().__init__ since we want to override the original memory space without creating a new one in the global context
+        self._original_mem_space = original_mem_space
+        
+        self._device = self._original_mem_space.device
+        self._mem_type = self._original_mem_space.mem_type
+        self._owner_ids = new_owners
+        self._size_per_owner = self._original_mem_space.size_per_owner    
+        self._is_removed = False
+        
+    def empty_space(self, owner_id: int) -> int:
+        return self._original_mem_space.empty_space(owner_id)
+    
+    def allocate(self, owner_id: int, size: int) -> Pointer:
+        return self._original_mem_space.allocate(owner_id, size)
+            
+    def remove(self):
+        raise ValueError(f"Overrided memory space cannot be removed directly. Please remove the original memory space instead.")
+    
+    def override(self, new_owners) -> '_MCA_MemorySpaceOverrided':
+        return _MCA_MemorySpaceOverrided(original_mem_space=self._original_mem_space, new_owners=new_owners)
 
 class MCA_MainMemorySpace(MCA_MemorySpace):
     def __init__(self, device: 'MCA_DeviceBase', size_per_channel: int, channel_ids: Sequence[int]=None,):
@@ -164,10 +196,7 @@ class MCA_MainMemorySpace(MCA_MemorySpace):
     
     def allocate(self, channel_id, size):
         return super().allocate(channel_id, size)
-    
-    def override_owner_ids(self, channel_ids: Sequence[int]) -> 'MCA_MainMemorySpace':
-        return super().override_owner_ids(channel_ids)
-            
+
 class MCA_L1MemorySpace(MCA_MemorySpace):
     def __init__(self, device: 'MCA_DeviceBase', size_per_bank: int, core_group: MCA_CoreGroup):
         super().__init__(device=device, mem_type=GlobalContextMemType.L1, size_per_owner=size_per_bank, owner_ids=core_group)
@@ -177,10 +206,6 @@ class MCA_L1MemorySpace(MCA_MemorySpace):
     
     def allocate(self, core_id, size):
         return super().allocate(core_id, size)
-    
-    def override_owner_ids(self, core_group: MCA_CoreGroup):
-        return super().override_owner_ids(core_group)
-
 
 class MCA_DeviceBase(Device):
     def __init__(
@@ -270,12 +295,14 @@ class MCA_DeviceBase(Device):
     
     def remove_all_main_mem_space(self):
         for i in range(len(self._main_mem_spaces)-1, -1, -1):
-            self._main_mem_spaces[i].remove()
+            if not self._main_mem_spaces[i].is_removed:
+                self._main_mem_spaces[i].remove()
             self._main_mem_spaces.pop(i)
     
     def remove_all_l1_mem_space(self):
         for i in range(len(self._l1_mem_spaces)-1, -1, -1):
-            self._l1_mem_spaces[i].remove()
+            if not self._l1_mem_spaces[i].is_removed:
+                self._l1_mem_spaces[i].remove()
             self._l1_mem_spaces.pop(i)
             
     def clear_all_mem_spaces(self):

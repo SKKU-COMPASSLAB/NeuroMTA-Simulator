@@ -23,12 +23,12 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_group = device.get_npu_core_group((0, 0), (4, 2))
+    core_group = device.get_npu_core_group((0, 0), (6, 2))
     
     M, N, K = 256, 256, 256
     dtype = torch.int16
     acc_dtype = torch.int16
-    broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
+    broadcast_optimize = False  # Enable broadcast optimization to reduce memory and NoC traffic
     sim_mode = "partial_l1"
     
     ifm  = torch.randint(low=0, high=128, size=(M, K), dtype=dtype)
@@ -44,10 +44,10 @@ if __name__ == "__main__":
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    spad_ld_space_size  = parse_mem_cap_str("256KB")
-    spad_st_space_size  = parse_mem_cap_str("256KB")
-    spad_space_size     = spad_ld_space_size + spad_st_space_size
-    spad_mem_space      = device.create_l1_mem_space(spad_space_size, core_group=core_group)
+    set_global_mca_op_option(
+        spad_ld_mem_space_size=parse_mem_cap_str("32KB"), 
+        spad_st_mem_space_size=parse_mem_cap_str("4KB"),
+    )
     
     ifm1_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(ifm)
     wgt1_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
@@ -56,37 +56,37 @@ if __name__ == "__main__":
     wgt2_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
     bias2_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
     ofm2_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
+    wgt3_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
+    bias3_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
+    ofm3_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
     
-    operator1 = MCA_OP_LINEAR(
-        device, spad_ld_space_size, spad_st_space_size, 
-        ifm1_b, wgt1_b, bias1_b, ofm1_b, 
-    )
-    
-    operator2 = MCA_OP_LINEAR(
-        device, spad_ld_space_size, spad_st_space_size, 
-        ofm1_b, wgt2_b, bias2_b, ofm2_b, 
-    )
+    operator1 = MCA_OP_LINEAR(ifm1_b, wgt1_b, bias1_b, ofm1_b)
+    operator2 = MCA_OP_LINEAR(ofm1_b, wgt2_b, bias2_b, ofm2_b)
+    operator3 = MCA_OP_LINEAR(ofm2_b, wgt3_b, bias3_b, ofm3_b)
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator1)
     compiler.add_op(operator2)
-    
-    op_recipes = {
-        operator1.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
-            spatial_reuse_target_buf_idx=1,
-            use_broadcast_optimize=False,
-        ),
-        operator2.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
-            spatial_reuse_target_buf_idx=1,
-            use_broadcast_optimize=False,
-        ),
-    }
+    compiler.add_op(operator3)
     
     global_recipe=MCA_OperatorGraphCompiler.GlobalRecipe(
+        device=device,
         global_core_group=core_group,
         core_group_shape=(2, 2),
-        spad_mem_space=spad_mem_space,
-        op_recipes=op_recipes,
+        op_recipes={
+            operator1.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
+                spatial_reuse_target_buf_idx=1,
+                use_broadcast_optimize=broadcast_optimize,
+            ),
+            operator2.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
+                spatial_reuse_target_buf_idx=1,
+                use_broadcast_optimize=broadcast_optimize,
+            ),
+            operator3.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
+                spatial_reuse_target_buf_idx=1,
+                use_broadcast_optimize=broadcast_optimize,
+            ),
+        },
     )
     
     compiled_ops = compiler.compile(global_recipe, target_ops="ALL")
@@ -116,23 +116,19 @@ if __name__ == "__main__":
     throughput = (total_ops / device.timestamp)
     print(f"overall throughput: {throughput:.2f} OP/cycle")
     
-    simulated = ofm2_b.restore()
-    reference = torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
-    reference = torch.matmul(reference.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
+    simulated1 = ofm1_b.restore()
+    simulated2 = ofm2_b.restore()
+    simulated3 = ofm3_b.restore()
+    reference1 = torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
+    reference2 = torch.matmul(reference1.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
+    reference3 = torch.matmul(reference2.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
     
-    print(f"simulated:\n{simulated}")
-    print(f"reference:\n{reference}")
-    print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
-    
-    if not torch.equal(simulated, reference):
-        mismatch_report = os.path.join(TMP_DIR, "mismatch_report.txt")
-        with open(mismatch_report, "w") as f:
-            content = []
-            for i in range(M):
-                for j in range(N):
-                    sim_val = simulated[i, j].item()
-                    ref_val = reference[i, j].item()
-                    if sim_val != ref_val:
-                        content.append(f"Mismatch at position ({i}, {j}): simulated={sim_val}, reference={ref_val}\n")
-            f.writelines(content)
-        logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+    # print(f"simulated1:\n{simulated1}")
+    # print(f"simulated2:\n{simulated2}")
+    # print(f"simulated3:\n{simulated3}")
+    # print(f"reference1:\n{reference1}")
+    # print(f"reference2:\n{reference2}")
+    # print(f"reference3:\n{reference3}")
+    print(f"simulation1 {'PASSED' if torch.equal(simulated1, reference1) else 'FAILED'}")
+    print(f"simulation2 {'PASSED' if torch.equal(simulated2, reference2) else 'FAILED'}")
+    print(f"simulation3 {'PASSED' if torch.equal(simulated3, reference3) else 'FAILED'}")

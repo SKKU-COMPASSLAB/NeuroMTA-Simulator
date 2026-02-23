@@ -5,6 +5,7 @@ from neuromta.component.core import *
 from neuromta.component.implementation.hardware import *
 from neuromta.component.implementation.tensor_buffer import *
 from neuromta.component.implementation.mapping import *
+from neuromta.component.implementation.operator import *
 
 import neuromta.component.implementation.kernel as mca_kernel_lib
 import neuromta.system.software.common.kernel as common_kernel_lib
@@ -24,10 +25,6 @@ __all__ = [
 
 @mca_operator_method     
 def MCA_OP_LINEAR(
-    device: MCA_DeviceBase,
-    spad_ld_mem_space_size: int,
-    spad_st_mem_space_size: int,
-    
     ifm:  MCA_TensorBuffer,
     wgt:  MCA_TensorBuffer,
     bias: MCA_TensorBuffer,
@@ -37,8 +34,6 @@ def MCA_OP_LINEAR(
         op_type="LINEAR",
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR],
-        spad_ld_mem_space_size=spad_ld_mem_space_size,
-        spad_st_mem_space_size=spad_st_mem_space_size,
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -51,18 +46,12 @@ def MCA_OP_LINEAR(
 
 @mca_operator_method    
 def MCA_OP_RELU_INPLACE(
-    device: MCA_DeviceBase,
-    spad_ld_mem_space_size: int,
-    spad_st_mem_space_size: int,
-    
     ifm:  MCA_TensorBuffer,
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="RELU_INPLACE",
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU_INPLACE],
-        spad_ld_mem_space_size=spad_ld_mem_space_size,
-        spad_st_mem_space_size=spad_st_mem_space_size,
     )
     
     op_sig.add_buffer("ifm", ifm, is_input=True, is_output=True)
@@ -72,10 +61,6 @@ def MCA_OP_RELU_INPLACE(
 
 @mca_operator_method  
 def MCA_OP_LINEAR_RELU(
-    device: MCA_DeviceBase,
-    spad_ld_mem_space_size: int,
-    spad_st_mem_space_size: int,
-    
     ifm:  MCA_TensorBuffer,
     wgt:  MCA_TensorBuffer,
     bias: MCA_TensorBuffer,
@@ -85,8 +70,6 @@ def MCA_OP_LINEAR_RELU(
         op_type="LINEAR_RELU",
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU],
-        spad_ld_mem_space_size=spad_ld_mem_space_size,
-        spad_st_mem_space_size=spad_st_mem_space_size,
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -99,10 +82,6 @@ def MCA_OP_LINEAR_RELU(
 
 @mca_operator_method 
 def MCA_OP_CONV2D(
-    device: MCA_DeviceBase,
-    spad_ld_mem_space_size: int,
-    spad_st_mem_space_size: int,
-    
     ifm:  MCA_TensorBuffer,
     wgt:  MCA_TensorBuffer,
     bias: MCA_TensorBuffer,
@@ -119,8 +98,6 @@ def MCA_OP_CONV2D(
         op_type="CONV2D",
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D],
-        spad_ld_mem_space_size=spad_ld_mem_space_size,
-        spad_st_mem_space_size=spad_st_mem_space_size,
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -142,10 +119,6 @@ def MCA_OP_CONV2D(
 
 @mca_operator_method 
 def MCA_OP_MAXPOOL2D(
-    device: MCA_DeviceBase,
-    spad_ld_mem_space_size: int,
-    spad_st_mem_space_size: int,
-    
     ifm:  MCA_TensorBuffer,
     ofm:  MCA_TensorBuffer,
     
@@ -160,8 +133,6 @@ def MCA_OP_MAXPOOL2D(
         op_type="MAXPOOL2D",
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D],
-        spad_ld_mem_space_size=spad_ld_mem_space_size,
-        spad_st_mem_space_size=spad_st_mem_space_size,
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -181,10 +152,6 @@ def MCA_OP_MAXPOOL2D(
 
 @mca_operator_method 
 def MCA_OP_AVGPOOL2D(
-    device: MCA_DeviceBase,
-    spad_ld_mem_space_size: int,
-    spad_st_mem_space_size: int,
-    
     ifm:  MCA_TensorBuffer,
     ofm:  MCA_TensorBuffer,
     
@@ -199,8 +166,6 @@ def MCA_OP_AVGPOOL2D(
         op_type="AVGPOOL2D",
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_AVGPOOL2D],
-        spad_ld_mem_space_size=spad_ld_mem_space_size,
-        spad_st_mem_space_size=spad_st_mem_space_size,
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -221,10 +186,6 @@ def MCA_OP_AVGPOOL2D(
 
 @mca_operator_method 
 def MCA_OP_FLATTEN(
-    device: MCA_DeviceBase,
-    spad_ld_mem_space_size: int,
-    spad_st_mem_space_size: int,
-    
     ifm:  MCA_TensorBuffer,
     ofm:  MCA_TensorBuffer,
     
@@ -233,8 +194,6 @@ def MCA_OP_FLATTEN(
         op_type="FLATTEN",
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY],
-        spad_ld_mem_space_size=spad_ld_mem_space_size,
-        spad_st_mem_space_size=spad_st_mem_space_size,
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)

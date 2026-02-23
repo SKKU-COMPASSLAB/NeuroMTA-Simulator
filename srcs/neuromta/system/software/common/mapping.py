@@ -362,6 +362,14 @@ def MCA_MAPPER_CONV2D(
                             pbar.update(1)
     
     logger.debug(f"mapper generated {len(op_sig.tiled_ops)} in total")
+    
+    # o_tile_sig_inclusion_flag = {coords: False for coords, _ in op_sig.tiles["ofm"].items()}
+    # for tiled_op in op_sig.tiled_ops:
+    #     if o_tile_sig_inclusion_flag[tiled_op.o_tile.coords]:
+    #         logger.error(f"Duplicate tiled op for OFM tile idx {tiled_op.o_tile.coords} detected in CONV2D mapping!")
+    #     o_tile_sig_inclusion_flag[tiled_op.o_tile.coords] = True
+        
+    # input()
                             
     return op_sig
 

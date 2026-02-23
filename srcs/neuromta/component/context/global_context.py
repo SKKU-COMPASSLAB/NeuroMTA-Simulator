@@ -244,6 +244,13 @@ class MainMemoryConfig:
         
         return math.ceil(size / self.transfer_speed_per_cycles)
     
+    @property
+    def peak_bandwidth_per_cycle(self) -> float:
+        if self.dramsim3_enable:
+            return self.dramsim3_config.peak_bandwidth() / self.processor_clock_freq
+        else:
+            return (self.transfer_speed * self.ch_io_width * self.n_channels) / 8 / self.processor_clock_freq  # Byte/cycle
+    
     def summary(self) -> dict[str, Any]:
         if self.dramsim3_enable:
             return {

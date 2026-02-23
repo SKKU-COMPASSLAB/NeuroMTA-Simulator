@@ -56,10 +56,10 @@ if __name__ == "__main__":
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    spad_ld_space_size  = parse_mem_cap_str("480KB")
-    spad_st_space_size  = parse_mem_cap_str("32KB")
-    spad_space_size     = spad_ld_space_size + spad_st_space_size
-    spad_mem_space      = device.create_l1_mem_space(spad_space_size, core_group=core_group)
+    set_global_mca_op_option(
+        spad_ld_mem_space_size=parse_mem_cap_str("480KB"), 
+        spad_st_mem_space_size=parse_mem_cap_str("32KB"),
+    )
     
     ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(Ws, Cs)).tiling((32, 32)).allocate().update(ifm)
     wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(Ks, Cs)).tiling((32, 32)).allocate().update(wgt)
@@ -67,7 +67,6 @@ if __name__ == "__main__":
     ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(Ws, Ks)).tiling((32, 32)).allocate()
     
     operator = MCA_OP_CONV2D(
-        device, spad_ld_space_size, spad_st_space_size, 
         ifm_b, wgt_b, bias_b, ofm_b, 
         stride=STRIDE, padding=PADDING, dilation=DILATION, groups=groups,
     )
@@ -75,18 +74,16 @@ if __name__ == "__main__":
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
     
-    op_recipes = {
-        operator.op_type: MCA_OperatorGraphCompiler.OperatorRecipe(
-            spatial_reuse_target_buf_idx=1,
-            use_broadcast_optimize=broadcast_optimize,
-        )
-    }
-    
     global_recipe=MCA_OperatorGraphCompiler.GlobalRecipe(
+        device=device,
         global_core_group=core_group,
         core_group_shape=(4, 4),
-        spad_mem_space=spad_mem_space,
-        op_recipes=op_recipes,
+        op_recipes={
+            operator.op_type: MCA_OperatorGraphCompiler.OperatorRecipe(
+                spatial_reuse_target_buf_idx=1,
+                use_broadcast_optimize=broadcast_optimize,
+            )
+        },
     )
     
     compiled_ops = compiler.compile(global_recipe, target_ops="ALL")

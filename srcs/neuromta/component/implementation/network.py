@@ -1,1222 +1,1058 @@
-# import abc
-# import functools
-# import math
-# import warnings
-# import enum
-# import torch
+import abc
+import functools
+import math
+import warnings
+import enum
+import torch
 
-# from collections import deque, defaultdict
-# from typing import Any, Callable, Dict, Iterable, List, Sequence, Set, Callable
+from collections import deque, defaultdict
+from typing import Any, Callable, Dict, Iterable, List, Sequence, Set, Callable
 
-# from neuromta.framework import *
-# from neuromta.component.implementation.hardware import MCA_DeviceBase, MCA_CoreGroup, MCA_L1MemorySpace, MCA_MainMemorySpace, MCA_MemorySpace
-# from neuromta.component.implementation.tensor_buffer import MCA_TensorBuffer
-# # from multiprocessing import Pool
-# from torch.multiprocessing import Pool
+from neuromta.framework import *
+from neuromta.component.context.global_context import GlobalContextMemType
+from neuromta.component.implementation.hardware import MCA_DeviceBase, MCA_CoreGroup, MCA_L1MemorySpace, MCA_MainMemorySpace, MCA_MemorySpace
+from neuromta.component.implementation.tensor_buffer import MCA_TensorBuffer
+from neuromta.component.implementation.mapping import *
+from neuromta.component.implementation.operator import *
+# from multiprocessing import Pool
+from torch.multiprocessing import Pool
 
 
 
-# __all__ = [
-#     "Placeholder",
+__all__ = [
+    "Placeholder",
     
-#     "NetworkGraphEntry",
-#     "NetworkGraphCompiledEntry",
-#     "NetworkGraphContext",
-#     "NetworkGraphCompilationRecipe",
-#     "NetworkGraphCompiler",
-# ]
+    "NetworkGraphEntry",
+    "NetworkGraphCompiledEntry",
+    "NetworkGraphEntryCompileTarget",
+    "NetworkGraphContext",
+    "MCA_NetworkGraphCompiler",
+]
 
 
-# class Placeholder:
-#     def __init__(self, name: str):
-#         self.name = name
+class Placeholder:
+    def __init__(self, name: str):
+        self.name = name
 
 
-# def _check_jit_type_compatibility(s_type, m_arg: Any) -> tuple[bool, bool, Any]:  # flag_compatible, flag_optional, converted arg
-#     try:
-#         m_type = torch._C._jit_try_infer_type(m_arg).type()
+def _check_jit_type_compatibility(s_type, m_arg: Any) -> tuple[bool, bool, Any]:  # flag_compatible, flag_optional, converted arg
+    try:
+        m_type = torch._C._jit_try_infer_type(m_arg).type()
 
-#         if s_type.isSubtypeOf(m_type):
-#             return (True, "Optional" in s_type.kind(), m_arg)
+        if s_type.isSubtypeOf(m_type):
+            return (True, "Optional" in s_type.kind(), m_arg)
 
-#         if s_type.kind() == "BoolType" and m_type.kind() in ("BoolType", "IntType", "NumberType"):
-#             return (True, False, bool(m_arg))
-#         if s_type.kind() == "NumberType" and m_type.kind() in ("IntType", "FloatType"):
-#             return (True, False, m_arg)
-#         elif s_type.kind() == "DeviceObjType" and m_type.kind() in ("StringType"):
-#             return (True, False, torch.device(m_arg))
-#         elif s_type.kind() == "TensorType" and m_type.kind() in ("ListType"):
-#             return (True, False, torch.tensor(m_arg))
-#         elif "Optional" in s_type.kind():
-#             s_opt_type = s_type.getElementType()
-#             _flag_compatible, _, _converted_arg = _check_jit_type_compatibility(s_opt_type, m_arg)
-#             return (_flag_compatible, True, _converted_arg)
-#     except:
-#         return (False, False, m_arg)
+        if s_type.kind() == "BoolType" and m_type.kind() in ("BoolType", "IntType", "NumberType"):
+            return (True, False, bool(m_arg))
+        if s_type.kind() == "NumberType" and m_type.kind() in ("IntType", "FloatType"):
+            return (True, False, m_arg)
+        elif s_type.kind() == "DeviceObjType" and m_type.kind() in ("StringType"):
+            return (True, False, torch.device(m_arg))
+        elif s_type.kind() == "TensorType" and m_type.kind() in ("ListType"):
+            return (True, False, torch.tensor(m_arg))
+        elif "Optional" in s_type.kind():
+            s_opt_type = s_type.getElementType()
+            _flag_compatible, _, _converted_arg = _check_jit_type_compatibility(s_opt_type, m_arg)
+            return (_flag_compatible, True, _converted_arg)
+    except:
+        return (False, False, m_arg)
     
-#     return (False, False, m_arg)
+    return (False, False, m_arg)
 
-# def _check_argument_compatibility(s_arg, m_arg: Any) -> tuple[bool, bool, Any]:
-#     s_type = s_arg.type
+def _check_argument_compatibility(s_arg, m_arg: Any) -> tuple[bool, bool, Any]:
+    s_type = s_arg.type
 
-#     return _check_jit_type_compatibility(s_type=s_type, m_arg=m_arg)
+    return _check_jit_type_compatibility(s_type=s_type, m_arg=m_arg)
 
-# def _get_attr_from_node(node: torch.Node, attr_name: str) -> any:
-#     for attr_types in ['f', 'fs', 'c', 's', 'ss', 'i', 'g', 'gs', 'ival', 't', 'ts', 'ty', 'tys']:
-#         try:
-#             return getattr(node, attr_types)(attr_name)
-#         except:
-#             pass
+def _get_attr_from_node(node: torch.Node, attr_name: str) -> any:
+    for attr_types in ['f', 'fs', 'c', 's', 'ss', 'i', 'g', 'gs', 'ival', 't', 'ts', 'ty', 'tys']:
+        try:
+            return getattr(node, attr_types)(attr_name)
+        except:
+            pass
     
-#     return None
+    return None
 
-# def _find_nonprim_method(method_domain: str, method_name: str, args: list[Any]) -> tuple[Callable, list[Any], dict[str, Any]]:
-#     method = None
+def _find_nonprim_method(method_domain: str, method_name: str, args: list[Any]) -> tuple[Callable, list[Any], dict[str, Any]]:
+    method = None
     
-#     for aten_ref in [getattr(torch.ops, method_domain), torch, torch.nn.functional]:
-#         try:
-#             method = getattr(aten_ref, method_name)
-#             break
-#         except:
-#             pass
+    for aten_ref in [getattr(torch.ops, method_domain), torch, torch.nn.functional]:
+        try:
+            method = getattr(aten_ref, method_name)
+            break
+        except:
+            pass
         
-#     # check schema
-#     pp_args = []
-#     pp_kwargs = {}
+    # check schema
+    pp_args = []
+    pp_kwargs = {}
     
-#     for overload_name in method._overload_names:
-#         schema: torch._C.FunctionSchema = torch._C._get_schema(method._qualified_op_name, overload_name)
+    for overload_name in method._overload_names:
+        schema: torch._C.FunctionSchema = torch._C._get_schema(method._qualified_op_name, overload_name)
         
-#         if len(schema.arguments) < len(args):
-#             continue
+        if len(schema.arguments) < len(args):
+            continue
         
-#         flag_schema_compatible = True
-#         tmp_pp_args = []
-#         tmp_pp_kwargs = {}
+        flag_schema_compatible = True
+        tmp_pp_args = []
+        tmp_pp_kwargs = {}
         
-#         for s_arg, m_arg in zip(schema.arguments, args):
-#             flag_compatible, flag_optional, converted_arg = _check_argument_compatibility(s_arg=s_arg, m_arg=m_arg)
+        for s_arg, m_arg in zip(schema.arguments, args):
+            flag_compatible, flag_optional, converted_arg = _check_argument_compatibility(s_arg=s_arg, m_arg=m_arg)
 
-#             if not flag_compatible and not flag_optional:
-#                 flag_schema_compatible = False
-#             else:
-#                 tmp_pp_kwargs[s_arg.name] = converted_arg
+            if not flag_compatible and not flag_optional:
+                flag_schema_compatible = False
+            else:
+                tmp_pp_kwargs[s_arg.name] = converted_arg
         
-#         if flag_schema_compatible:
-#             pp_args = tmp_pp_args
-#             pp_kwargs = tmp_pp_kwargs
-#             break
+        if flag_schema_compatible:
+            pp_args = tmp_pp_args
+            pp_kwargs = tmp_pp_kwargs
+            break
     
-#     return method, pp_args, pp_kwargs
+    return method, pp_args, pp_kwargs
 
-# def _kahn_topological_sort(graph: Dict[int, Iterable[int]]) -> List[int]:
-#     indeg = defaultdict(int)  # node -> in-degree
-#     nodes: Set[int] = set()
+def _kahn_topological_sort(graph: Dict[int, Iterable[int]]) -> List[int]:
+    indeg = defaultdict(int)  # node -> in-degree
+    nodes: Set[int] = set()
 
-#     # collect nodes and compute indegrees
-#     for u, vs in graph.items():
-#         nodes.add(u)
-#         for v in vs:
-#             nodes.add(v)
-#             indeg[v] += 1
-#         if u not in indeg:
-#             indeg.setdefault(u, indeg[u])
+    # collect nodes and compute indegrees
+    for u, vs in graph.items():
+        nodes.add(u)
+        for v in vs:
+            nodes.add(v)
+            indeg[v] += 1
+        if u not in indeg:
+            indeg.setdefault(u, indeg[u])
 
-#     q = deque([n for n in nodes if indeg.get(n, 0) == 0])
-#     order: List[int] = []
+    q = deque([n for n in nodes if indeg.get(n, 0) == 0])
+    order: List[int] = []
 
-#     while q:
-#         u = q.popleft()
-#         order.append(u)
-#         for v in graph.get(u, []):
-#             indeg[v] -= 1
-#             if indeg[v] == 0:
-#                 q.append(v)
+    while q:
+        u = q.popleft()
+        order.append(u)
+        for v in graph.get(u, []):
+            indeg[v] -= 1
+            if indeg[v] == 0:
+                q.append(v)
 
-#     if len(order) != len(nodes):
-#         raise ValueError("Graph has at least one cycle; topological ordering not possible")
+    if len(order) != len(nodes):
+        raise ValueError("Graph has at least one cycle; topological ordering not possible")
 
-#     return order
+    return order
 
 
-# class NetworkGraphEntry:
-#     class Type(enum.Enum):
-#         PRIM            = enum.auto()  # prim operators (operators starting with "prim::")
-#         GRAPH           = enum.auto()  # graph node (submodule call, but not compiled as runtime kernel e.g., torch.nn.Sequential)
-#         NONPRIM         = enum.auto()  # nonprim operators (operators starting with "aten::", "quantized::", etc.)
-#         PIPELINED       = enum.auto()  # pipelined compiled graph
+class NetworkGraphEntry:
+    class Type(enum.Enum):
+        PRIM            = enum.auto()  # prim operators (operators starting with "prim::")
+        GRAPH           = enum.auto()  # graph node (submodule call, but not compiled as runtime kernel e.g., torch.nn.Sequential)
+        NONPRIM         = enum.auto()  # nonprim operators (operators starting with "aten::", "quantized::", etc.)
+        COMPILED        = enum.auto()  # pipelined compiled graph
         
-#     def __init__(self, node_type: Type, node: torch.Node, **kwargs):
-#         self.node_type = node_type
-#         self.node = node
+    def __init__(self, node_type: Type, node: torch.Node, **kwargs):
+        self.node_type = node_type
+        self.node = node
         
-#         self.subgraph: NetworkGraphCompiler = kwargs.get("subgraph", None)
+        self.subgraph: MCA_NetworkGraphCompiler = kwargs.get("subgraph", None)
+        self.submodule: torch.nn.Module = kwargs.get("submodule", None)
         
-#     @property
-#     def is_prim(self) -> bool:
-#         return self.node_type in (NetworkGraphEntry.Type.PRIM, NetworkGraphEntry.Type.GRAPH)
+        self.is_compilation_target: bool = False
+        
+    @property
+    def is_prim(self) -> bool:
+        return self.node_type in (NetworkGraphEntry.Type.PRIM, NetworkGraphEntry.Type.GRAPH)
     
-#     @property
-#     def is_nonprim(self) -> bool:
-#         return self.node_type == NetworkGraphEntry.Type.NONPRIM
+    @property
+    def is_nonprim(self) -> bool:
+        return self.node_type == NetworkGraphEntry.Type.NONPRIM
     
-#     @property
-#     def is_pipelined(self) -> bool:
-#         return self.node_type == NetworkGraphEntry.Type.PIPELINED
+    @property
+    def is_compiled(self) -> bool:
+        return self.node_type == NetworkGraphEntry.Type.COMPILED
     
-#     @property
-#     def is_compilation_target(self) -> bool:
-#         return False    # dummy implementation (for NetworkGraphCompiledEntry)
+    @property
+    def is_subgraph_available(self) -> bool:
+        return self.subgraph is not None
+        
+    def __str__(self):
+        if self.is_compiled:
+            node_kind = "nmta::compiled"
+            ivars = "COMPILED_INPUTS"
+            ovars = "COMPILED_OUTPUTS"
+        else:
+            node_kind = self.node.kind()
+            ivars = list('%'+i.debugName() for i in self.node.inputs())
+            ovars = list('%'+i.debugName() for i in self.node.outputs())
+        
+        r = f"{self.node_type.name}({node_kind}"
+        r += f", inputs={ivars}, outputs={ovars}"
+        if self.is_subgraph_available:
+            r += f", graph={type(self.subgraph.module).__name__}"
+        return r + ")"
     
-#     @property
-#     def is_compilation_ready(self) -> bool:
-#         return False    # dummy implementation (for NetworkGraphCompiledEntry)
+class NetworkGraphCompiledEntry(NetworkGraphEntry):
+    def __init__(self, entries: 'list[NetworkGraphEntry]', targets: 'list[NetworkGraphEntryCompileTarget]', compiler_recipe: MCA_OperatorGraphCompiler.GlobalRecipe, graph_context: 'NetworkGraphContext'):
+        super().__init__(NetworkGraphEntry.Type.COMPILED, None)
         
-#     @property
-#     def is_compiled(self):
-#         return False    # dummy implementation (for NetworkGraphCompiledEntry)
-    
-#     @property
-#     def is_subgraph_available(self) -> bool:
-#         return self.subgraph is not None
+        logger.debug(f"creating compiled entry with {len(targets)} compile targets")
+        for entry, target in zip(entries, targets):
+            logger.debug(f"compiled entry target: {entry} -> {target.op_method.__name__} with {len(target.buf_sigs)} buffer signatures")
         
-#     def __str__(self):
-#         r = f"{self.node_type.name}({self.node.kind()}"
+        self.entries = entries
+        self.targets = targets
+        self.compiler_recipe = compiler_recipe
         
-#         ivars = list('%'+i.debugName() for i in self.node.inputs())
-#         ovars = list('%'+i.debugName() for i in self.node.outputs())
-        
-#         r += f", inputs={ivars}, outputs={ovars}"
-        
-#         if self.is_subgraph_available:
-#             r += f", graph={type(self.subgraph.module).__name__}"
-        
-#         return r + ")"
-    
-# class NetworkGraphCompiledEntry(NetworkGraphEntry):
-#     class TensorProcessingType(enum.Enum):
-#         PERMUTE = enum.auto()
-        
-#     class TensorProcessing:
-#         def __init__(self, proc_type: 'NetworkGraphCompiledEntry.TensorProcessingType', proc_params: Dict[str, Any]):
-#             self.proc_type = proc_type
-#             self.proc_params = proc_params
-        
-#         @classmethod
-#         def permute(cls, *order):
-#             return cls(
-#                 proc_type=NetworkGraphCompiledEntry.TensorProcessingType.PERMUTE,
-#                 proc_params={'order': order}
-#             )
+        compiler = MCA_OperatorGraphCompiler()
             
-#         def apply(self, tensor: torch.Tensor) -> torch.Tensor:
-#             if self.proc_type == NetworkGraphCompiledEntry.TensorProcessingType.PERMUTE:
-#                 order = self.proc_params['order']
-#                 return tensor.permute(*order)
-#             else:
-#                 raise NotImplementedError(f"unsupported tensor processing type: {self.proc_type}")
-    
-#     class BufferSource:
-#         GLOBAL_CONTEXT = "__global_context"
-        
-#         def __init__(self, key: str | torch.Value, module: Any=GLOBAL_CONTEXT):
-#             self._key = key
-#             self.module = module
+        for entry, target in zip(entries, targets):
+        # for target in targets:
+            logger.debug(f"compiling entry: {entry} with target method: {len(target.buf_sigs)} buffer signatures")
             
-#             if module == NetworkGraphCompiledEntry.BufferSource.GLOBAL_CONTEXT:
-#                 if not isinstance(self._key, torch.Value):
-#                     raise RuntimeError("For GLOBAL_CONTEXT buffer source, key must be a torch.Value instance.")
-#             else:
-#                 if not isinstance(self._key, str):
-#                     raise RuntimeError("For module buffer source, key must be a string representing the attribute name.")
+            for buf_sig in target.buf_sigs:
+                if buf_sig.is_shared_child:
+                    logger.debug(f"  - skipping allocation for pipeline child buffer signature with src: {buf_sig.src_name if buf_sig.has_src else 'N/A'} and dst: {buf_sig.dst_name if buf_sig.has_dst else 'N/A'}")  # pipeline child buffer will be allocated together with its parent buffer, so skip
+                    # logger.info(f"buffer ID: 0x{id(buf_sig.buf):016X}")
+                    continue    # pipeline child buffer will be allocated together with its parent buffer, so skip
+                if buf_sig.is_allocated:
+                    logger.debug(f"  - skipping allocation for already allocated buffer signature with src: {buf_sig.src_name if buf_sig.has_src else 'N/A'} and dst: {buf_sig.dst_name if buf_sig.has_dst else 'N/A'}")  # buffer signature is already allocated, so skip
+                    # logger.info(f"buffer ID: 0x{id(buf_sig.buf):016X}")
+                    continue    # buffer signature is already allocated, so skip
                 
-#         @property
-#         def key(self) -> str:
-#             if self.module == NetworkGraphCompiledEntry.BufferSource.GLOBAL_CONTEXT:
-#                 return self._key.debugName()
-#             else:
-#                 return self._key
-            
-            
-#     class BufferUsage(enum.Enum):
-#         INPUT   = enum.auto()
-#         OUTPUT  = enum.auto()
-#         INPLACE = enum.auto()
-#         PARAMS  = enum.auto()
-        
-#     class BufferMemType(enum.Enum):
-#         MAIN    = enum.auto()
-#         L1      = enum.auto()
-    
-#     class BufferSignature:
-#         def __init__(
-#             self, 
-#             src: 'NetworkGraphCompiledEntry.BufferSource'=None,
-#             dst: 'NetworkGraphCompiledEntry.BufferSource'=None, 
-#             shape: Sequence[int]=None, dtype: torch.dtype=None, shard_shape: Sequence[int]=None, blocked_mapping: bool=False, 
-#             orig_dtype: torch.dtype=None, 
-#             buffer_usage: 'NetworkGraphCompiledEntry.BufferUsage'=None,
-#             buffer_mem_type: 'NetworkGraphCompiledEntry.BufferMemType'=None,
-#             preprocessings: List['NetworkGraphCompiledEntry.TensorProcessing']=None,
-#             postprocessings: List['NetworkGraphCompiledEntry.TensorProcessing']=None,
-#         ):
-#             self.src = src
-#             self.dst = dst
-            
-#             self.shape = shape
-#             self.dtype = dtype
-#             self.shard_shape = shard_shape
-#             self.blocked_mapping = blocked_mapping
-#             self.orig_dtype = orig_dtype if orig_dtype is not None else dtype
-#             self.buffer_usage = buffer_usage if buffer_usage is not None else NetworkGraphCompiledEntry.BufferUsage.PARAMS
-#             self.buffer_mem_type = buffer_mem_type if buffer_mem_type is not None else NetworkGraphCompiledEntry.BufferMemType.MAIN
-#             self.preprocessings = preprocessings if preprocessings is not None else []
-#             self.postprocessings = postprocessings if postprocessings is not None else []
-#             self.ignore: bool = False
-            
-#             if self.shape is None or self.dtype is None or self.shard_shape is None:
-#                 raise RuntimeError("Buffer signature must have valid shape, dtype, and shard_shape.")
-            
-#             if self.is_input and self.src is None:
-#                 raise RuntimeError("Input buffer must have a valid source.")
-#             if self.is_output and self.dst is None:
-#                 raise RuntimeError("Output buffer must have a valid destination.")
-            
-#         def get_shard_size(self) -> int:
-#             return self.shard_shape[0] * self.shard_shape[1] * self.dtype.itemsize
-        
-#         def get_shard_num(self) -> int:
-#             n_height_shards = (self.shape[-2] + self.shard_shape[0] - 1) // self.shard_shape[0]
-#             n_width_shards  = (self.shape[-1] + self.shard_shape[1] - 1) // self.shard_shape[1]
-#             return n_height_shards * n_width_shards
-        
-#         @property
-#         def is_input(self) -> bool:
-#             return self.buffer_usage in (NetworkGraphCompiledEntry.BufferUsage.INPUT, NetworkGraphCompiledEntry.BufferUsage.INPLACE, NetworkGraphCompiledEntry.BufferUsage.PARAMS)
-        
-#         @property
-#         def is_output(self) -> bool:
-#             return self.buffer_usage in (NetworkGraphCompiledEntry.BufferUsage.OUTPUT, NetworkGraphCompiledEntry.BufferUsage.INPLACE)
-        
-#         @property
-#         def is_params(self) -> bool:
-#             return self.buffer_usage == NetworkGraphCompiledEntry.BufferUsage.PARAMS
-        
-#         @property
-#         def is_l1_buffer(self) -> bool:
-#             return self.buffer_mem_type == NetworkGraphCompiledEntry.BufferMemType.L1
-        
-#         @property
-#         def is_main_buffer(self) -> bool:
-#             return self.buffer_mem_type == NetworkGraphCompiledEntry.BufferMemType.MAIN
-    
-#     def __init__(
-#         self, 
-#         node: torch.Node, 
-#         submodule: torch.nn.Module,
-#         buffer_signatures: Dict[str, 'NetworkGraphCompiledEntry.BufferSignature'],
-#         runtime_kwargs: Dict[str, Any],
-#         target_op_method: Callable[..., MCA_Operator],
-#         total_ops: int,
-#     ):
-#         super().__init__(NetworkGraphEntry.Type.GRAPH, node)
-        
-#         self.submodule: torch.nn.Module = submodule
-        
-#         # Common runtime parameters required
-#         self.device:     MCA_DeviceBase = None
-#         self.exe_core_group: MCA_CoreGroup = None
-#         self.mem_core_group: MCA_CoreGroup = None
-        
-#         self.main_data_mem_space: MCA_MainMemorySpace = None
-#         self.l1_data_mem_space_size_per_core: int = None
-#         self.spad_ld_pp_space_size_per_core:  int = None
-#         self.spad_st_pp_space_size_per_core:  int = None
-        
-#         # Buffer signatures
-#         self.buffer_signatures  = buffer_signatures  # name -> BufferSignature
-#         self.runtime_kwargs     = runtime_kwargs
-#         self.target_op_method   = target_op_method
-#         self.total_ops          = total_ops
+                logger.debug(f"  - allocating buffer for buffer signature with src: {buf_sig.src_name if buf_sig.has_src else 'N/A'} and dst: {buf_sig.dst_name if buf_sig.has_dst else 'N/A'}")  # allocate buffer for the buffer signature
+                buf_sig.allocate(graph_context)
+                # logger.info(f"buffer ID: 0x{id(buf_sig.buf):016X}")
                 
-#         self._buffers:     dict[str, MCA_TensorBuffer]   = {}
-#         self._runtime_ops: list[MCA_Operator]            = []
+            _op_method = target.op_method
+            _op_bufs = [buf_sig.buf for buf_sig in target.buf_sigs]
+            _op_kwargs = target.op_kwargs
+            
+            op = _op_method(*_op_bufs, **_op_kwargs)
+            
+            compiler.add_op(op)
 
-#         # Common runtime configuration for operator mapping
-#         self.broadcast_optimize: bool = False
-#         self.broadcast_optimize_targets: list[str]=None
-#         self.auto_dispatch: bool = True
-#         self.mapping_strategy: TiledOperatorGraph = TiledOperatorGraph.CONTIGUOUS
+        self.compiled_ops = compiler.compile(
+            global_recipe=compiler_recipe, 
+            target_ops="ALL"
+        )
         
-#         # Flags
-#         self._is_compiled: bool = False
-    
-#     @property
-#     def is_compilation_target(self) -> bool:
-#         return True
-    
-#     @property
-#     def is_compilation_ready(self) -> bool:
-#         return all([
-#             self.device is not None,
-#             self.exe_core_group is not None,
-#             self.mem_core_group is not None,
-#             self.main_data_mem_space is not None,
-#             self.l1_data_mem_space_size_per_core is not None,
-#             self.spad_ld_pp_space_size_per_core is not None,
-#             self.spad_st_pp_space_size_per_core is not None,
-#         ])
+    def execute(self, graph_context: 'NetworkGraphContext'):
+        # STEP 1: load inputs to buffers
+        for target in self.targets:
+            for buf_sig in target.buf_sigs:
+                buf_sig.load(graph_context)
         
-#     @property
-#     def is_compiled(self):
-#         return self._is_compiled
-    
-#     def get_buffer_name_by_key(self, key: str) -> str:
-#         for buf_name, buf_sig in self.buffer_signatures.items():
-#             if buf_sig.is_input and buf_sig.src.key == key:
-#                 return buf_name
-#             if buf_sig.is_output and buf_sig.dst.key == key:
-#                 return buf_name
-#         return None
-    
-#     def entry_buffer_alloc_method(self, graph_context: 'NetworkGraphContext'):
-#         if not self.is_compilation_ready:
-#             raise RuntimeError("Entry is not ready for compilation.")
+        # STEP 2: execute compiled operators
+        for op_id, compiled_op in self.compiled_ops.items():
+            logger.debug(f"dispatched compiled operator {op_id} to device 0x{id(self.compiler_recipe.device):X}")
+            compiled_op.dispatch(self.compiler_recipe.device, slot_id="MAIN")
         
-#         l1_data_mem_space   = self.device.create_l1_mem_space(self.l1_data_mem_space_size_per_core, core_group=self.mem_core_group)
-#         # spad_ld_mem_space   = self.device.create_l1_mem_space(self.spad_ld_pp_space_size_per_core, core_group=self.exe_core_group)
-#         # spad_st_mem_space   = self.device.create_l1_mem_space(self.spad_st_pp_space_size_per_core, core_group=self.exe_core_group)
+        logger.debug(f"waiting for compiled operators to finish on device 0x{id(self.compiler_recipe.device):X}...")
+        self.compiler_recipe.device.run_kernels()
         
-#         for buf_name, buf_sig in self.buffer_signatures.items():
-#             if buf_sig.ignore: continue
-#             if buf_name in self._buffers.keys(): continue
-            
-#             self._buffers[buf_name] = MCA_TensorBuffer(
-#                 mem_space=l1_data_mem_space if buf_sig.is_l1_buffer else self.main_data_mem_space,
-#                 shape=buf_sig.shape,
-#                 dtype=buf_sig.dtype,
-#                 shard_shape=buf_sig.shard_shape,
-#                 blocked_mapping=buf_sig.blocked_mapping,
-#             ).allocate()
-        
-#         self.device.remove_all_l1_mem_space()    # clean up SPAD memory spaces after compilation
-        
-#     def entry_compile_method(self, graph_context: 'NetworkGraphContext'):
-#         if not self.is_compilation_ready:
-#             raise RuntimeError("Entry is not ready for compilation.")
-        
-#         # l1_data_mem_space   = self.device.create_l1_mem_space(self.l1_data_mem_space_size_per_core, core_group=self.mem_core_group)
-#         spad_ld_mem_space   = self.device.create_l1_mem_space(self.spad_ld_pp_space_size_per_core, core_group=self.exe_core_group)
-#         spad_st_mem_space   = self.device.create_l1_mem_space(self.spad_st_pp_space_size_per_core, core_group=self.exe_core_group)
-        
-#         # for buf_name, buf_sig in self.buffer_signatures.items():
-#         #     if buf_sig.ignore: continue
-#         #     if buf_name in self._buffers.keys(): continue
-            
-#         #     self._buffers[buf_name] = MCA_TensorBuffer(
-#         #         mem_space=l1_data_mem_space if buf_sig.is_l1_buffer else self.main_data_mem_space,
-#         #         shape=buf_sig.shape,
-#         #         dtype=buf_sig.dtype,
-#         #         shard_shape=buf_sig.shard_shape,
-#         #         blocked_mapping=buf_sig.blocked_mapping,
-#         #     ).allocate()
-            
-#         self._runtime_ops.append(
-#             self.target_op_method(
-#                 self.device, self.exe_core_group, spad_ld_mem_space, spad_st_mem_space,
-#                 **self._buffers,
-#                 **self.runtime_kwargs,
-#                 broadcast_optimize=True,
-#                 mapping_strategy=TiledOperatorGraph.OUTPUT_STATIONARY,
-#             )
-#         )
-        
-#         self.device.remove_all_l1_mem_space()    # clean up SPAD memory spaces after compilation
-        
-#         self._is_compiled = True
-        
-#     def entry_buffer_init_method(self, graph_context: 'NetworkGraphContext', skip_pure_input_buffers: bool=False):
-#         for buf_name, buf_sig in self.buffer_signatures.items():
-#             if buf_sig.ignore: continue
-#             if not buf_sig.is_input: continue
-#             if skip_pure_input_buffers and buf_sig.buffer_usage == NetworkGraphCompiledEntry.BufferUsage.INPUT: continue
-            
-#             if buf_sig.src.module == NetworkGraphCompiledEntry.BufferSource.GLOBAL_CONTEXT:
-#                 buf_data = graph_context[buf_sig.src.key]
-#             else:
-#                 buf_data = getattr(buf_sig.src.module, buf_sig.src.key)
-            
-#             for proc in buf_sig.preprocessings:
-#                 buf_data = proc.apply(buf_data)
-            
-#             buf = self._buffers[buf_name]
-#             buf.update(buf_data.to(buf_sig.dtype))
-            
-#     def entry_buffer_finalize_method(self, graph_context: 'NetworkGraphContext'):
-#         for buf_name, buf_sig in self.buffer_signatures.items():
-#             if not buf_sig.is_output: continue
-            
-#             if buf_sig.dst.module != NetworkGraphCompiledEntry.BufferSource.GLOBAL_CONTEXT:
-#                 raise RuntimeError("Output buffer source must be GLOBAL_CONTEXT.")
-            
-#             buf = self._buffers[buf_name]
-#             buf_data = buf.restore()
-            
-#             for proc in buf_sig.postprocessings:
-#                 buf_data = proc.apply(buf_data)
-            
-#             graph_context[buf_sig.dst.key] = buf_data.to(buf_sig.orig_dtype)
-    
-#     def execute(self, graph_context: 'NetworkGraphContext'):
-#         if not self.is_compiled:
-#             raise RuntimeError("Compiled entry is not ready for execution.")
-        
-#         self.entry_buffer_init_method(graph_context)
-        
-#         for op in self._runtime_ops:
-#             op.dispatch()
-            
-#         logger.debug(f"[TIMESTAMP {self.device.timestamp:<8d}] start executing compiled graph entry: {self}")
-
-#         while not self.device.is_idle:
-#             self.device.run_kernels(
-#                 sync_target_core_groups=[self.exe_core_group.core_ids,],
-#             )
-            
-#         self.entry_buffer_finalize_method(graph_context)
-
-#     def __str__(self):
-#         r = f"COMPILED_GRAPH({self.node.kind()}"
-        
-#         ivars = list('%'+i.debugName() for i in self.node.inputs())
-#         ovars = list('%'+i.debugName() for i in self.node.outputs())
-        
-#         r += f", inputs={ivars}, outputs={ovars}"
-#         r += f", submodule={type(self.submodule).__name__}"
-        
-#         return r + ")"
-    
-# class NetworkGraphCompiledEntryPipelined(NetworkGraphEntry):
-#     def __init__(
-#         self,
-#         *entries: NetworkGraphCompiledEntry,
-#     ):
-#         super().__init__(NetworkGraphEntry.Type.PIPELINED, None)
-        
-#         self.device: MCA_DeviceBase = None
-#         self.entries: List[NetworkGraphCompiledEntry] = list(entries)
-        
-#         for e in self.entries:
-#             if not isinstance(e, NetworkGraphCompiledEntry):
-#                 raise RuntimeError("All entries in pipelined compiled entry must be NetworkGraphCompiledEntry instances.")
-#             if not e.is_compilation_target:
-#                 raise RuntimeError("All entries in pipelined compiled entry must be compilation targets.")
-            
-#             if self.device is None:
-#                 self.device = e.device
-#             elif id(self.device) != id(e.device):
-#                 raise RuntimeError("All entries in pipelined compiled entry must share the same device.")
-    
-#     @property
-#     def is_compilation_target(self) -> bool:
-#         return True
-    
-#     @property
-#     def is_compilation_ready(self) -> bool:
-#         return all([e.is_compilation_ready for e in self.entries])
-        
-#     @property
-#     def is_compiled(self):
-#         return all([e.is_compiled for e in self.entries])
-    
-#     def entry_buffer_alloc_method(self, graph_context: 'NetworkGraphContext'):
-#         if not self.is_compilation_ready:
-#             raise RuntimeError("Entry is not ready for compilation.")
-        
-#         # STEP 1: share buffers between dependent entries
-#         for p_idx, p_entry in enumerate(self.entries):
-#             for f_entry in self.entries[p_idx+1:]:
-#                 for o in p_entry.node.outputs():
-#                     if o in f_entry.node.inputs():
-#                         p_buf_name = p_entry.get_buffer_name_by_key(o.debugName())
-#                         f_buf_name = f_entry.get_buffer_name_by_key(o.debugName())
-                        
-#                         p_entry.buffer_signatures[p_buf_name].buffer_mem_type = NetworkGraphCompiledEntry.BufferMemType.L1
-#                         f_entry.buffer_signatures[f_buf_name].ignore = True
-                        
-#             p_entry.entry_buffer_alloc_method(graph_context)
-            
-#             for f_entry in self.entries[p_idx+1:]:
-#                 for o in p_entry.node.outputs():
-#                     if o in f_entry.node.inputs():
-#                         f_entry._buffers[f_buf_name] = p_entry._buffers[p_buf_name]  # share the buffer object
-    
-#     def entry_compile_method(self, graph_context: 'NetworkGraphContext'):
-#         if not self.is_compilation_ready:
-#             raise RuntimeError("Entry is not ready for compilation.")
-        
-#         # STEP 2: setup pipelining between dependent entries
-#         for p_idx, p_entry in enumerate(self.entries):
-#             p_entry.entry_compile_method(graph_context)
-            
-#             for f_entry in self.entries[p_idx+1:]:
-#                 for o in p_entry.node.outputs():
-#                     if o in f_entry.node.inputs():
-#                         p_buf_name = p_entry.get_buffer_name_by_key(o.debugName())
-#                         f_buf_name = f_entry.get_buffer_name_by_key(o.debugName())
-                        
-#                         for p_op in p_entry._runtime_ops:
-#                             for f_op in f_entry._runtime_ops:
-#                                 p_op.pipeline(dst_op=f_op, src_buf_name=p_buf_name, dst_buf_name=f_buf_name)
-                                
-#     def entry_buffer_init_method(self, graph_context: 'NetworkGraphContext'):
-#         for e in self.entries:
-#             e.entry_buffer_init_method(graph_context)
-            
-#     def entry_buffer_finalize_method(self, graph_context: 'NetworkGraphContext'):
-#         for e in self.entries:
-#             e.entry_buffer_finalize_method(graph_context)
-    
-#     def execute(self, graph_context: 'NetworkGraphContext'):
-#         if not self.is_compiled:
-#             raise RuntimeError("Compiled entry is not ready for execution.")
-        
-#         self.entry_buffer_init_method(graph_context)
-        
-#         sync_target_core_groups = []
-        
-#         for e in self.entries:
-#             sync_target_core_groups.append(e.exe_core_group.core_ids)
-            
-#             # for op in e._runtime_ops:
-#             op = e._runtime_ops[0]  # assume single op per compiled entry for pipelining
-#             op.dispatch()
+        # STEP 3: store outputs from buffers to graph context
+        for target in self.targets:
+            for buf_sig in target.buf_sigs:
+                buf_sig.store(graph_context)
                 
-#         while not self.device.is_idle:
-#             self.device.run_kernels(
-#                 sync_target_core_groups=sync_target_core_groups,
-#             )
+    def summary(self) -> dict[str, Any]:
+        # import os
+        # import json
+        # _tmp_dir = os.path.join(os.curdir, ".tmp")
+        # os.makedirs(_tmp_dir, exist_ok=True)
+        
+        # for op_id, compiled_op in self.compiled_ops.items():
+        #     tmp_output_path = os.path.join(_tmp_dir, f"compiled_op_{id(self):012X}_summary_{op_id}.json")
+        #     with open(tmp_output_path, "w") as f:
+        #         json.dump(compiled_op.summary(), f, indent=4)
+        #         logger.info(f"Compiled operator summary saved to '{tmp_output_path}'.")
+        
+        return {
+            op_id: compiled_op.summary()
+            for op_id, compiled_op in self.compiled_ops.items()
+        }
+    
+class NetworkGraphEntryCompileTarget:
+    class TensorProcessing:
+        def __init__(self, proc_type: str, proc_params: Dict[str, Any]):
+            self.proc_type = proc_type
+            self.proc_params = proc_params
+        
+        @classmethod
+        def permute(cls, *order):
+            return cls(
+                proc_type='permute',
+                proc_params={'order': order}
+            )
             
-#         self.entry_buffer_finalize_method(graph_context)
-        
-#     def __str__(self):
-#         graph_types = [type(e.submodule).__name__ for e in self.entries]
-#         r = f"PIPELINED_COMPILED_GRAPH({', '.join(graph_types)}"
-#         return r + ")"
-    
-
-# class NetworkGraphContext(dict):
-#     def __init__(self):
-#         super().__init__()
-        
-#     @staticmethod
-#     def _get_primitive_name(name: str) -> str:
-#         if isinstance(name, torch.Node):
-#             name = name.kind()
-#         elif isinstance(name, torch.nn.Module):
-#             name = type(name).__name__
-#         elif isinstance(name, type):
-#             name = name.__name__
-#         return name
-    
-#     def __getitem__(self, key):
-#         if isinstance(key, torch.Value):
-#             key = key.debugName()
-#         elif isinstance(key, Placeholder):
-#             key = key.name
-#         return super().__getitem__(key)
-    
-#     def __setitem__(self, key, value):
-#         if isinstance(key, torch.Value):
-#             key = key.debugName()
-#         elif isinstance(key, Placeholder):
-#             key = key.name
-#         return super().__setitem__(key, value)
-    
-#     def run_prim_entry(self, entry: NetworkGraphEntry, trace_mode: bool=False):
-#         node = entry.node   
-#         node_domain, node_action = node.kind().split("::")
-        
-#         if node_domain != "prim":
-#             raise Exception(f"only 'prim' domain is supported by the session\nexception occurred for the node: {node.kind()}")
-        
-#         attrs = {attr_name: _get_attr_from_node(node, attr_name) for attr_name in node.attributeNames()}
-        
-#         for o in node.outputs():
-#             if o.type().kind() == 'NoneType':
-#                 self[o] = None
-
-#         if node_action == "CallMethod":
-#             submodule = self[list(node.inputs())[0]]
-#             args = [self[i] for i in list(node.inputs())[1:]]
-#             method_name = attrs['name']
+        @classmethod
+        def to_dtype(cls, dtype: torch.dtype):
+            return cls(
+                proc_type='to_dtype',
+                proc_params={'dtype': dtype}
+            )
             
-#             if isinstance(submodule, torch.nn.Module) and "forward" in method_name:
-#                 if entry.is_compilation_target:
-#                     outputs = submodule(*args)
-#                 elif entry.node_type == NetworkGraphEntry.Type.GRAPH:
-#                     outputs = entry.subgraph.run_graph(*args, trace_mode=trace_mode)
-#             else:
-#                 method = getattr(submodule, method_name)
-#                 outputs = method(*args)
+        def apply(self, tensor: torch.Tensor) -> torch.Tensor:
+            if self.proc_type == 'permute':
+                order = self.proc_params['order']
+                return tensor.permute(*order)
+            elif self.proc_type == 'to_dtype':
+                dtype = self.proc_params['dtype']
+                return tensor.to(dtype)
+            else:
+                raise NotImplementedError(f"unsupported tensor processing type: {self.proc_type}")
+    
+    class BufferSignature:
+        CONTEXT = "CONTEXT"
+        
+        def __init__(
+            self, 
+            shape: Sequence[int], dtype: torch.dtype, shard_shape: Sequence[int], tile_shape: Sequence[int], blocked_mapping: bool=False, 
+            orig_dtype: torch.dtype=None, 
+            preprocessings: List['NetworkGraphEntryCompileTarget.TensorProcessing']=None,
+            postprocessings: List['NetworkGraphEntryCompileTarget.TensorProcessing']=None,
+        ):
+            # Information from USER
+            self.shape = shape
+            self.dtype = dtype
+            self.shard_shape = shard_shape
+            self.tile_shape = tile_shape
+            self.blocked_mapping = blocked_mapping
+            self.orig_dtype = orig_dtype if orig_dtype is not None else dtype
+            self.preprocessings = preprocessings if preprocessings is not None else []
+            self.postprocessings = postprocessings if postprocessings is not None else []
             
-#             if len(list(node.outputs())) == 1:
-#                 self[node.output()] = outputs
-#             else:
-#                 for idx, o in enumerate(node.outputs()):
-#                     self[o] = outputs[idx]
-#         elif node_action == "GetAttr":
-#             self[node.output()] = getattr(self[node.input()], attrs['name'])
-#         elif node_action == "Constant":
-#             self[node.output()] = attrs.get('value', None)
-#         elif node_action == "ListConstruct":
-#             self[node.output()] = [self[i] for i in node.inputs()]
-#         elif node_action == "TupleConstruct":
-#             self[node.output()] = tuple([self[i] for i in node.inputs()])
-#         elif node_action == "NumToTensor":
-#             self[node.output()] = torch.tensor(self[node.inputsAt(0)])
-#         else:
-#             raise Exception(f"action '{node_action}' is not supported by the session in 'prim' domain\nexception occurred for the node: {node.kind()}")
+            if self.shape is None or self.dtype is None or self.shard_shape is None:
+                raise RuntimeError("Buffer signature must have valid shape, dtype, and shard_shape.")
+            
+            self._src: tuple[Any, str] = None
+            self._dst: tuple[Any, str] = None
+            
+            # Information from COMPILER
+            self.mem_space: MCA_MemorySpace = None
+            self.is_shared_child: bool = False
+            self.parent_buf_sig: 'NetworkGraphEntryCompileTarget.BufferSignature' = None
+            self.shared_childs: list[NetworkGraphEntryCompileTarget.BufferSignature] = []
+            
+            # Information filled during RUNTIME
+            self.buf: MCA_TensorBuffer = None
+            
+        def get_shard_size(self) -> int:
+            return self.shard_shape[0] * self.shard_shape[1] * self.dtype.itemsize
         
-#     def run_nonprim_entry(self, entry: NetworkGraphEntry):
-#         node = entry.node
-#         node_domain, node_action = node.kind().split("::")
+        def get_shard_num(self) -> int:
+            n_height_shards = (self.shape[-2] + self.shard_shape[0] - 1) // self.shard_shape[0]
+            n_width_shards  = (self.shape[-1] + self.shard_shape[1] - 1) // self.shard_shape[1]
+            return n_height_shards * n_width_shards
         
-#         args = [self[i] for i in node.inputs()]
-#         method, pp_args, pp_kwargs = _find_nonprim_method(node_domain, node_action, args=args)
+        def load_from(self, key: str, module: Any=CONTEXT):
+            self._src = (module, key)
+            return self
         
-#         if method is None:
-#             raise Exception(f"method '{node_action}' in domain '{node_domain}' not found\nexception occurred for the node: {node.kind()}")
+        def store_to(self, key: str, module: Any=CONTEXT):
+            self._dst = (module, key)
+            return self
         
-#         outputs = method(*pp_args, **pp_kwargs)
+        def register_shared_child(self, child_buf_sig: 'NetworkGraphEntryCompileTarget.BufferSignature'):
+            child_buf_sig.is_shared_child = True
+            child_buf_sig.parent_buf_sig = self
+            self.shared_childs.append(child_buf_sig)
+            
+        def allocate_shared_child(self):
+            for child_buf_sig in self.shared_childs:
+                child_buf_sig.buf = self.buf    # shared child shares the same buffer with parent to enable shared execution and reduce memory usage
+                child_buf_sig.allocate_shared_child()   # recursively allocate shared childs of the child buffer signature
         
-#         if len(list(node.outputs())) == 1:
-#             self[node.output()] = outputs
-#         else:
-#             for idx, o in enumerate(node.outputs()):
-#                 self[o] = outputs[idx]
+        def allocate(self, graph_context: 'NetworkGraphContext'):
+            if self.buf is not None:
+                return
+            if self.is_shared_child:
+                raise Exception("buffer signature for shared entry should not be allocated directly")
+            if self.mem_space is None:
+                raise Exception("buffer signature must have a valid memory space before allocation")
+            
+            self.buf = MCA_TensorBuffer(mem_space=self.mem_space, shape=self.shape, dtype=self.dtype, shard_shape=self.shard_shape, blocked_mapping=self.blocked_mapping).tiling(self.tile_shape).allocate()
                 
-#     def run_compiled_entry(self, entry: NetworkGraphCompiledEntry):
-#         entry.execute(self)
+            self.allocate_shared_child()
+            # for child_buf_sig in self.shared_childs:
+            #     child_buf_sig.buf = self.buf    # shared child shares the same buffer with parent to enable shared execution and reduce memory usage
                 
-#     def run_entry(self, entry: NetworkGraphEntry, trace_mode: bool=False):
-#         # STEP 1: pre-run the entry to prepare inputs/outputs
-#         if entry.is_prim:
-#             self.run_prim_entry(entry, trace_mode=trace_mode)
-#         elif entry.is_nonprim:
-#             self.run_nonprim_entry(entry)
-#         elif entry.is_pipelined:
-#             for sub_entry in entry.entries:
-#                 self.run_entry(sub_entry, trace_mode=True)
-#         else:
-#             raise Exception(f"unsupported entry type: {entry.node_type}")
-        
-#         # STEP 2: run the entry with compiled runtime (if necessary)
-#         if entry.is_compilation_target and not trace_mode:
-#             if entry.is_compiled:
-#                 logger.debug(f"running compiled graph entry: {entry}")
-#                 self.run_compiled_entry(entry)
-#             else:
-#                 logger.warning(f"compiled graph entry is not executable (missing runtime parameters): {entry}")
-#                 pass
-
-
-# class NetworkGraphCompilationRecipe:
-#     DEFAULT = "_DEFAULT"
-    
-#     def __init__(
-#         self, 
-#         device: MCA_DeviceBase,
-#         core_groups: List[MCA_CoreGroup],
-        
-#         main_data_mem_space_size: int,
-#         l1_mem_space_size_per_core: int,
-#         l1_spad_ld_pp_space_ratio: float,
-#         l1_spad_st_pp_space_ratio: float,
-        
-#         max_pipeline_window: int,
-#     ):
-#         self.device = device
-#         self.core_groups = core_groups
-        
-#         self.main_data_mem_space_size = main_data_mem_space_size
-#         self.l1_mem_space_size_per_core = l1_mem_space_size_per_core
-#         self.l1_spad_ld_pp_space_ratio = l1_spad_ld_pp_space_ratio
-#         self.l1_spad_st_pp_space_ratio = l1_spad_st_pp_space_ratio
-        
-#         self.max_pipeline_window = max_pipeline_window
+        def load(self, graph_context: 'NetworkGraphContext'):
+            if not self.is_allocated:
+                raise Exception("buffer must be allocated before loading")
             
-#     def supports(self, module_type: type | str) -> bool:
-#         if isinstance(module_type, type):
-#             module_type = module_type.__name__
-#         elif isinstance(module_type, torch.nn.Module):
-#             module_type = type(module_type).__name__
-#         return hasattr(self, module_type)
-    
-#     def get_compiled_entry(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.Module) -> NetworkGraphCompiledEntry:
-#         if not self.supports(type(submodule)):
-#             raise Exception(f"compilation recipe does not support module type: {type(submodule).__name__}")
-        
-#         compile_method = getattr(self, type(submodule).__name__)
-#         compiled_entry = compile_method(graph_context, node, submodule)
-        
-#         if not isinstance(compiled_entry, NetworkGraphCompiledEntry):
-#             raise Exception("compilation recipe method must return a NetworkGraphCompiledEntry instance")
-        
-#         return compiled_entry
-    
-#     @staticmethod
-#     def recipe(func: Callable):
-#         @functools.wraps(func)
-#         def _wrapper(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.Module) -> NetworkGraphCompiledEntry:
-#             if not isinstance(submodule, torch.nn.Module):
-#                 raise Exception("recipe methods can only compile torch.nn.Module submodules")
-#             entry = func(self, graph_context, node, submodule)
-#             if not isinstance(entry, NetworkGraphCompiledEntry):
-#                 raise Exception("recipe methods must return a NetworkGraphCompiledEntry instance")
-#             return entry
-#         return _wrapper
-    
-#     @property
-#     def l1_data_mem_space_size_per_core(self) -> int:
-#         _l1_data_mem_space_ratio = 1.0 - (self.l1_spad_ld_pp_space_ratio + self.l1_spad_st_pp_space_ratio)
-#         return math.floor(self.l1_mem_space_size_per_core * _l1_data_mem_space_ratio)
-    
-#     @property
-#     def spad_ld_pp_space_size_per_core(self) -> int:
-#         return math.floor(self.l1_mem_space_size_per_core * self.l1_spad_ld_pp_space_ratio)
-    
-#     @property
-#     def spad_st_pp_space_size_per_core(self) -> int:
-#         return math.floor(self.l1_mem_space_size_per_core * self.l1_spad_st_pp_space_ratio)
-
-
-# def _run_compiled_entry(args):
-#     entry: NetworkGraphCompiledEntry
-#     graph_context: NetworkGraphContext
-    
-#     entry, graph_context = args
-#     logger.debug(f"running compiled graph entry in parallel: {entry}")
-#     graph_context.run_entry(entry, trace_mode=False)
-#     logger.debug(f"finished running compiled graph entry in parallel: {entry}")
-    
-# def _distribute_resources(total: int, weights: list[float]) -> list[int]:
-#     n = len(weights)
-    
-#     if total < n:
-#         raise ValueError("Insufficient total resources to allocate at least 1 unit per entity.")
-    
-#     allocations = [1] * n
-#     remaining_resources = total - n
-    
-#     sum_weights = sum(weights)
-
-#     additional_allocations = []
-#     for w in weights:
-#         share = (w / sum_weights) * remaining_resources
-#         additional_allocations.append(share)
-    
-#     for i in range(n):
-#         int_share = int(additional_allocations[i])
-#         allocations[i] += int_share
-    
-#     current_sum = sum(allocations)
-#     leftover = total - current_sum
-    
-#     if leftover > 0:
-#         remainders = [(i, additional_allocations[i] - int(additional_allocations[i])) for i in range(n)]
-#         remainders.sort(key=lambda x: x[1], reverse=True)
-        
-#         for i in range(int(leftover)):
-#             idx = remainders[i][0]
-#             allocations[idx] += 1
+            if self.has_src:
+                src_module, src_key = self.src
+                if src_module == self.CONTEXT:
+                    src_tensor = graph_context[src_key]
+                else:
+                    src_tensor = getattr(src_module, src_key)
+                for preproc in self.preprocessings:
+                    src_tensor = preproc.apply(src_tensor)
+                src_tensor = src_tensor.to(self.dtype) if src_tensor.dtype != self.dtype else src_tensor   # convert to buffer dtype if necessary
+                self.buf.update(src_tensor)
+                
+        def store(self, graph_context: 'NetworkGraphContext'):
+            if not self.is_allocated:
+                raise Exception("buffer must be allocated before storing")
             
-#     return allocations
-
-# class NetworkGraphCompiler:
-#     def __init__(
-#         self, 
-#         module: torch.nn.Module, 
-#         graph_ivars: list[torch.Value], 
-#         graph_ovars: list[torch.Value], 
-#         graph_nodes: list[torch.Node], 
-#         graph_context: NetworkGraphContext, 
-#         graph_entries: list[NetworkGraphEntry],
-#         graph_recipe: NetworkGraphCompilationRecipe,
-#     ):
-#         self.module = module
-#         self.graph_ivars = graph_ivars
-#         self.graph_ovars = graph_ovars
-#         self.graph_nodes = graph_nodes
-#         self.graph_context = graph_context
-#         self.graph_entries = graph_entries
-#         self.graph_recipe = graph_recipe
+            dst_tensor = self.buf.restore()
+            for postproc in self.postprocessings:
+                dst_tensor = postproc.apply(dst_tensor)
+            dst_tensor = dst_tensor.to(self.orig_dtype) if self.orig_dtype != self.dtype else dst_tensor   # convert back to original dtype if necessary
+                
+            if self.has_dst:
+                dst_module, dst_key = self.dst
+                if dst_module == self.CONTEXT:
+                    graph_context[dst_key] = dst_tensor
+                else:
+                    setattr(dst_module, dst_key, dst_tensor)
+                
+        def deallocate(self, graph_context: 'NetworkGraphContext'):
+            if self.buf is not None:
+                self.buf = None
         
-#         self._lowered = False
+        @property
+        def src(self):
+            if self.is_shared_child:
+                return self.parent_buf_sig.src
+            return self._src
+        
+        @property
+        def dst(self):
+            # if self.is_shared_child:
+            #     return self.parent_buf_sig.dst
+            return self._dst
+        
+        @property
+        def has_src(self) -> bool:
+            if self.is_shared_child:
+                return self.parent_buf_sig.has_src
+            return self.src is not None
+        
+        @property
+        def has_dst(self) -> bool:
+            # if self.is_shared_child:
+            #     return self.parent_buf_sig.has_dst
+            return self.dst is not None
+        
+        @property
+        def is_allocated(self) -> bool:
+            if self.is_shared_child:
+                return self.parent_buf_sig.is_allocated
+            return self.buf is not None
+        
+        @property
+        def src_name(self) -> str:
+            if not self.has_src:
+                raise RuntimeError("Buffer signature does not have a source")
+            src_module, src_key = self.src
+            if isinstance(src_key, torch.Value):
+                src_key = '%'+src_key.debugName()
+            src_module_name = "CONTEXT" if src_module == self.CONTEXT else f"module(id={id(src_module)}, type={type(src_module).__name__})"
+            return f"{src_module_name}::{src_key}"
+        
+        @property
+        def dst_name(self) -> str:
+            if not self.has_dst:
+                raise RuntimeError("Buffer signature does not have a destination")
+            dst_module, dst_key = self.dst
+            if isinstance(dst_key, torch.Value):
+                dst_key = '%'+dst_key.debugName()
+            dst_module_name = "CONTEXT" if dst_module == self.CONTEXT else f"module(id={id(dst_module)}, type={type(dst_module).__name__})"
+            return f"{dst_module_name}::{dst_key}"
+        
+        @property
+        def is_l1_buffer(self) -> bool:
+            if self.is_shared_child:
+                return self.parent_buf_sig.is_l1_buffer
+            if self.mem_space is None:
+                return False
+            return self.mem_space.mem_type == GlobalContextMemType.L1
+        
+        @property
+        def is_main_buffer(self) -> bool:
+            if self.is_shared_child:
+                return self.parent_buf_sig.is_main_buffer
+            if self.mem_space is None:
+                return False
+            return self.mem_space.mem_type == GlobalContextMemType.MAIN
+        
+        def compare_layout(self, other: 'NetworkGraphEntryCompileTarget.BufferSignature') -> bool:
+            return self.shape == other.shape and self.dtype == other.dtype and self.shard_shape == other.shard_shape and self.blocked_mapping == other.blocked_mapping and self.tile_shape == other.tile_shape
     
-#     @classmethod
-#     def from_trace(
-#         cls, 
-#         module: torch.nn.Module,
-#         graph_recipe: NetworkGraphCompilationRecipe, 
-#         *dummy_inputs: torch.Tensor,
-#         disable_lowering: bool=False, disable_toposort: bool=False, disable_compile: bool=False,
-#     ):
-#         logger.debug(f"tracing module: {type(module).__name__} with dummy inputs: {[i.shape if isinstance(i, torch.Tensor) else type(i) for i in dummy_inputs]}")
+    def __init__(
+        self, 
+        op_method: Callable[..., MCA_OperatorSignature], 
+        buf_sigs: 'list[NetworkGraphEntryCompileTarget.BufferSignature]', 
+        op_kwargs: dict[str, Any],
+        arith_intensity: float=0.0,
+    ):
+        self.op_method: Callable[..., MCA_OperatorSignature] = op_method
+        self.buf_sigs: list[NetworkGraphEntryCompileTarget.BufferSignature] = buf_sigs
+        self.op_kwargs: dict[str, Any] = op_kwargs
+        self.arith_intensity: float = arith_intensity
         
-#         warnings.filterwarnings("ignore", category=UserWarning)    # TODO: suppress leaf Tensor access warning
-#         warnings.filterwarnings("ignore", category=FutureWarning)  # TODO: suppress quantized model warning
-        
-#         # STEP 1: create traced graph (torch.jit.trace)
-#         module = module.eval()
-        
-#         graph_context = NetworkGraphContext()
-        
-#         traced_module = torch.jit.trace(module, *dummy_inputs)
-#         traced_graph = traced_module.graph
 
-#         # STEP 2: parse traced graph to get input/output variables and nodes
-#         graph_ivars = list(traced_graph.inputs())
-#         graph_ovars = list(traced_graph.outputs())
-#         graph_nodes = list(traced_graph.nodes())
+class NetworkGraphContext(dict):
+    def __init__(self):
+        super().__init__()
         
-#         entries: list[NetworkGraphEntry] = []
+    @staticmethod
+    def _get_primitive_name(name: str) -> str:
+        if isinstance(name, torch.Node):
+            name = name.kind()
+        elif isinstance(name, torch.nn.Module):
+            name = type(name).__name__
+        elif isinstance(name, type):
+            name = name.__name__
+        return name
+    
+    def __getitem__(self, key):
+        if isinstance(key, torch.Value):
+            key = key.debugName()
+        elif isinstance(key, Placeholder):
+            key = key.name
+        return super().__getitem__(key)
+    
+    def __setitem__(self, key, value):
+        if isinstance(key, torch.Value):
+            key = key.debugName()
+        elif isinstance(key, Placeholder):
+            key = key.name
+        return super().__setitem__(key, value)
+    
+    def run_prim_entry(self, entry: NetworkGraphEntry, trace_mode: bool=False):
+        node = entry.node   
+        node_domain, node_action = node.kind().split("::")
         
-#         # STEP 3-1: initialize input variables
-#         graph_context[graph_ivars[0]] = module
-#         for idx, ivar in enumerate(graph_ivars[1:]):
-#             graph_context[ivar] = dummy_inputs[idx]
+        if node_domain != "prim":
+            raise Exception(f"only 'prim' domain is supported by the session\nexception occurred for the node: {node.kind()}")
         
-#         # STEP 3-2: construct entries and initialize intermediate variables
-#         for node in graph_nodes:
-#             node_domain, node_action = node.kind().split("::")
+        attrs = {attr_name: _get_attr_from_node(node, attr_name) for attr_name in node.attributeNames()}
+        
+        for o in node.outputs():
+            if o.type().kind() == 'NoneType':
+                self[o] = None
+
+        if node_action == "CallMethod":
+            submodule = self[list(node.inputs())[0]]
+            args = [self[i] for i in list(node.inputs())[1:]]
+            method_name = attrs['name']
             
-#             # STEP 3-2-1: prim nodes
-#             if node_domain == "prim":
-#                 entry = NetworkGraphEntry(NetworkGraphEntry.Type.PRIM, node)
-#                 attrs = {attr_name: _get_attr_from_node(node, attr_name) for attr_name in node.attributeNames()}
+            if isinstance(submodule, torch.nn.Module) and "forward" in method_name:
+                if entry.is_compilation_target:
+                    outputs = submodule(*args)
+                elif entry.node_type == NetworkGraphEntry.Type.GRAPH:
+                    outputs = entry.subgraph.run_graph(*args, trace_mode=trace_mode)
+            else:
+                method = getattr(submodule, method_name)
+                outputs = method(*args)
+            
+            if len(list(node.outputs())) == 1:
+                self[node.output()] = outputs
+            else:
+                for idx, o in enumerate(node.outputs()):
+                    self[o] = outputs[idx]
+        elif node_action == "GetAttr":
+            self[node.output()] = getattr(self[node.input()], attrs['name'])
+        elif node_action == "Constant":
+            self[node.output()] = attrs.get('value', None)
+        elif node_action == "ListConstruct":
+            self[node.output()] = [self[i] for i in node.inputs()]
+        elif node_action == "TupleConstruct":
+            self[node.output()] = tuple([self[i] for i in node.inputs()])
+        elif node_action == "NumToTensor":
+            self[node.output()] = torch.tensor(self[node.inputsAt(0)])
+        else:
+            raise Exception(f"action '{node_action}' is not supported by the session in 'prim' domain\nexception occurred for the node: {node.kind()}")
+        
+    def run_nonprim_entry(self, entry: NetworkGraphEntry):
+        node = entry.node
+        node_domain, node_action = node.kind().split("::")
+        
+        args = [self[i] for i in node.inputs()]
+        method, pp_args, pp_kwargs = _find_nonprim_method(node_domain, node_action, args=args)
+        
+        if method is None:
+            raise Exception(f"method '{node_action}' in domain '{node_domain}' not found\nexception occurred for the node: {node.kind()}")
+        
+        outputs = method(*pp_args, **pp_kwargs)
+        
+        if len(list(node.outputs())) == 1:
+            self[node.output()] = outputs
+        else:
+            for idx, o in enumerate(node.outputs()):
+                self[o] = outputs[idx]
+                
+    def run_compiled_entry(self, entry: NetworkGraphCompiledEntry, trace_mode: bool=False):
+        if trace_mode:
+            for ee in entry.entries:
+                self.run_entry(ee, trace_mode=trace_mode)
+        else:
+            entry.execute(self)
+                
+    def run_entry(self, entry: NetworkGraphEntry, trace_mode: bool=False):
+        # STEP 1: pre-run the entry to prepare inputs/outputs
+        if entry.is_prim:
+            self.run_prim_entry(entry, trace_mode=trace_mode)
+        elif entry.is_nonprim:
+            self.run_nonprim_entry(entry)
+        elif entry.is_compiled:
+            self.run_compiled_entry(entry, trace_mode=True)   # for compiled entry, pre-run with trace_mode=True to prepare inputs/outputs without executing the compiled kernels
+        else:
+            raise Exception(f"unsupported entry type: {entry.node_type}")
+            
+        # STEP 2: run the entry with compiled runtime (if necessary)
+        if entry.is_compiled and not trace_mode:
+            logger.debug(f"running compiled graph entry: {entry}")
+            self.run_compiled_entry(entry, trace_mode=False)
 
-#                 if node_action == "CallMethod":
-#                     submodule = graph_context[list(node.inputs())[0]]
-#                     method_name = attrs['name']
+
+class MCA_NetworkGraphCompiler:
+    class NetworkRecipe:
+        def __init__(
+            self, 
+            device: MCA_DeviceBase, 
+            global_core_group: MCA_CoreGroup,
+            core_group_shape: Iterable[int],
+            
+            main_data_mem_space_size_per_channel: int,
+            l1_data_mem_space_size_per_core: int,
+            
+            op_recipes: 'dict[str, MCA_OperatorGraphCompiler.OperatorRecipe]'=None,
+        ):
+            self.main_data_mem_space_size_per_channel = main_data_mem_space_size_per_channel
+            self.l1_data_mem_space_size_per_core = l1_data_mem_space_size_per_core
+            
+            self.compiler_recipe = MCA_OperatorGraphCompiler.GlobalRecipe(
+                device=device,
+                global_core_group=global_core_group,
+                core_group_shape=core_group_shape,
+                op_recipes=op_recipes,
+            )
+            
+        def supports(self, module_type: type | str) -> bool:
+            if isinstance(module_type, type):
+                module_type = module_type.__name__
+            elif isinstance(module_type, torch.nn.Module):
+                module_type = type(module_type).__name__
+            return hasattr(self, module_type)
+        
+        def get_compile_target(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.Module) -> NetworkGraphEntryCompileTarget:
+            if not self.supports(type(submodule)):
+                raise Exception(f"compilation recipe does not support module type: {type(submodule).__name__}")
+            
+            compile_method = getattr(self, type(submodule).__name__)
+            compiled_entry = compile_method(graph_context, node, submodule)
+            
+            if not isinstance(compiled_entry, NetworkGraphEntryCompileTarget):
+                raise Exception("compilation recipe method must return a NetworkGraphEntryCompileTarget instance")
+            
+            return compiled_entry
+        
+        @staticmethod
+        def recipe(func: Callable):
+            @functools.wraps(func)
+            def _wrapper(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.Module) -> NetworkGraphEntryCompileTarget:
+                if not isinstance(submodule, torch.nn.Module):
+                    raise Exception("recipe methods can only compile torch.nn.Module submodules")
+                entry = func(self, graph_context, node, submodule)
+                if not isinstance(entry, NetworkGraphEntryCompileTarget):
+                    raise Exception("recipe methods must return a NetworkGraphEntryCompileTarget instance")
+                return entry
+            return _wrapper
+        
+    def __init__(
+        self, 
+        module: torch.nn.Module, 
+        graph_ivars: list[torch.Value], 
+        graph_ovars: list[torch.Value], 
+        graph_nodes: list[torch.Node], 
+        graph_context: NetworkGraphContext, 
+        graph_entries: list[NetworkGraphEntry],
+        graph_recipe: 'MCA_NetworkGraphCompiler.NetworkRecipe',
+    ):
+        self.module = module
+        self.graph_ivars = graph_ivars
+        self.graph_ovars = graph_ovars
+        self.graph_nodes = graph_nodes
+        self.graph_context = graph_context
+        self.graph_entries = graph_entries
+        self.graph_recipe = graph_recipe
+        
+        self._lowered = False
+    
+    @classmethod
+    def from_trace(
+        cls, 
+        module: torch.nn.Module,
+        graph_recipe: 'MCA_NetworkGraphCompiler.NetworkRecipe', 
+        *dummy_inputs: torch.Tensor,
+        disable_lowering: bool=False, disable_toposort: bool=False, disable_compile: bool=False,
+    ):
+        logger.debug(f"tracing module: {type(module).__name__} with dummy inputs: {[i.shape if isinstance(i, torch.Tensor) else type(i) for i in dummy_inputs]}")
+        
+        warnings.filterwarnings("ignore", category=UserWarning)    # TODO: suppress leaf Tensor access warning
+        warnings.filterwarnings("ignore", category=FutureWarning)  # TODO: suppress quantized model warning
+        
+        # STEP 1: create traced graph (torch.jit.trace)
+        module = module.eval()
+        
+        graph_context = NetworkGraphContext()
+        
+        traced_module = torch.jit.trace(module, *dummy_inputs)
+        traced_graph = traced_module.graph
+
+        # STEP 2: parse traced graph to get input/output variables and nodes
+        graph_ivars = list(traced_graph.inputs())
+        graph_ovars = list(traced_graph.outputs())
+        graph_nodes = list(traced_graph.nodes())
+        
+        entries: list[NetworkGraphEntry] = []
+        
+        # STEP 3-1: initialize input variables
+        graph_context[graph_ivars[0]] = module
+        for idx, ivar in enumerate(graph_ivars[1:]):
+            graph_context[ivar] = dummy_inputs[idx]
+        
+        # STEP 3-2: construct entries and initialize intermediate variables
+        for node in graph_nodes:
+            node_domain, node_action = node.kind().split("::")
+            
+            # STEP 3-2-1: prim nodes
+            if node_domain == "prim":
+                entry = NetworkGraphEntry(NetworkGraphEntry.Type.PRIM, node)
+                attrs = {attr_name: _get_attr_from_node(node, attr_name) for attr_name in node.attributeNames()}
+
+                if node_action == "CallMethod":
+                    submodule = graph_context[list(node.inputs())[0]]
+                    method_name = attrs['name']
                     
-#                     # check if the submodule is a torch.nn.Module and method is "forward" -> subgraph or compiled graph
-#                     if isinstance(submodule, torch.nn.Module) and "forward" in method_name:
-#                         args = tuple(graph_context[i] for i in list(node.inputs())[1:])
-#                         subgraph = NetworkGraphCompiler.from_trace(submodule, graph_recipe, *args, disable_lowering=True, disable_toposort=True, disable_compile=True)
+                    # check if the submodule is a torch.nn.Module and method is "forward" -> subgraph or compiled graph
+                    if isinstance(submodule, torch.nn.Module) and "forward" in method_name:
+                        args = tuple(graph_context[i] for i in list(node.inputs())[1:])
 
-#                         if graph_recipe.supports(submodule):
-#                             entry = graph_recipe.get_compiled_entry(graph_context, node, submodule)
-#                         else:
-#                             entry = NetworkGraphEntry(NetworkGraphEntry.Type.GRAPH, node, subgraph=subgraph)
+                        if graph_recipe.supports(submodule):
+                            entry = NetworkGraphEntry(NetworkGraphEntry.Type.PRIM, node, submodule=submodule)
+                            entry.is_compilation_target = True
+                        else:
+                            subgraph = MCA_NetworkGraphCompiler.from_trace(submodule, graph_recipe, *args, disable_lowering=True, disable_toposort=True, disable_compile=True)
+                            entry = NetworkGraphEntry(NetworkGraphEntry.Type.GRAPH, node, subgraph=subgraph)
                     
-#                     # otherwise, the entry remains as prim::CallMethod (not compiled as runtime kernel or operator)
-#                     else:
-#                         entry = NetworkGraphEntry(NetworkGraphEntry.Type.PRIM, node)
+                    # otherwise, the entry remains as prim::CallMethod (not compiled as runtime kernel or operator)
+                    else:
+                        entry = NetworkGraphEntry(NetworkGraphEntry.Type.PRIM, node)
             
-#             # STEP 3-2-2: nonprim nodes (aten::, quantized::, ...)
-#             else:
-#                 entry = NetworkGraphEntry(NetworkGraphEntry.Type.NONPRIM, node)
+            # STEP 3-2-2: nonprim nodes (aten::, quantized::, ...)
+            else:
+                entry = NetworkGraphEntry(NetworkGraphEntry.Type.NONPRIM, node)
             
-#             entries.append(entry)
-#             graph_context.run_entry(entry, trace_mode=True)
+            entries.append(entry)
+            graph_context.run_entry(entry, trace_mode=True)
             
-#         warnings.filterwarnings("default", category=UserWarning)    # TODO: suppress leaf Tensor access warning
-#         warnings.filterwarnings("default", category=FutureWarning)  # TODO: suppress quantized model warning 
+        warnings.filterwarnings("default", category=UserWarning)    # TODO: suppress leaf Tensor access warning
+        warnings.filterwarnings("default", category=FutureWarning)  # TODO: suppress quantized model warning 
             
-#         graph = cls(module, graph_ivars, graph_ovars, graph_nodes, graph_context, entries, graph_recipe)
+        graph = cls(module, graph_ivars, graph_ovars, graph_nodes, graph_context, entries, graph_recipe)
         
-#         if not disable_lowering:
-#             graph.lowering()
-#         if not disable_toposort:
-#             graph.topological_sort()
-#         if not disable_compile:
-#             graph.compile_entries()
-            
-#         return graph
+        if not disable_lowering:
+            graph.lowering()
+        if not disable_toposort:
+            graph.topological_sort()
+        if not disable_compile:
+            graph.run_graph(*dummy_inputs, trace_mode=True)   # pre-run the graph to prepare runtime parameters for compilation
+            graph.compile()
+                    
+        return graph
     
-#     def rename_vars(self, var_rename_map: dict[str, str]):
-#         # STEP 1: rename input variables
-#         for ivar in self.graph_ivars:
-#             if ivar.debugName() in var_rename_map:
-#                 ivar.setDebugName(var_rename_map[ivar.debugName()])
+    def rename_vars(self, var_rename_map: dict[str, str]):
+        # STEP 1: rename input variables
+        for ivar in self.graph_ivars:
+            if ivar.debugName() in var_rename_map:
+                ivar.setDebugName(var_rename_map[ivar.debugName()])
                 
-#         # STEP 2: rename output variables
-#         for ovar in self.graph_ovars:
-#             if ovar.debugName() in var_rename_map:
-#                 ovar.setDebugName(var_rename_map[ovar.debugName()])
+        # STEP 2: rename output variables
+        for ovar in self.graph_ovars:
+            if ovar.debugName() in var_rename_map:
+                ovar.setDebugName(var_rename_map[ovar.debugName()])
                 
-#         # STEP 3: rename variables in nodes
-#         for node in self.graph_nodes:
-#             for ivar in node.inputs():
-#                 if ivar.debugName() in var_rename_map:
-#                     ivar.setDebugName(var_rename_map[ivar.debugName()])
-#             for ovar in node.outputs():
-#                 if ovar.debugName() in var_rename_map:
-#                     ovar.setDebugName(var_rename_map[ovar.debugName()])
-                    
-#     def entrywise_compile(self):
-#         raise NotImplementedError("entrywise compilation is not implemented yet.")
+        # STEP 3: rename variables in nodes
+        for node in self.graph_nodes:
+            for ivar in node.inputs():
+                if ivar.debugName() in var_rename_map:
+                    ivar.setDebugName(var_rename_map[ivar.debugName()])
+            for ovar in node.outputs():
+                if ovar.debugName() in var_rename_map:
+                    ovar.setDebugName(var_rename_map[ovar.debugName()])
 
-#     def lowering(self, context_name=None):
-#         logger.debug(f"lowering graph of module: {type(self.module).__name__}")
+    def lowering(self, context_name=None):
+        logger.debug(f"lowering graph of module: {type(self.module).__name__}")
         
-#         if context_name is None:
-#             context_name = self.module.__class__.__name__
+        if context_name is None:
+            context_name = self.module.__class__.__name__
             
-#         # STEP 1: rename all the variables
-#         var_rename_map = {vname: f"{context_name}::{vname}" for vname in self.graph_context.keys()}
-#         self.rename_vars(var_rename_map=var_rename_map)
+        # STEP 1: rename all the variables
+        var_rename_map = {vname: f"{context_name}::{vname}" for vname in self.graph_context.keys()}
+        self.rename_vars(var_rename_map=var_rename_map)
         
-#         # STEP 2: lower subgraphs
-#         lowered_entries: list[NetworkGraphEntry] = []
-#         lowered_graph_nodes: list[torch.Node] = []
+        # STEP 2: lower subgraphs
+        lowered_entries: list[NetworkGraphEntry] = []
+        lowered_graph_nodes: list[torch.Node] = []
         
-#         for entry in self.graph_entries:
-#             if entry.is_subgraph_available:
-#                 # STEP 2-1: lowering subgraph
-#                 subgraph_context_name = context_name + "::" + entry.node.inputsAt(0).debugName().split("::")[-1]
-#                 entry.subgraph.lowering(context_name=subgraph_context_name)
+        for entry in self.graph_entries:
+            if entry.is_subgraph_available:
+                # STEP 2-1: lowering subgraph
+                subgraph_context_name = context_name + "::" + entry.node.inputsAt(0).debugName().split("::")[-1]
+                entry.subgraph.lowering(context_name=subgraph_context_name)
 
-#                 # STEP 2-2: rename subgraph input variables
-#                 var_rename_map = {cvar.debugName(): pvar.debugName() for cvar, pvar in zip(entry.subgraph.graph_ivars, entry.node.inputs())}
-#                 entry.subgraph.rename_vars(var_rename_map=var_rename_map)
+                # STEP 2-2: rename subgraph input variables
+                var_rename_map = {cvar.debugName(): pvar.debugName() for cvar, pvar in zip(entry.subgraph.graph_ivars, entry.node.inputs())}
+                entry.subgraph.rename_vars(var_rename_map=var_rename_map)
                 
-#                 # STEP 2-3: rename subgraph output variables
-#                 var_rename_map = {cvar.debugName(): pvar.debugName() for cvar, pvar in zip(entry.subgraph.graph_ovars, entry.node.outputs())}
-#                 entry.subgraph.rename_vars(var_rename_map=var_rename_map)
+                # STEP 2-3: rename subgraph output variables
+                var_rename_map = {cvar.debugName(): pvar.debugName() for cvar, pvar in zip(entry.subgraph.graph_ovars, entry.node.outputs())}
+                entry.subgraph.rename_vars(var_rename_map=var_rename_map)
                 
-#                 # STEP 2-4: append lowered entries and nodes
-#                 lowered_entries.extend(entry.subgraph.graph_entries)
-#                 lowered_graph_nodes.extend(entry.subgraph.graph_nodes)
-#             else:  
-#                 lowered_entries.append(entry)
-#                 lowered_graph_nodes.append(entry.node)
+                # STEP 2-4: append lowered entries and nodes
+                lowered_entries.extend(entry.subgraph.graph_entries)
+                lowered_graph_nodes.extend(entry.subgraph.graph_nodes)
+            else:  
+                lowered_entries.append(entry)
+                lowered_graph_nodes.append(entry.node)
         
-#         self.graph_entries = lowered_entries
-#         self.graph_nodes = lowered_graph_nodes
+        self.graph_entries = lowered_entries
+        self.graph_nodes = lowered_graph_nodes
         
-#         self._lowered = True
+        self._lowered = True
 
-#         return self
+        return self
         
-#     def topological_sort(self):
-#         logger.debug(f"topological sorting graph of module: {type(self.module).__name__}")
+    def topological_sort(self):
+        logger.debug(f"topological sorting graph of module: {type(self.module).__name__}")
         
-#         # STEP 1: build dependency graph between entries
-#         entry_dept_graph: Dict[int, Set[int]] = {idx: set() for idx in range(len(self.graph_entries))}
+        for entry in self.graph_entries:
+            if entry.is_subgraph_available:
+                entry.subgraph.topological_sort()
         
-#         for entry_idx, entry in enumerate(self.graph_entries[:-1]):
-#             ovars = list(o.debugName() for o in entry.node.outputs())
+        # STEP 1: build dependency graph between entries
+        entry_dept_graph: Dict[int, Set[int]] = {idx: set() for idx in range(len(self.graph_entries))}
+        
+        for entry_idx, entry in enumerate(self.graph_entries[:-1]):
+            ovars = list(o.debugName() for o in entry.node.outputs())
             
-#             for check_idx, check_entry in enumerate(self.graph_entries[entry_idx+1:], start=entry_idx+1):
-#                 ivars = list(i.debugName() for i in check_entry.node.inputs())
+            for check_idx, check_entry in enumerate(self.graph_entries[entry_idx+1:], start=entry_idx+1):
+                ivars = list(i.debugName() for i in check_entry.node.inputs())
                 
-#                 if any(o in ivars for o in ovars):
-#                     entry_dept_graph[entry_idx].add(check_idx)
+                if any(o in ivars for o in ovars):
+                    entry_dept_graph[entry_idx].add(check_idx)
         
-#         # STEP 2: topological sort            
-#         sorted_entry_indices = _kahn_topological_sort(entry_dept_graph)
-#         self.graph_entries = [self.graph_entries[idx] for idx in sorted_entry_indices]
+        # STEP 2: topological sort            
+        sorted_entry_indices = _kahn_topological_sort(entry_dept_graph)
+        self.graph_entries = [self.graph_entries[idx] for idx in sorted_entry_indices]
         
-#         return self
+        return self
     
-#     def compile_entries(self):
-#         # STEP 1: allocate main memory space as specified in the recipe
-#         main_data_mem_space = self.graph_recipe.device.create_main_mem_space(self.graph_recipe.main_data_mem_space_size)
+    def _compile_targets(self, cp_entries: list[NetworkGraphEntry]) -> list[NetworkGraphCompiledEntry]:
+        logger.debug(f"compile targets for {len(cp_entries)} entries")
+        for entry in cp_entries:
+            logger.debug(f"compilation target entry: {entry}")
         
-#         # STEP 2: compile operators
-#         new_entries = []
-
-#         entry_idx = 0
+        compiled_entries: list[NetworkGraphCompiledEntry] = []
         
-#         while entry_idx < len(self.graph_entries):
-#             entry = self.graph_entries[entry_idx]
-            
-#             if entry.is_subgraph_available:
-#                 logger.debug(f"start compiling subgraph entry: {entry}")
-#                 entry.subgraph.compile_entries()
-#                 logger.debug(f"finished compiling subgraph entry: {entry}")
-#             elif entry.is_compilation_target:
-#                 logger.debug(f"compiling graph entry: {entry}")
-                
-#                 device = self.graph_recipe.device
-#                 entry: NetworkGraphCompiledEntry = entry
-                
-#                 for pipeline_window in range(self.graph_recipe.max_pipeline_window, 0, -1):
-#                     _is_pipeline_succeed = True
-                    
-#                     _pipelined_future_entries: list[NetworkGraphCompiledEntry] = []
-#                     _pipeline_st = entry_idx
-#                     _pipeline_ed = min(entry_idx + pipeline_window, len(self.graph_entries))
-                    
-#                     _mem_subcore_groups: dict[int, list[MCA_CoreGroup]] = {}
-#                     _mem_core_group_cursor = 0
-                    
-#                     _n_core_groups = len(self.graph_recipe.core_groups)
-
-#                     if _n_core_groups < pipeline_window:
-#                         _is_pipeline_succeed = False
-#                         break
-                    
-#                     for p_idx in range(_pipeline_st, _pipeline_ed):
-#                         p_entry: NetworkGraphCompiledEntry = self.graph_entries[p_idx]
-#                         if not p_entry.is_compilation_target:
-#                             _is_pipeline_succeed = False
-#                             break
-                        
-#                         _collected_pipelined_bufs: dict[str, list[tuple[int, str]]] = {}
-                        
-#                         for f_idx in range(p_idx+1, _pipeline_ed):
-#                             f_entry: NetworkGraphCompiledEntry = self.graph_entries[f_idx]
-#                             if not f_entry.is_compilation_target:
-#                                 _is_pipeline_succeed = False
-#                                 break
-                            
-#                             for p_ovar in p_entry.node.outputs():
-#                                 for f_ivar in f_entry.node.inputs():
-#                                     if p_ovar.debugName() != f_ivar.debugName():
-#                                         continue
-                                    
-#                                     p_buf_name = p_entry.get_buffer_name_by_key(p_ovar.debugName())
-#                                     f_buf_name = f_entry.get_buffer_name_by_key(f_ivar.debugName())
-                                    
-#                                     if p_buf_name is None:
-#                                         raise RuntimeError(f"cannot find buffer signature name for pipelined output variable: entry_idx={p_idx}, var={p_ovar.debugName()}")
-#                                     if f_buf_name is None:
-#                                         raise RuntimeError(f"cannot find buffer signature name for pipelined input variable: entry_idx={f_idx}, var={f_ivar.debugName()}")
-                                    
-#                                     if p_buf_name not in _collected_pipelined_bufs.keys():
-#                                         _collected_pipelined_bufs[p_buf_name] = []
-                                        
-#                                     _collected_pipelined_bufs[p_buf_name].append((f_idx, f_buf_name)) 
-                                    
-#                         if not _is_pipeline_succeed:
-#                             break
-                        
-#                         _required_mem_segs: list[tuple[int, int]] = []  # [(shard_size, shard_num), ...]
-                        
-#                         for p_buf_name in _collected_pipelined_bufs.keys():
-#                             _shard_size = p_entry.buffer_signatures[p_buf_name].get_shard_size()
-#                             _shard_num  = p_entry.buffer_signatures[p_buf_name].get_shard_num()
-#                             _required_mem_segs.append((_shard_size, _shard_num))
-                            
-#                         if _mem_core_group_cursor >= _n_core_groups:
-#                             _is_pipeline_succeed = False
-#                             break
-                        
-#                         _tmp_mem_core_group = self.graph_recipe.core_groups[_mem_core_group_cursor]
-#                         _mem_core_group_num = 1
-                        
-#                         while True:
-#                             _tmp_n_cores = _tmp_mem_core_group.n_cores
-#                             _tmp_total_mem_usage_per_core = sum([shard_size * math.ceil(shard_num / _tmp_n_cores) for shard_size, shard_num in _required_mem_segs])
-                            
-#                             if _tmp_total_mem_usage_per_core < self.graph_recipe.l1_data_mem_space_size_per_core:
-#                                 break
-                            
-#                             if _mem_core_group_cursor + _mem_core_group_num >= _n_core_groups:
-#                                 _is_pipeline_succeed = False
-#                                 break
-                            
-#                             _tmp_mem_core_group = _tmp_mem_core_group.merge(self.graph_recipe.core_groups[_mem_core_group_cursor + _mem_core_group_num])
-#                             _mem_core_group_num += 1
-                            
-#                         if _is_pipeline_succeed:
-#                             _pipelined_future_entries.append(p_entry)
-#                             _mem_subcore_groups[len(_pipelined_future_entries)-1] = [self.graph_recipe.core_groups[_mem_core_group_cursor + i] for i in range(_mem_core_group_num)]
-#                             _mem_core_group_cursor += _mem_core_group_num
-                            
-#                     # end for p_idx in range(_pipeline_st, _pipeline_ed)
-#                     if _is_pipeline_succeed:    
-#                         total_ops_per_p_entry = [p_entry.total_ops for p_entry in _pipelined_future_entries]
-                        
-#                         _exe_subcore_groups: dict[int, list[MCA_CoreGroup]] = {}
-#                         _exe_core_group_cursor = 0
-                        
-#                         for p_idx, (p_entry, n_exe_core_groups) in enumerate(zip(_pipelined_future_entries, _distribute_resources(total=_n_core_groups, weights=total_ops_per_p_entry))):
-#                             _exe_subcore_groups[p_idx] = self.graph_recipe.core_groups[_exe_core_group_cursor:_exe_core_group_cursor + n_exe_core_groups]
-#                             _exe_core_group_cursor += n_exe_core_groups
-                        
-#                         for p_idx, p_entry in enumerate(_pipelined_future_entries):
-#                             p_entry.device = device
-#                             p_entry.main_data_mem_space = main_data_mem_space
-#                             p_entry.mem_core_group = MCA_CoreGroup.merge_core_groups(_mem_subcore_groups[p_idx])
-#                             p_entry.exe_core_group = MCA_CoreGroup.merge_core_groups(_exe_subcore_groups[p_idx])
-#                             p_entry.l1_data_mem_space_size_per_core = self.graph_recipe.l1_data_mem_space_size_per_core
-#                             p_entry.spad_ld_pp_space_size_per_core  = self.graph_recipe.spad_ld_pp_space_size_per_core
-#                             p_entry.spad_st_pp_space_size_per_core  = self.graph_recipe.spad_st_pp_space_size_per_core
-                        
-#                         entry = NetworkGraphCompiledEntryPipelined(*_pipelined_future_entries)
-                        
-#                         logger.debug(f"pipelining succeeded with window size: {pipeline_window} for entry starting at index: {entry_idx}")
-#                         for p_entry in entry.entries:
-#                             # logger.debug(f"  - pipelined entry: {p_entry} on exe_core_group: {p_entry.exe_core_group}, mem_core_group: {p_entry.mem_core_group}")
-#                             logger.debug(f"  - pipelined entry: {p_entry} on exe_core_group: {p_entry.exe_core_group.n_cores}, mem_core_group: {p_entry.mem_core_group.n_cores}")
-                        
-#                         break
-                
-#                 if not isinstance(entry, NetworkGraphCompiledEntryPipelined):
-#                     entry.device = device
-#                     entry.main_data_mem_space = main_data_mem_space
-#                     entry.exe_core_group = self.graph_recipe.core_groups[0]
-#                     entry.mem_core_group = self.graph_recipe.core_groups[0]
-#                     entry.l1_data_mem_space_size_per_core = self.graph_recipe.l1_data_mem_space_size_per_core
-#                     entry.spad_ld_pp_space_size_per_core  = self.graph_recipe.spad_ld_pp_space_size_per_core
-#                     entry.spad_st_pp_space_size_per_core  = self.graph_recipe.spad_st_pp_space_size_per_core
-                    
-#                 entry.entry_buffer_alloc_method(self.graph_context)
-#                 entry.entry_compile_method(self.graph_context)
-#                 logger.debug(f"finished compiling graph entry: {entry}")
-                
-#             new_entries.append(entry)
-            
-#             # print(f"{entry}: {entry.is_compiled}")
-#             # if isinstance(entry, NetworkGraphCompiledEntryPipelined):
-#             #     for sub_entry in entry.entries:
-#             #         print(f"  - {sub_entry}: {sub_entry.is_compiled}")
-            
-#             if isinstance(entry, NetworkGraphCompiledEntryPipelined):
-#                 entry_idx += len(entry.entries)
-#             else:
-#                 entry_idx += 1
-            
-#         self.graph_entries = new_entries
+        device = self.graph_recipe.compiler_recipe.device
+        core_group = self.graph_recipe.compiler_recipe.global_core_group
         
-#         self.graph_recipe.device.remove_all_main_mem_space()  # clean up main memory spaces after compilation
+        mem_core_groups = core_group.split(shape=self.graph_recipe.compiler_recipe.core_group_shape)
+        mem_core_group_cursor = 0
         
-#     def get_outputs(self):
-#         if len(self.graph_ovars) == 1:
-#             return self.graph_context[self.graph_ovars[0]]
-#         return [self.graph_context[o] for o in self.graph_ovars]
+        l1_data_mem_space   = device.create_l1_mem_space(self.graph_recipe.l1_data_mem_space_size_per_core, core_group=core_group)
+        main_data_mem_space = device.create_main_mem_space(self.graph_recipe.main_data_mem_space_size_per_channel)
+        
+        target_group: list[NetworkGraphEntryCompileTarget] = []
+        entry_group: list[NetworkGraphEntry] = []
+        cached_buf_sigs: list[NetworkGraphEntryCompileTarget.BufferSignature] = []
+        cached_arith_intensity: float = 0.0
+        total_arith_intensity: float = device.mxu_config.peak_op_per_cycle * len(core_group) / device.global_context.config.main_mem_config.peak_bandwidth_per_cycle
+        
+        # for target in targets:
+        for entry in cp_entries:
+            target = self.graph_recipe.get_compile_target(self.graph_context, entry.node, entry.submodule)
+            
+            # STEP 1: identify new and ignored buffers 
+            #   - If the target's buffer signature has the same source as any of the cached buffer signatures, it means the buffer 
+            #     can be pipelined with the cached buffer, so we add the cached buffer signature to the new L1 buffer signatures and 
+            #     ignore the target's buffer signature (i.e., do not assign main memory space to it).
+            #   - If the target's buffer signature has the same destination as any of the cached buffer signatures, it means the buffer 
+            #     can be pipelined with the cached buffer, so we add the cached buffer signature to the new L1 buffer signatures and 
+            #     ignore the target's buffer signature (i.e., do not assign main memory space to it).
+            _new_l1_buf_sigs: list[NetworkGraphEntryCompileTarget.BufferSignature] = []
+            _ignored_buf_srcs: dict[str, NetworkGraphEntryCompileTarget.BufferSignature] = {}
+            
+            for buf_sig in target.buf_sigs:
+                for cached_buf_sig in cached_buf_sigs:
+                    if buf_sig.has_src and cached_buf_sig.has_dst and buf_sig.src_name == cached_buf_sig.dst_name:
+                        _new_l1_buf_sigs.append(cached_buf_sig)
+                        break
+                    if buf_sig.has_src and cached_buf_sig.has_src and buf_sig.src_name == cached_buf_sig.src_name:
+                        _ignored_buf_srcs[buf_sig.src_name] = cached_buf_sig
+                        break
+            
+            # STEP 2: figure out if it is possible to assign new L1 buffer to the current group
+            #   - If the number of memory core groups needed to fit the new L1 buffer signatures exceeds the remaining memory core groups, 
+            #     we start a new group.
+            _tmp_n_mem_core_groups = 0
+            while True:
+                if len(_new_l1_buf_sigs) == 0:
+                    break
+                    
+                _tmp_n_mem_core_groups += 1
+                _tmp_l1_mem_usage_per_core = 0
+                
+                for new_l1_buf_sig in _new_l1_buf_sigs:
+                    if new_l1_buf_sig.is_l1_buffer:
+                        continue    # already assigned to L1 memory space, so skip
+                    
+                    _ss = new_l1_buf_sig.get_shard_size()
+                    _sn = new_l1_buf_sig.get_shard_num()
+                    
+                    _l1_mem_usage = _ss * math.ceil(_sn / _tmp_n_mem_core_groups)
+                    _tmp_l1_mem_usage_per_core += _l1_mem_usage
+                
+                if _tmp_l1_mem_usage_per_core <= self.graph_recipe.l1_data_mem_space_size_per_core:
+                    break
+                
+            _tmp_arith_intensity = target.arith_intensity
+            
+            _check_is_mem_core_group_enough = mem_core_group_cursor + _tmp_n_mem_core_groups <= len(mem_core_groups)
+            _check_is_arith_intensity_enough = cached_arith_intensity + _tmp_arith_intensity <= total_arith_intensity
+            
+            if not _check_is_mem_core_group_enough or not _check_is_arith_intensity_enough:
+                compiled_entry = NetworkGraphCompiledEntry(entry_group, target_group, self.graph_recipe.compiler_recipe, self.graph_context)
+                compiled_entries.append(compiled_entry)
+                    
+                # create a new group and initialize mem core group cursor
+                target_group = []
+                entry_group = []
+                mem_core_group_cursor = 0
+                
+                # recreate memory spaces for the new group
+                l1_data_mem_space.remove()
+                main_data_mem_space.remove()
+                l1_data_mem_space   = device.create_l1_mem_space(self.graph_recipe.l1_data_mem_space_size_per_core, core_group=core_group)
+                main_data_mem_space = device.create_main_mem_space(self.graph_recipe.main_data_mem_space_size_per_channel)
+                
+                # reset cached buffer signatures
+                cached_buf_sigs = []
+                
+                # reset new L1 buffer signatures and ignored buffer sources since new group starts without any buffer reuse
+                _new_l1_buf_sigs = []
+                _tmp_n_mem_core_groups = 0
+            else:
+                cached_arith_intensity += _tmp_arith_intensity
+                mem_core_group_cursor += _tmp_n_mem_core_groups
+                
+                logger.debug(f"  - allocated {_tmp_n_mem_core_groups} memory core groups for new L1 buffers and {len(mem_core_groups) - mem_core_group_cursor} are left")
+                logger.debug(f"  - current target arithmetic intensity is {target.arith_intensity:.2f} and {total_arith_intensity - cached_arith_intensity:.2f} left for the total device")
+            
+            # STEP 3: assign memory spaces to the target's buffer signatures
+            #   - In this step, we assign L1 memory space to the new L1 buffer signatures and main memory space to the rest of the buffer signatures.
+            #   - The buffers are initially located at the main memory space. If the buffer is a producer and opt to be reused by the subsequent target,
+            #     the buffer will be assigned to the new L1 memory space to enable pipelined execution and reduce memory usage. The pipelined one will 
+            #     share the same buffer with the original one.
+            _tmp_mem_core_group = MCA_CoreGroup.merge_core_groups(mem_core_groups[mem_core_group_cursor:mem_core_group_cursor+_tmp_n_mem_core_groups])
+            _tmp_l1_mem_space = l1_data_mem_space.override(_tmp_mem_core_group)
+                
+            for new_l1_buf_sig in _new_l1_buf_sigs:
+                if new_l1_buf_sig.is_l1_buffer:
+                    continue    # already assigned to L1 memory space, so skip
+                
+                new_l1_buf_sig.mem_space = _tmp_l1_mem_space
+            
+            for buf_idx, buf_sig in enumerate(target.buf_sigs):
+                if buf_sig.has_src and buf_sig.src_name in _ignored_buf_srcs:
+                    _ignored_buf_srcs[buf_sig.src_name].register_shared_child(buf_sig)
+                else:
+                    is_pipelined = False
+                    
+                    for cached_buf_sig in cached_buf_sigs:
+                        if buf_sig.has_src and cached_buf_sig.has_dst and buf_sig.src_name == cached_buf_sig.dst_name:
+                            # the buffer can be pipelined with the cached buffer
+                            is_pipelined = True
+                            cached_buf_sig.register_shared_child(buf_sig)
+                            break
+                
+                    if not is_pipelined:
+                        buf_sig.mem_space = main_data_mem_space
+                
+                cached_buf_sigs.append(buf_sig)
+            
+            # STEP 4: add the target to the current group  
+            target_group.append(target)
+            entry_group.append(entry)
+        
+        if len(target_group) > 0:
+            compiled_entry = NetworkGraphCompiledEntry(entry_group, target_group, self.graph_recipe.compiler_recipe, self.graph_context)
+            compiled_entries.append(compiled_entry)
+        
+        l1_data_mem_space.remove()
+        main_data_mem_space.remove()
+        
+        return compiled_entries
     
-#     def run_graph(self, *dummy_inputs, trace_mode: bool=False):
-#         self.graph_context[self.graph_ivars[0]] = self.module
-#         for idx, ivar in enumerate(self.graph_ivars[1:]):
-#             self.graph_context[ivar] = dummy_inputs[idx]
+    def compile(self):
+        logger.debug(f"compiling graph of module: {type(self.module).__name__}")
         
-#         for entry in self.graph_entries:
-#             try:
-#                 self.graph_context.run_entry(entry, trace_mode=trace_mode)
-#             except Exception as e:
-#                 logger.error(f"exception occurred while running the graph with node: {entry.node}")
-#                 raise Exception(f"exception occurred while running the entry: {entry}\n{e}") from e
+        cp_entries: list[NetworkGraphEntryCompileTarget] = []
+        new_entries: list[NetworkGraphEntry] = []
         
-#         return self.get_outputs()
+        for entry in self.graph_entries:
+            if not entry.is_compilation_target:
+                if len(cp_entries) > 0:
+                    compiled_entries = self._compile_targets(cp_entries)
+                    new_entries.extend(compiled_entries)
+                    cp_entries = []
+                
+                # FINAL: add the entry to new entries
+                if entry.is_subgraph_available:
+                    entry.subgraph.compile()
+                new_entries.append(entry)
+            else:
+                # create compilation target and store it in the temporary list
+                cp_entries.append(entry)
+        
+        if len(cp_entries) > 0:
+            compiled_entries = self._compile_targets(cp_entries)
+            new_entries.extend(compiled_entries)
+            cp_entries = []
+        
+        self.graph_entries = new_entries
+        
+        return self
     
-#     def run_graph_compiled_parallel(self, *dummy_inputs):
-#         self.run_graph(*dummy_inputs, trace_mode=True)
-
-#         with Pool() as pool:
-#             pool.map(_run_compiled_entry, [(entry, self.graph_context) for entry in self.graph_entries if entry.is_compiled])
-            
-#         return self.get_outputs()
+    def get_outputs(self):
+        if len(self.graph_ovars) == 1:
+            return self.graph_context[self.graph_ovars[0]]
+        return [self.graph_context[o] for o in self.graph_ovars]
     
-#     def print_graph(self, indent: int=0):
-#         print(" " * indent + f"OPEN_GRAPH[type={type(self.module).__name__}]({', '.join(list('%'+i.debugName() for i in self.graph_ivars))}):")
-#         for entry in self.graph_entries:
-#             print(" " * (indent + 2) + str(entry))
+    def run_graph(self, *dummy_inputs, trace_mode: bool=False):
+        self.graph_context[self.graph_ivars[0]] = self.module
+        for idx, ivar in enumerate(self.graph_ivars[1:]):
+            self.graph_context[ivar] = dummy_inputs[idx]
+        
+        for entry in self.graph_entries:
+            try:
+                self.graph_context.run_entry(entry, trace_mode=trace_mode)
+            except Exception as e:
+                logger.error(f"exception occurred while running the graph with node: {entry.node}")
+                raise Exception(f"exception occurred while running the entry: {entry}\n{e}") from e
+        
+        return self.get_outputs()
+    
+    def print_graph(self, indent: int=0):
+        print(" " * indent + f"OPEN_GRAPH[type={type(self.module).__name__}]({', '.join(list('%'+i.debugName() for i in self.graph_ivars))}):")
+        for entry in self.graph_entries:
+            print(" " * (indent + 2) + str(entry))
             
-#             if entry.is_subgraph_available:
-#                 entry.subgraph.print_graph(indent=indent+2)
-#         print(" " * (indent + 2) + f"return {', '.join(list('%'+o.debugName() for o in self.graph_ovars))}")
+            if entry.is_subgraph_available:
+                entry.subgraph.print_graph(indent=indent+2)
+        print(" " * (indent + 2) + f"return {', '.join(list('%'+o.debugName() for o in self.graph_ovars))}")

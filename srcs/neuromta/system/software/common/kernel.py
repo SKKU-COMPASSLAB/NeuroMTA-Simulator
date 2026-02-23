@@ -7,6 +7,7 @@ from neuromta.component.context import *
 from neuromta.component.implementation.tensor_buffer import *
 from neuromta.component.implementation.mapping import *
 from neuromta.component.implementation.kernel import MCA_OP_CORE_TEMPLATE
+from neuromta.component.implementation.operator import *
 
 
 __all__ = [

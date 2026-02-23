@@ -5,7 +5,8 @@ from neuromta.framework import *
 from neuromta.component.core import *
 from neuromta.component.context import *
 from neuromta.component.implementation.tensor_buffer import *
-from neuromta.component.implementation.mapping import *
+from neuromta.component.implementation.mapping import TileSignature, CollectiveTileSignature
+from neuromta.component.implementation.operator import *
 
 
 __all__ = [
@@ -58,6 +59,7 @@ def MCA_KERNEL_CORE_STAGE_DMA_STORE_BURST(core: NPUCore, env: MCA_OperatorGraphC
         elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.BARRIER):
             var_arrived_count = env.variables[cmd.var_arrived_count]
             var_block_state = env.variables[cmd.var_block_state]
+            core.async_rpc_wait_all()  # Ensure all previous async operations are completed before the barrier
             core.var_atomic_barrier(var_arrived_count, var_block_state, cmd.total_arrivals)
         elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.MEM_INIT):
             core.local_mem_init(cmd.ptr, cmd.size)
@@ -83,6 +85,7 @@ def MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core: NPUCore, env: MCA_OperatorGraphCo
         elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.BARRIER):
             var_arrived_count = env.variables[cmd.var_arrived_count]
             var_block_state = env.variables[cmd.var_block_state]
+            core.async_rpc_wait_all()  # Ensure all previous async operations are completed before the barrier
             core.var_atomic_barrier(var_arrived_count, var_block_state, cmd.total_arrivals)
         elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.MEM_LOAD_TILE):
             tile_sig = cmd.tile_sig
@@ -121,11 +124,6 @@ def MCA_KERNEL_CORE_STAGE_DMA_LOAD_BURST(core: NPUCore, env: MCA_OperatorGraphCo
 def MCA_OP_CORE_TEMPLATE(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperatorGraph, stage1_cursor: int, stage2_cursor: int, stage3_cursor: int, op_compute_methods: list[Callable]):
     stages = operator.mappings[core.core_id]
     
-    # for cursor in range(len(stages) + 2):
-    #     stage1_cursor = cursor
-    #     stage2_cursor = cursor - 1
-    #     stage3_cursor = cursor - 2
-        
     if stage1_cursor >= 0 and stage1_cursor < len(stages):
         with new_parallel_thread("STAGE1"):
             MCA_KERNEL_CORE_STAGE_PREPROCESSING(core, env, operator, stages[stage1_cursor])
