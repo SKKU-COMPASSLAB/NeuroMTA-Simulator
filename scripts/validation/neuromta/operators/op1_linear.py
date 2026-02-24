@@ -51,10 +51,10 @@ if __name__ == "__main__":
         spad_st_mem_space_size=parse_mem_cap_str("256KB"),
     )
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32), blocked_mapping=False          ).tiling((32, 32)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32), blocked_mapping=False          ).tiling((1,  32)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32))#.allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32), blocked_mapping=False          ).tiling((32, 32))#.allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32), blocked_mapping=False          ).tiling((1,  32))#.allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32))#.allocate()
     
     operator = MCA_OP_LINEAR(
         ifm_b, wgt_b, bias_b, ofm_b, 
@@ -76,6 +76,11 @@ if __name__ == "__main__":
     )
     
     compiled_ops = compiler.compile(global_recipe, target_ops="ALL")
+    
+    ifm_b.allocate().update(ifm)
+    wgt_b.allocate().update(wgt)
+    bias_b.allocate().update(bias)
+    ofm_b.allocate()
     
     device.remove_all_l1_mem_space()
     device.remove_all_main_mem_space()

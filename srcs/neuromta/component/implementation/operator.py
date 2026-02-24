@@ -204,7 +204,46 @@ class MCA_OperatorSignature:
                     return o_tile.coords
                 return (math.inf, math.inf, math.inf, math.inf)
             self._tiled_ops.sort(key=tile_key_fn)
-    
+            
+    def reorder_tiled_ops_with_pipeline_pattern(self, src_op_sig: 'MCA_OperatorSignature'):
+        target_buf_names = set(src_op_sig.output_buffer_names).intersection(set(self.input_buffer_names))
+        if len(target_buf_names) == 0:
+            raise ValueError("No common buffer found for pipeline pattern reordering.")
+        
+        target_buf_name = target_buf_names.pop()
+        
+        src_tile_order = []
+        for tiled_op in src_op_sig.tiled_ops:
+            src_tile_order.append(tiled_op.o_tile.coords)
+        
+        # src_tile_cursor = 0
+        reordered_dst_tiled_ops = []
+        dst_tiled_op_mask = [False] * len(self._tiled_ops)
+        
+        def uop_sort_key(i_tiles: list[TileSignature]):
+            for tile in i_tiles:
+                if tile.buf_name == target_buf_name:
+                    return src_tile_order.index(tile.coords)
+            return math.inf
+        
+        for dst_tiled_op in self._tiled_ops:
+            dst_tiled_op.i_tiles.sort(key=uop_sort_key)
+        
+        for src_tile_cursor in range(len(src_tile_order)):
+            _cached_src_tile_coords = set(src_tile_order[:src_tile_cursor+1])
+            
+            for dst_tiled_op_idx, dst_tiled_op in enumerate(self._tiled_ops):
+                if dst_tiled_op_mask[dst_tiled_op_idx]:
+                    continue
+                
+                _target_dst_coords = set([ tile.coords for uop_idx in range(dst_tiled_op.n_uops) for tile in dst_tiled_op.i_tiles[uop_idx] if tile.buf_name == target_buf_name ])
+                
+                if _target_dst_coords.issubset(_cached_src_tile_coords):
+                    reordered_dst_tiled_ops.append(dst_tiled_op)
+                    dst_tiled_op_mask[dst_tiled_op_idx] = True
+        
+        self._tiled_ops = reordered_dst_tiled_ops
+            
     @property
     def op_type(self):      return self._op_type
     @property
@@ -604,13 +643,23 @@ class MCA_OperatorGraphCompiler:
         
         # Initialize environment
         env = MCA_OperatorGraphCompiler.Environment()
-        
-        for op_id in target_ops:
+            
+        for op_idx, op_id in enumerate(target_ops):
             op_sig = self._op_sigs[op_id]
             env.add_op_sig(op_sig)
             
-            target_buf_name = op_sig.buffer_names[global_recipe.get_operator_recipe(op_sig).spatial_reuse_target_buf_idx]
-            op_sig.reorder_tiled_ops_with_spatial_reuse_pattern(target_buf_name)
+            is_pipeline_optimized = False
+            
+            for prev_op_idx in reversed(range(op_idx)):
+                prev_op = self._op_sigs[target_ops[prev_op_idx]]
+                if set(op_sig.input_buffer_names).intersection(set(prev_op.output_buffer_names)):
+                    op_sig.reorder_tiled_ops_with_pipeline_pattern(prev_op)
+                    is_pipeline_optimized = True
+                    break
+                
+            if not is_pipeline_optimized:
+                target_buf_name = op_sig.buffer_names[global_recipe.get_operator_recipe(op_sig).spatial_reuse_target_buf_idx]
+                op_sig.reorder_tiled_ops_with_spatial_reuse_pattern(target_buf_name)
             
         return env
             

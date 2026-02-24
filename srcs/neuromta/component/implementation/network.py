@@ -205,7 +205,6 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
         compiler = MCA_OperatorGraphCompiler()
             
         for entry, target in zip(entries, targets):
-        # for target in targets:
             logger.debug(f"compiling entry: {entry} with target method: {len(target.buf_sigs)} buffer signatures")
             
             for buf_sig in target.buf_sigs:
@@ -255,17 +254,6 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
                 buf_sig.store(graph_context)
                 
     def summary(self) -> dict[str, Any]:
-        # import os
-        # import json
-        # _tmp_dir = os.path.join(os.curdir, ".tmp")
-        # os.makedirs(_tmp_dir, exist_ok=True)
-        
-        # for op_id, compiled_op in self.compiled_ops.items():
-        #     tmp_output_path = os.path.join(_tmp_dir, f"compiled_op_{id(self):012X}_summary_{op_id}.json")
-        #     with open(tmp_output_path, "w") as f:
-        #         json.dump(compiled_op.summary(), f, indent=4)
-        #         logger.info(f"Compiled operator summary saved to '{tmp_output_path}'.")
-        
         return {
             op_id: compiled_op.summary()
             for op_id, compiled_op in self.compiled_ops.items()
@@ -926,7 +914,7 @@ class MCA_NetworkGraphCompiler:
             _check_is_mem_core_group_enough = mem_core_group_cursor + _tmp_n_mem_core_groups <= len(mem_core_groups)
             _check_is_arith_intensity_enough = cached_arith_intensity + _tmp_arith_intensity <= total_arith_intensity
             
-            if not _check_is_mem_core_group_enough or not _check_is_arith_intensity_enough:
+            if len(entry_group) and (not _check_is_mem_core_group_enough or not _check_is_arith_intensity_enough):
                 compiled_entry = NetworkGraphCompiledEntry(entry_group, target_group, self.graph_recipe.compiler_recipe, self.graph_context)
                 compiled_entries.append(compiled_entry)
                     
