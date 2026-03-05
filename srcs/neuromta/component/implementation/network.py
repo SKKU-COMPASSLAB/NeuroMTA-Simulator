@@ -176,9 +176,10 @@ class NetworkGraphEntry:
         
     def __str__(self):
         if self.is_compiled:
-            node_kind = "nmta::compiled"
-            ivars = "COMPILED_INPUTS"
-            ovars = "COMPILED_OUTPUTS"
+            # node_kind = "nmta::compiled"
+            # ivars = "COMPILED_INPUTS"
+            # ovars = "COMPILED_OUTPUTS"
+            return "COMPILED"
         else:
             node_kind = self.node.kind()
             ivars = list('%'+i.debugName() for i in self.node.inputs())
@@ -191,7 +192,13 @@ class NetworkGraphEntry:
         return r + ")"
     
 class NetworkGraphCompiledEntry(NetworkGraphEntry):
-    def __init__(self, entries: 'list[NetworkGraphEntry]', targets: 'list[NetworkGraphEntryCompileTarget]', compiler_recipe: MCA_OperatorGraphCompiler.GlobalRecipe, graph_context: 'NetworkGraphContext'):
+    def __init__(
+        self, 
+        entries: 'list[NetworkGraphEntry]', 
+        targets: 'list[NetworkGraphEntryCompileTarget]', 
+        core_groups: 'list[MCA_CoreGroup]',
+        compiler_recipe: MCA_OperatorGraphCompiler.CompileRecipe, 
+    ):
         super().__init__(NetworkGraphEntry.Type.COMPILED, None)
         
         logger.debug(f"creating compiled entry with {len(targets)} compile targets")
@@ -201,43 +208,36 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
         self.entries = entries
         self.targets = targets
         self.compiler_recipe = compiler_recipe
+
+        if len(core_groups) != len(targets):
+            raise ValueError("the number of core groups must match the number of compile targets")
         
         compiler = MCA_OperatorGraphCompiler()
             
-        for entry, target in zip(entries, targets):
+        for entry, target, core_group in zip(entries, targets, core_groups):
             logger.debug(f"compiling entry: {entry} with target method: {len(target.buf_sigs)} buffer signatures")
-            
-            for buf_sig in target.buf_sigs:
-                if buf_sig.is_shared_child:
-                    logger.debug(f"  - skipping allocation for pipeline child buffer signature with src: {buf_sig.src_name if buf_sig.has_src else 'N/A'} and dst: {buf_sig.dst_name if buf_sig.has_dst else 'N/A'}")  # pipeline child buffer will be allocated together with its parent buffer, so skip
-                    # logger.info(f"buffer ID: 0x{id(buf_sig.buf):016X}")
-                    continue    # pipeline child buffer will be allocated together with its parent buffer, so skip
-                if buf_sig.is_allocated:
-                    logger.debug(f"  - skipping allocation for already allocated buffer signature with src: {buf_sig.src_name if buf_sig.has_src else 'N/A'} and dst: {buf_sig.dst_name if buf_sig.has_dst else 'N/A'}")  # buffer signature is already allocated, so skip
-                    # logger.info(f"buffer ID: 0x{id(buf_sig.buf):016X}")
-                    continue    # buffer signature is already allocated, so skip
-                
-                logger.debug(f"  - allocating buffer for buffer signature with src: {buf_sig.src_name if buf_sig.has_src else 'N/A'} and dst: {buf_sig.dst_name if buf_sig.has_dst else 'N/A'}")  # allocate buffer for the buffer signature
-                buf_sig.allocate(graph_context)
-                # logger.info(f"buffer ID: 0x{id(buf_sig.buf):016X}")
-                
+
             _op_method = target.op_method
             _op_bufs = [buf_sig.buf for buf_sig in target.buf_sigs]
             _op_kwargs = target.op_kwargs
             
             op = _op_method(*_op_bufs, **_op_kwargs)
+            op.initialize_core_group(core_group)
             
             compiler.add_op(op)
 
-        self.compiled_ops = compiler.compile(
-            global_recipe=compiler_recipe, 
-            target_ops="ALL"
+        self.compiled_ops: dict[str, MCA_CompiledOperator] = compiler.compile(
+            recipe=compiler_recipe,
         )
         
-    def execute(self, graph_context: 'NetworkGraphContext'):
+    def execute(self, graph_context: 'NetworkGraphContext', pcc_check: bool=False):
+        logger.debug(f"executing entry {self.__str__()} with {len(self.compiled_ops)} compiled operators")
+        
         # STEP 1: load inputs to buffers
         for target in self.targets:
             for buf_sig in target.buf_sigs:
+                if buf_sig.buf is None or not buf_sig.buf.is_allocated:
+                    continue
                 buf_sig.load(graph_context)
         
         # STEP 2: execute compiled operators
@@ -251,13 +251,19 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
         # STEP 3: store outputs from buffers to graph context
         for target in self.targets:
             for buf_sig in target.buf_sigs:
-                buf_sig.store(graph_context)
+                if buf_sig.buf is None or not buf_sig.buf.is_allocated or not buf_sig.has_dst:
+                    continue
+                logger.debug(f"restoring buffer '{buf_sig.dst_name}' to graph context or destination module after executing compiled operator")
+                buf_sig.store(graph_context, pcc_check=pcc_check)
                 
     def summary(self) -> dict[str, Any]:
         return {
             op_id: compiled_op.summary()
             for op_id, compiled_op in self.compiled_ops.items()
         }
+        
+    def __str__(self):
+        return f"COMPILED_ENTRY(id=0x{id(self):X}, targets={[target.op_method.__name__ for target in self.targets]})"
     
 class NetworkGraphEntryCompileTarget:
     class TensorProcessing:
@@ -317,11 +323,8 @@ class NetworkGraphEntryCompileTarget:
             
             # Information from COMPILER
             self.mem_space: MCA_MemorySpace = None
-            self.is_shared_child: bool = False
-            self.parent_buf_sig: 'NetworkGraphEntryCompileTarget.BufferSignature' = None
-            self.shared_childs: list[NetworkGraphEntryCompileTarget.BufferSignature] = []
             
-            # Information filled during RUNTIME
+            # Information from RUNTIME
             self.buf: MCA_TensorBuffer = None
             
         def get_shard_size(self) -> int:
@@ -340,33 +343,12 @@ class NetworkGraphEntryCompileTarget:
             self._dst = (module, key)
             return self
         
-        def register_shared_child(self, child_buf_sig: 'NetworkGraphEntryCompileTarget.BufferSignature'):
-            child_buf_sig.is_shared_child = True
-            child_buf_sig.parent_buf_sig = self
-            self.shared_childs.append(child_buf_sig)
-            
-        def allocate_shared_child(self):
-            for child_buf_sig in self.shared_childs:
-                child_buf_sig.buf = self.buf    # shared child shares the same buffer with parent to enable shared execution and reduce memory usage
-                child_buf_sig.allocate_shared_child()   # recursively allocate shared childs of the child buffer signature
-        
-        def allocate(self, graph_context: 'NetworkGraphContext'):
-            if self.buf is not None:
-                return
-            if self.is_shared_child:
-                raise Exception("buffer signature for shared entry should not be allocated directly")
-            if self.mem_space is None:
-                raise Exception("buffer signature must have a valid memory space before allocation")
-            
-            self.buf = MCA_TensorBuffer(mem_space=self.mem_space, shape=self.shape, dtype=self.dtype, shard_shape=self.shard_shape, blocked_mapping=self.blocked_mapping).tiling(self.tile_shape).allocate()
-                
-            self.allocate_shared_child()
-            # for child_buf_sig in self.shared_childs:
-            #     child_buf_sig.buf = self.buf    # shared child shares the same buffer with parent to enable shared execution and reduce memory usage
-                
         def load(self, graph_context: 'NetworkGraphContext'):
             if not self.is_allocated:
-                raise Exception("buffer must be allocated before loading")
+                raise Exception("buffer must be created before loading")
+
+            if not self.buf.is_allocated:
+                return
             
             if self.has_src:
                 src_module, src_key = self.src
@@ -379,9 +361,12 @@ class NetworkGraphEntryCompileTarget:
                 src_tensor = src_tensor.to(self.dtype) if src_tensor.dtype != self.dtype else src_tensor   # convert to buffer dtype if necessary
                 self.buf.update(src_tensor)
                 
-        def store(self, graph_context: 'NetworkGraphContext'):
+        def store(self, graph_context: 'NetworkGraphContext', pcc_check: bool=False):
             if not self.is_allocated:
-                raise Exception("buffer must be allocated before storing")
+                raise Exception("buffer must be created before storing")
+            if not self.buf.is_allocated:
+                logger.warning("buffer is not allocated, skipping store operation")
+                return
             
             dst_tensor = self.buf.restore()
             for postproc in self.postprocessings:
@@ -390,43 +375,110 @@ class NetworkGraphEntryCompileTarget:
                 
             if self.has_dst:
                 dst_module, dst_key = self.dst
+                
+                if pcc_check:
+                    if dst_module == self.CONTEXT:
+                        existing_tensor = graph_context.get(dst_key.debugName(), None)
+                    else:
+                        existing_tensor = getattr(dst_module, dst_key, None)
+                    
+                    if self.orig_dtype == torch.float32:
+                        if self.dtype == torch.float32:
+                            rtol, atol = 1e-2, 1e-3
+                        elif self.dtype == torch.float16:
+                            rtol, atol = 1e-2, 1e-3
+                        elif self.dtype == torch.bfloat16:
+                            rtol, atol = 1e-2, 1e-3
+                        else:
+                            rtol, atol = 1e-3, 1e-5
+                    else:
+                        rtol, atol = 1e-3, 1e-5
+                        
+                    if existing_tensor is None:
+                        logger.error(f"skipping post-compilation check for buffer '{self.dst_name}' due to missing existing tensor in graph context or destination module")
+                    elif not torch.allclose(existing_tensor, dst_tensor, rtol=rtol, atol=atol):
+                        raise Exception(f"potential data inconsistency detected for buffer '{self.dst_name}' during post-compilation check: existing tensor in graph context or destination module is not close to the tensor restored from buffer\nexisting tensor: {existing_tensor}\ndst tensor: {dst_tensor}")
+                    else:
+                        logger.debug(f"post-compilation check passed for buffer '{self.dst_name}'")
+                        
                 if dst_module == self.CONTEXT:
                     graph_context[dst_key] = dst_tensor
                 else:
                     setattr(dst_module, dst_key, dst_tensor)
+                    
+        def create(self, graph_context: 'NetworkGraphContext', mem_space: MCA_MemorySpace):
+            if self.is_allocated:
+                raise Exception("buffer is already allocated")
+            self.mem_space = mem_space
+            self.buf = MCA_TensorBuffer(
+                mem_space=mem_space, 
+                shape=self.shape, 
+                dtype=self.dtype, 
+                shard_shape=self.shard_shape, 
+                blocked_mapping=self.blocked_mapping,
+            ).tiling(tile_shape=self.tile_shape)
+            
+            cur_src_buf_name = f"BUFFER_SOURCED_FROM::{self.src_name}" if self.has_src else None
+            cur_dst_buf_name = f"BUFFER_DESTINED_TO::{self.dst_name}" if self.has_dst else None
+            existing_src_producer_buf_name = f"BUFFER_DESTINED_TO::{self.src_name}" if self.has_src else None
+            existing_dst_consumer_buf_name = f"BUFFER_SOURCED_FROM::{self.dst_name}" if self.has_dst else None
+            
+            if cur_src_buf_name is not None:
+                if cur_src_buf_name in graph_context.keys():
+                    existing_buf_sig = graph_context[cur_src_buf_name]
+                    if not isinstance(existing_buf_sig, NetworkGraphEntryCompileTarget.BufferSignature):
+                        raise Exception(f"buffer name conflict in graph context: {cur_src_buf_name} is already used by a non-buffer entry")
+                    if not self.compare_layout(existing_buf_sig):
+                        raise Exception(f"buffer layout mismatch for buffer name {cur_src_buf_name} in graph context: existing buffer signature {existing_buf_sig} is not compatible with new buffer signature {self}")
+                    self.buf = existing_buf_sig.buf
+                elif existing_src_producer_buf_name in graph_context.keys():
+                    self.buf = graph_context[existing_src_producer_buf_name].buf
+                else:
+                    graph_context[cur_src_buf_name] = self
+            
+            if cur_dst_buf_name is not None:
+                if cur_dst_buf_name in graph_context.keys():
+                    existing_buf_sig = graph_context[cur_dst_buf_name]
+                    if not isinstance(existing_buf_sig, NetworkGraphEntryCompileTarget.BufferSignature):
+                        raise Exception(f"buffer name conflict in graph context: {cur_dst_buf_name} is already used by a non-buffer entry")
+                    if not self.compare_layout(existing_buf_sig):
+                        raise Exception(f"buffer layout mismatch for buffer name {cur_dst_buf_name} in graph context: existing buffer signature {existing_buf_sig} is not compatible with new buffer signature {self}")
+                    self.buf = existing_buf_sig.buf
+                elif existing_dst_consumer_buf_name in graph_context.keys():
+                    self.buf = graph_context[existing_dst_consumer_buf_name].buf
+                else:
+                    graph_context[cur_dst_buf_name] = self
+
+        def allocate(self):
+            if self.buf is None:
+                raise Exception("buffer must be created before allocation")
+            if self.buf.is_allocated:
+                return self.buf
+            self.buf.allocate()
+            return self.buf
                 
-        def deallocate(self, graph_context: 'NetworkGraphContext'):
+        def deallocate(self):
             if self.buf is not None:
                 self.buf = None
         
         @property
         def src(self):
-            if self.is_shared_child:
-                return self.parent_buf_sig.src
             return self._src
         
         @property
         def dst(self):
-            # if self.is_shared_child:
-            #     return self.parent_buf_sig.dst
             return self._dst
         
         @property
         def has_src(self) -> bool:
-            if self.is_shared_child:
-                return self.parent_buf_sig.has_src
             return self.src is not None
         
         @property
         def has_dst(self) -> bool:
-            # if self.is_shared_child:
-            #     return self.parent_buf_sig.has_dst
             return self.dst is not None
         
         @property
         def is_allocated(self) -> bool:
-            if self.is_shared_child:
-                return self.parent_buf_sig.is_allocated
             return self.buf is not None
         
         @property
@@ -451,19 +503,24 @@ class NetworkGraphEntryCompileTarget:
         
         @property
         def is_l1_buffer(self) -> bool:
-            if self.is_shared_child:
-                return self.parent_buf_sig.is_l1_buffer
             if self.mem_space is None:
                 return False
             return self.mem_space.mem_type == GlobalContextMemType.L1
         
         @property
         def is_main_buffer(self) -> bool:
-            if self.is_shared_child:
-                return self.parent_buf_sig.is_main_buffer
             if self.mem_space is None:
                 return False
             return self.mem_space.mem_type == GlobalContextMemType.MAIN
+        
+        @property
+        def n_tiles(self) -> int:
+            remaining_dims = functools.reduce(lambda x, y: x * y, self.shape[:-2], 1)
+            n_height_shards = self.shape[-2] // self.shard_shape[0]
+            n_width_shards = self.shape[-1] // self.shard_shape[1]
+            n_height_tiles_per_shard = (self.shard_shape[0] + self.tile_shape[0] - 1) // self.tile_shape[0]
+            n_width_tiles_per_shard = (self.shard_shape[1] + self.tile_shape[1] - 1) // self.tile_shape[1]
+            return remaining_dims * n_height_shards * n_width_shards * n_height_tiles_per_shard * n_width_tiles_per_shard
         
         def compare_layout(self, other: 'NetworkGraphEntryCompileTarget.BufferSignature') -> bool:
             return self.shape == other.shape and self.dtype == other.dtype and self.shard_shape == other.shard_shape and self.blocked_mapping == other.blocked_mapping and self.tile_shape == other.tile_shape
@@ -474,11 +531,13 @@ class NetworkGraphEntryCompileTarget:
         buf_sigs: 'list[NetworkGraphEntryCompileTarget.BufferSignature]', 
         op_kwargs: dict[str, Any],
         arith_intensity: float=0.0,
+        max_n_cores: int=1,
     ):
         self.op_method: Callable[..., MCA_OperatorSignature] = op_method
         self.buf_sigs: list[NetworkGraphEntryCompileTarget.BufferSignature] = buf_sigs
         self.op_kwargs: dict[str, Any] = op_kwargs
         self.arith_intensity: float = arith_intensity
+        self.max_n_cores: int = max_n_cores
         
 
 class NetworkGraphContext(dict):
@@ -494,6 +553,13 @@ class NetworkGraphContext(dict):
         elif isinstance(name, type):
             name = name.__name__
         return name
+    
+    def __getattr__(self, name):
+        if isinstance(name, torch.Value):
+            name = name.debugName()
+        elif isinstance(name, Placeholder):
+            name = name.name
+        return super().__getattr__(name)
     
     def __getitem__(self, key):
         if isinstance(key, torch.Value):
@@ -526,6 +592,9 @@ class NetworkGraphContext(dict):
             submodule = self[list(node.inputs())[0]]
             args = [self[i] for i in list(node.inputs())[1:]]
             method_name = attrs['name']
+
+            if trace_mode:
+                args = [arg.clone() if isinstance(arg, torch.Tensor) else arg for arg in args]
             
             if isinstance(submodule, torch.nn.Module) and "forward" in method_name:
                 if entry.is_compilation_target:
@@ -572,14 +641,14 @@ class NetworkGraphContext(dict):
             for idx, o in enumerate(node.outputs()):
                 self[o] = outputs[idx]
                 
-    def run_compiled_entry(self, entry: NetworkGraphCompiledEntry, trace_mode: bool=False):
+    def run_compiled_entry(self, entry: NetworkGraphCompiledEntry, trace_mode: bool=False, pcc_check: bool=False):
         if trace_mode:
             for ee in entry.entries:
                 self.run_entry(ee, trace_mode=trace_mode)
         else:
-            entry.execute(self)
+            entry.execute(self, pcc_check=pcc_check)
                 
-    def run_entry(self, entry: NetworkGraphEntry, trace_mode: bool=False):
+    def run_entry(self, entry: NetworkGraphEntry, trace_mode: bool=False, pcc_check: bool=False):
         # STEP 1: pre-run the entry to prepare inputs/outputs
         if entry.is_prim:
             self.run_prim_entry(entry, trace_mode=trace_mode)
@@ -593,7 +662,7 @@ class NetworkGraphContext(dict):
         # STEP 2: run the entry with compiled runtime (if necessary)
         if entry.is_compiled and not trace_mode:
             logger.debug(f"running compiled graph entry: {entry}")
-            self.run_compiled_entry(entry, trace_mode=False)
+            self.run_compiled_entry(entry, trace_mode=False, pcc_check=pcc_check)
 
 
 class MCA_NetworkGraphCompiler:
@@ -606,17 +675,19 @@ class MCA_NetworkGraphCompiler:
             
             main_data_mem_space_size_per_channel: int,
             l1_data_mem_space_size_per_core: int,
-            
-            op_recipes: 'dict[str, MCA_OperatorGraphCompiler.OperatorRecipe]'=None,
+            spad_mem_space_size_per_core: int,
         ):
+            self.global_core_group = global_core_group
+            self.core_group_shape = core_group_shape
+            
             self.main_data_mem_space_size_per_channel = main_data_mem_space_size_per_channel
             self.l1_data_mem_space_size_per_core = l1_data_mem_space_size_per_core
+            self.spad_mem_space_size_per_core = spad_mem_space_size_per_core
             
-            self.compiler_recipe = MCA_OperatorGraphCompiler.GlobalRecipe(
+            self.compiler_recipe = MCA_OperatorGraphCompiler.CompileRecipe(
                 device=device,
-                global_core_group=global_core_group,
-                core_group_shape=core_group_shape,
-                op_recipes=op_recipes,
+                spad_space_size_per_core=spad_mem_space_size_per_core,
+                broadcast_optimize=True,
             )
             
         def supports(self, module_type: type | str) -> bool:
@@ -736,7 +807,7 @@ class MCA_NetworkGraphCompiler:
                 entry = NetworkGraphEntry(NetworkGraphEntry.Type.NONPRIM, node)
             
             entries.append(entry)
-            graph_context.run_entry(entry, trace_mode=True)
+            graph_context.run_entry(entry, trace_mode=True, pcc_check=False)
             
         warnings.filterwarnings("default", category=UserWarning)    # TODO: suppress leaf Tensor access warning
         warnings.filterwarnings("default", category=FutureWarning)  # TODO: suppress quantized model warning 
@@ -748,7 +819,7 @@ class MCA_NetworkGraphCompiler:
         if not disable_toposort:
             graph.topological_sort()
         if not disable_compile:
-            graph.run_graph(*dummy_inputs, trace_mode=True)   # pre-run the graph to prepare runtime parameters for compilation
+            graph.run_graph(*dummy_inputs, trace_mode=True, pcc_check=False)   # pre-run the graph to prepare runtime parameters for compilation
             graph.compile()
                     
         return graph
@@ -840,180 +911,199 @@ class MCA_NetworkGraphCompiler:
         
         return self
     
-    def _compile_targets(self, cp_entries: list[NetworkGraphEntry]) -> list[NetworkGraphCompiledEntry]:
-        logger.debug(f"compile targets for {len(cp_entries)} entries")
-        for entry in cp_entries:
-            logger.debug(f"compilation target entry: {entry}")
-        
-        compiled_entries: list[NetworkGraphCompiledEntry] = []
-        
-        device = self.graph_recipe.compiler_recipe.device
-        core_group = self.graph_recipe.compiler_recipe.global_core_group
-        
-        mem_core_groups = core_group.split(shape=self.graph_recipe.compiler_recipe.core_group_shape)
-        mem_core_group_cursor = 0
-        
-        l1_data_mem_space   = device.create_l1_mem_space(self.graph_recipe.l1_data_mem_space_size_per_core, core_group=core_group)
-        main_data_mem_space = device.create_main_mem_space(self.graph_recipe.main_data_mem_space_size_per_channel)
-        
-        target_group: list[NetworkGraphEntryCompileTarget] = []
-        entry_group: list[NetworkGraphEntry] = []
-        cached_buf_sigs: list[NetworkGraphEntryCompileTarget.BufferSignature] = []
-        cached_arith_intensity: float = 0.0
-        total_arith_intensity: float = device.mxu_config.peak_op_per_cycle * len(core_group) / device.global_context.config.main_mem_config.peak_bandwidth_per_cycle
-        
-        # for target in targets:
-        for entry in cp_entries:
-            target = self.graph_recipe.get_compile_target(self.graph_context, entry.node, entry.submodule)
-            
-            # STEP 1: identify new and ignored buffers 
-            #   - If the target's buffer signature has the same source as any of the cached buffer signatures, it means the buffer 
-            #     can be pipelined with the cached buffer, so we add the cached buffer signature to the new L1 buffer signatures and 
-            #     ignore the target's buffer signature (i.e., do not assign main memory space to it).
-            #   - If the target's buffer signature has the same destination as any of the cached buffer signatures, it means the buffer 
-            #     can be pipelined with the cached buffer, so we add the cached buffer signature to the new L1 buffer signatures and 
-            #     ignore the target's buffer signature (i.e., do not assign main memory space to it).
-            _new_l1_buf_sigs: list[NetworkGraphEntryCompileTarget.BufferSignature] = []
-            _ignored_buf_srcs: dict[str, NetworkGraphEntryCompileTarget.BufferSignature] = {}
-            
-            for buf_sig in target.buf_sigs:
-                for cached_buf_sig in cached_buf_sigs:
-                    if buf_sig.has_src and cached_buf_sig.has_dst and buf_sig.src_name == cached_buf_sig.dst_name:
-                        _new_l1_buf_sigs.append(cached_buf_sig)
-                        break
-                    if buf_sig.has_src and cached_buf_sig.has_src and buf_sig.src_name == cached_buf_sig.src_name:
-                        _ignored_buf_srcs[buf_sig.src_name] = cached_buf_sig
-                        break
-            
-            # STEP 2: figure out if it is possible to assign new L1 buffer to the current group
-            #   - If the number of memory core groups needed to fit the new L1 buffer signatures exceeds the remaining memory core groups, 
-            #     we start a new group.
-            _tmp_n_mem_core_groups = 0
-            while True:
-                if len(_new_l1_buf_sigs) == 0:
-                    break
-                    
-                _tmp_n_mem_core_groups += 1
-                _tmp_l1_mem_usage_per_core = 0
-                
-                for new_l1_buf_sig in _new_l1_buf_sigs:
-                    if new_l1_buf_sig.is_l1_buffer:
-                        continue    # already assigned to L1 memory space, so skip
-                    
-                    _ss = new_l1_buf_sig.get_shard_size()
-                    _sn = new_l1_buf_sig.get_shard_num()
-                    
-                    _l1_mem_usage = _ss * math.ceil(_sn / _tmp_n_mem_core_groups)
-                    _tmp_l1_mem_usage_per_core += _l1_mem_usage
-                
-                if _tmp_l1_mem_usage_per_core <= self.graph_recipe.l1_data_mem_space_size_per_core:
-                    break
-                
-            _tmp_arith_intensity = target.arith_intensity
-            
-            _check_is_mem_core_group_enough = mem_core_group_cursor + _tmp_n_mem_core_groups <= len(mem_core_groups)
-            _check_is_arith_intensity_enough = cached_arith_intensity + _tmp_arith_intensity <= total_arith_intensity
-            
-            if len(entry_group) and (not _check_is_mem_core_group_enough or not _check_is_arith_intensity_enough):
-                compiled_entry = NetworkGraphCompiledEntry(entry_group, target_group, self.graph_recipe.compiler_recipe, self.graph_context)
-                compiled_entries.append(compiled_entry)
-                    
-                # create a new group and initialize mem core group cursor
-                target_group = []
-                entry_group = []
-                mem_core_group_cursor = 0
-                
-                # recreate memory spaces for the new group
-                l1_data_mem_space.remove()
-                main_data_mem_space.remove()
-                l1_data_mem_space   = device.create_l1_mem_space(self.graph_recipe.l1_data_mem_space_size_per_core, core_group=core_group)
-                main_data_mem_space = device.create_main_mem_space(self.graph_recipe.main_data_mem_space_size_per_channel)
-                
-                # reset cached buffer signatures
-                cached_buf_sigs = []
-                
-                # reset new L1 buffer signatures and ignored buffer sources since new group starts without any buffer reuse
-                _new_l1_buf_sigs = []
-                _tmp_n_mem_core_groups = 0
-            else:
-                cached_arith_intensity += _tmp_arith_intensity
-                mem_core_group_cursor += _tmp_n_mem_core_groups
-                
-                logger.debug(f"  - allocated {_tmp_n_mem_core_groups} memory core groups for new L1 buffers and {len(mem_core_groups) - mem_core_group_cursor} are left")
-                logger.debug(f"  - current target arithmetic intensity is {target.arith_intensity:.2f} and {total_arith_intensity - cached_arith_intensity:.2f} left for the total device")
-            
-            # STEP 3: assign memory spaces to the target's buffer signatures
-            #   - In this step, we assign L1 memory space to the new L1 buffer signatures and main memory space to the rest of the buffer signatures.
-            #   - The buffers are initially located at the main memory space. If the buffer is a producer and opt to be reused by the subsequent target,
-            #     the buffer will be assigned to the new L1 memory space to enable pipelined execution and reduce memory usage. The pipelined one will 
-            #     share the same buffer with the original one.
-            _tmp_mem_core_group = MCA_CoreGroup.merge_core_groups(mem_core_groups[mem_core_group_cursor:mem_core_group_cursor+_tmp_n_mem_core_groups])
-            _tmp_l1_mem_space = l1_data_mem_space.override(_tmp_mem_core_group)
-                
-            for new_l1_buf_sig in _new_l1_buf_sigs:
-                if new_l1_buf_sig.is_l1_buffer:
-                    continue    # already assigned to L1 memory space, so skip
-                
-                new_l1_buf_sig.mem_space = _tmp_l1_mem_space
-            
-            for buf_idx, buf_sig in enumerate(target.buf_sigs):
-                if buf_sig.has_src and buf_sig.src_name in _ignored_buf_srcs:
-                    _ignored_buf_srcs[buf_sig.src_name].register_shared_child(buf_sig)
-                else:
-                    is_pipelined = False
-                    
-                    for cached_buf_sig in cached_buf_sigs:
-                        if buf_sig.has_src and cached_buf_sig.has_dst and buf_sig.src_name == cached_buf_sig.dst_name:
-                            # the buffer can be pipelined with the cached buffer
-                            is_pipelined = True
-                            cached_buf_sig.register_shared_child(buf_sig)
-                            break
-                
-                    if not is_pipelined:
-                        buf_sig.mem_space = main_data_mem_space
-                
-                cached_buf_sigs.append(buf_sig)
-            
-            # STEP 4: add the target to the current group  
-            target_group.append(target)
-            entry_group.append(entry)
-        
-        if len(target_group) > 0:
-            compiled_entry = NetworkGraphCompiledEntry(entry_group, target_group, self.graph_recipe.compiler_recipe, self.graph_context)
-            compiled_entries.append(compiled_entry)
-        
-        l1_data_mem_space.remove()
-        main_data_mem_space.remove()
-        
-        return compiled_entries
+    def _search_value_usage_as_input(self, value: torch.Value) -> list[tuple[int, torch.Node]]:
+        usage_list = []
+        value_name = value.debugName()
+        for idx, entry in enumerate(self.graph_entries):
+            if entry.is_subgraph_available:
+                subgraph_usage_list = entry.subgraph._search_value_usage_as_input(value)
+                usage_list.extend(subgraph_usage_list)
+            elif entry.is_compiled:
+                entry: NetworkGraphCompiledEntry
+                # for compiled entry, we need to check the buffer signatures of the compile targets
+                for target in entry.targets:
+                    for buf_sig in target.buf_sigs:
+                        if not buf_sig.has_src:
+                            continue
+                        src_key = buf_sig.src[1]
+                        src_name = src_key.debugName() if isinstance(src_key, torch.Value) else str(src_key)
+                        if src_name == value_name:
+                            usage_list.append((idx, entry.node))
+            elif value_name in [i.debugName() for i in entry.node.inputs()]:
+                usage_list.append((idx, entry.node))
+        return usage_list
     
-    def compile(self):
+    def _compile_targets(self, cp_targets: list[NetworkGraphEntryCompileTarget], main_mem_space: MCA_MainMemorySpace, l1_mem_space: MCA_L1MemorySpace) -> list[NetworkGraphCompiledEntry]:
+        core_groups = self.graph_recipe.global_core_group.split(self.graph_recipe.core_group_shape)
+        n_core_groups = len(core_groups)
+        n_cores_per_group = core_groups[0].n_cores
+
+        if n_core_groups <= 0:
+            raise RuntimeError("no available core groups for compilation")
+
+        normalized_targets: list[tuple[NetworkGraphEntry, NetworkGraphEntryCompileTarget]] = []
+
+        for item in cp_targets:
+            if isinstance(item, NetworkGraphEntry):
+                if not item.is_compilation_target:
+                    raise ValueError(f"non-compilation entry is passed to _compile_targets: {item}")
+                if item.submodule is None:
+                    raise ValueError(f"compilation entry does not have a valid submodule: {item}")
+
+                target = self.graph_recipe.get_compile_target(self.graph_context, item.node, item.submodule)
+                normalized_targets.append((item, target))
+            elif isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], NetworkGraphEntry) and isinstance(item[1], NetworkGraphEntryCompileTarget):
+                normalized_targets.append((item[0], item[1]))
+            else:
+                raise TypeError("_compile_targets expects compilation entries or (entry, compile_target) tuples")
+
+        if len(normalized_targets) == 0:
+            return []
+
+        internal_entry_node_ids = {id(entry.node) for entry, _ in normalized_targets}
+        graph_output_var_names = {ovar.debugName() for ovar in self.graph_ovars}
+
+        def _is_internal_only_value(value: torch.Value) -> bool:
+            usages = self._search_value_usage_as_input(value)
+            if len(usages) == 0:
+                return False
+
+            for _, used_node in usages:
+                if used_node is None or id(used_node) not in internal_entry_node_ids:
+                    return False
+            return True
+
+        for _, target in normalized_targets:
+            for buf_sig in target.buf_sigs:
+                mem_space = main_mem_space
+                buf_sig.create(self.graph_context, mem_space)
+
+                linked_value = None
+                if buf_sig.has_dst:
+                    dst_module, dst_key = buf_sig.dst
+                    if dst_module == NetworkGraphEntryCompileTarget.BufferSignature.CONTEXT and isinstance(dst_key, torch.Value):
+                        linked_value = dst_key
+                skip_allocate = False
+                if linked_value is not None and linked_value.debugName() not in graph_output_var_names:
+                    skip_allocate = _is_internal_only_value(linked_value)
+
+                if not skip_allocate:
+                    buf_sig.allocate()
+
+        target_core_group_caps: list[int] = []
+        for _, target in normalized_targets:
+            target_core_group_caps.append(max(1, min(n_core_groups, target.max_n_cores // n_cores_per_group)))
+            logger.debug(f"  - target: {target.op_method.__name__}, arith_intensity: {target.arith_intensity:5.2f}, max_n_cores: {target.max_n_cores}, core_group_cap: {target_core_group_caps[-1]}/{n_core_groups}")
+
+        intensities = [max(float(target.arith_intensity), 0.0) for _, target in normalized_targets]
+        min_intensity = min(intensities)
+        max_intensity = max(intensities)
+
+        if math.isclose(min_intensity, max_intensity):
+            required_group_counts = [1 for _ in intensities]
+        else:
+            required_group_counts = []
+            for intensity in intensities:
+                norm = (intensity - min_intensity) / (max_intensity - min_intensity)
+                required = 1 + int(round(norm * (n_core_groups - 1)))
+                required_group_counts.append(max(1, min(n_core_groups, required)))
+
+        required_group_counts = [
+            min(req_groups, cap_groups)
+            for req_groups, cap_groups in zip(required_group_counts, target_core_group_caps)
+        ]
+
+        compiled_entries: list[NetworkGraphCompiledEntry] = []
+
+        def _flush_chunk(
+            chunk_entries: list[NetworkGraphEntry],
+            chunk_targets: list[NetworkGraphEntryCompileTarget],
+            chunk_group_counts: list[int],
+        ):
+            if len(chunk_targets) == 0:
+                return
+
+            assigned_groups: list[MCA_CoreGroup] = []
+            offset = 0
+
+            for req_groups in chunk_group_counts:
+                selected_subgroups = core_groups[offset: offset + req_groups]
+                merged_group = MCA_CoreGroup.merge_core_groups(selected_subgroups)
+                assigned_groups.append(merged_group)
+                offset += req_groups
+
+            compiled_entries.append(NetworkGraphCompiledEntry(
+                entries=chunk_entries,
+                targets=chunk_targets,
+                core_groups=assigned_groups,
+                compiler_recipe=self.graph_recipe.compiler_recipe,
+            ))
+
+        chunk_entries: list[NetworkGraphEntry] = []
+        chunk_targets: list[NetworkGraphEntryCompileTarget] = []
+        chunk_group_counts: list[int] = []
+        used_groups = 0
+
+        for (entry, target), req_groups in zip(normalized_targets, required_group_counts):
+            if used_groups + req_groups > n_core_groups and len(chunk_targets) > 0:
+                _flush_chunk(chunk_entries, chunk_targets, chunk_group_counts)
+                chunk_entries = []
+                chunk_targets = []
+                chunk_group_counts = []
+                used_groups = 0
+
+            chunk_entries.append(entry)
+            chunk_targets.append(target)
+            chunk_group_counts.append(req_groups)
+            used_groups += req_groups
+
+        _flush_chunk(chunk_entries, chunk_targets, chunk_group_counts)
+
+        return compiled_entries
+
+    def compile(self, _allocate_mem_space: bool=True, _cached_mem_spaces: dict[str, MCA_MemorySpace]=None):
         logger.debug(f"compiling graph of module: {type(self.module).__name__}")
         
-        cp_entries: list[NetworkGraphEntryCompileTarget] = []
+        device = self.graph_recipe.compiler_recipe.device
+        
+        if _allocate_mem_space:
+            main_mem_space = device.create_main_mem_space(self.graph_recipe.main_data_mem_space_size_per_channel)
+            l1_mem_space = device.create_l1_mem_space(self.graph_recipe.l1_data_mem_space_size_per_core, self.graph_recipe.global_core_group)
+        else:
+            main_mem_space = _cached_mem_spaces.get("MAIN", None)
+            l1_mem_space = _cached_mem_spaces.get("L1", None)
+            
+            if main_mem_space is None or l1_mem_space is None:
+                raise Exception("cached memory spaces must be provided for compilation when _allocate_mem_space is False")
+        
+        cp_targets: list[NetworkGraphEntryCompileTarget] = []
         new_entries: list[NetworkGraphEntry] = []
         
         for entry in self.graph_entries:
             if not entry.is_compilation_target:
-                if len(cp_entries) > 0:
-                    compiled_entries = self._compile_targets(cp_entries)
+                if len(cp_targets) > 0:
+                    compiled_entries = self._compile_targets(cp_targets, main_mem_space, l1_mem_space)
                     new_entries.extend(compiled_entries)
-                    cp_entries = []
+                    cp_targets = []
                 
                 # FINAL: add the entry to new entries
                 if entry.is_subgraph_available:
-                    entry.subgraph.compile()
+                    entry.subgraph.compile(_allocate_mem_space=False, _cached_mem_spaces={"MAIN": main_mem_space, "L1": l1_mem_space})
                 new_entries.append(entry)
             else:
                 # create compilation target and store it in the temporary list
-                cp_entries.append(entry)
+                cp_targets.append(entry)
         
-        if len(cp_entries) > 0:
-            compiled_entries = self._compile_targets(cp_entries)
+        if len(cp_targets) > 0:
+            compiled_entries = self._compile_targets(cp_targets, main_mem_space, l1_mem_space)
             new_entries.extend(compiled_entries)
-            cp_entries = []
+            cp_targets = []
         
         self.graph_entries = new_entries
+        
+        if _allocate_mem_space:
+            main_mem_space.remove()
+            l1_mem_space.remove()
         
         return self
     
@@ -1022,14 +1112,14 @@ class MCA_NetworkGraphCompiler:
             return self.graph_context[self.graph_ovars[0]]
         return [self.graph_context[o] for o in self.graph_ovars]
     
-    def run_graph(self, *dummy_inputs, trace_mode: bool=False):
+    def run_graph(self, *dummy_inputs, trace_mode: bool=False, pcc_check: bool=False):
         self.graph_context[self.graph_ivars[0]] = self.module
         for idx, ivar in enumerate(self.graph_ivars[1:]):
             self.graph_context[ivar] = dummy_inputs[idx]
         
         for entry in self.graph_entries:
             try:
-                self.graph_context.run_entry(entry, trace_mode=trace_mode)
+                self.graph_context.run_entry(entry, trace_mode=trace_mode, pcc_check=pcc_check)
             except Exception as e:
                 logger.error(f"exception occurred while running the graph with node: {entry.node}")
                 raise Exception(f"exception occurred while running the entry: {entry}\n{e}") from e
@@ -1040,7 +1130,6 @@ class MCA_NetworkGraphCompiler:
         print(" " * indent + f"OPEN_GRAPH[type={type(self.module).__name__}]({', '.join(list('%'+i.debugName() for i in self.graph_ivars))}):")
         for entry in self.graph_entries:
             print(" " * (indent + 2) + str(entry))
-            
             if entry.is_subgraph_available:
                 entry.subgraph.print_graph(indent=indent+2)
         print(" " * (indent + 2) + f"return {', '.join(list('%'+o.debugName() for o in self.graph_ovars))}")

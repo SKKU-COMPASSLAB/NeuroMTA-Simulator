@@ -8,10 +8,12 @@ from neuromta.component.implementation.tensor_buffer import *
 from neuromta.component.implementation.mapping import *
 from neuromta.component.implementation.kernel import MCA_OP_CORE_TEMPLATE
 from neuromta.component.implementation.operator import *
+import torch
 
 
 __all__ = [
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR",
+    "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU",
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU",
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D",
     "MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D",
@@ -23,24 +25,24 @@ __all__ = [
 
 
 @jit_prototype
-def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperatorGraph, stage: MCA_CompiledOperatorGraph.Stage):
-    for cmd in stage.execute_commands:
-        if isinstance(cmd, MCA_CompiledOperatorGraph.Command.NOP):
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperator, commands: list[MCA_CompiledOperator.Command.Base]):
+    for cmd in commands:
+        if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_LOAD_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
             core.mxu_load_context(cont)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_STORE_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.mxu_store_context(cont)
             core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_UOP):
-            op_sig = env.op_sigs[cmd.op_id]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+            op_sig = env.op_meta[cmd.op_id].op_sig
             tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
             
             ifm_sig = tiled_op.i_tiles[cmd.uop_idx][0]
@@ -79,28 +81,34 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, env: MCA_OperatorG
             
             if flush_ofm:
                 core.local_mem_page_write(cmd.o_tile_ptr, ofm, ofm_buf.tile_size)
+                
+                # def debug_func(ofm_sig: TileSignature, container: DataContainer):
+                #     t: torch.Tensor = container.data
+                #     print(ofm_sig.signature)
+                #     print(t.view(torch.int16).reshape(ofm_buf.tile_shape))
+                # core.debug_core_with_ambiguous_func(debug_func, ofm_sig, ofm)
         else:
             raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
             
 @jit_prototype
-def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU_INPLACE(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperatorGraph, stage: MCA_CompiledOperatorGraph.Stage):
-    for cmd in stage.execute_commands:
-        if isinstance(cmd, MCA_CompiledOperatorGraph.Command.NOP):
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperator, commands: list[MCA_CompiledOperator.Command.Base]):
+    for cmd in commands:
+        if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_LOAD_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
             core.mxu_load_context(cont)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_STORE_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.mxu_store_context(cont)
             core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_UOP):
-            op_sig = env.op_sigs[cmd.op_id]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+            op_sig = env.op_meta[cmd.op_id].op_sig
             tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
             
             ifm_sig = tiled_op.i_tiles[cmd.uop_idx][0]
@@ -135,24 +143,24 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU_INPLACE(core: NPUCore, env: MCA_Ope
         
         
 @jit_prototype
-def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperatorGraph, stage: MCA_CompiledOperatorGraph.Stage):
-    for cmd in stage.execute_commands:
-        if isinstance(cmd, MCA_CompiledOperatorGraph.Command.NOP):
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperator, commands: list[MCA_CompiledOperator.Command.Base]):
+    for cmd in commands:
+        if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_LOAD_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
             core.mxu_load_context(cont)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_STORE_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.mxu_store_context(cont)
             core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_UOP):
-            op_sig = env.op_sigs[cmd.op_id]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+            op_sig = env.op_meta[cmd.op_id].op_sig
             tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
             
             ifm_sig = tiled_op.i_tiles[cmd.uop_idx][0]
@@ -203,24 +211,24 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU(core: NPUCore, env: M
             
 
 @jit_prototype    
-def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperatorGraph, stage: MCA_CompiledOperatorGraph.Stage):
-    for cmd in stage.execute_commands:
-        if isinstance(cmd, MCA_CompiledOperatorGraph.Command.NOP):
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperator, commands: list[MCA_CompiledOperator.Command.Base]):
+    for cmd in commands:
+        if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_LOAD_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
             core.mxu_load_context(cont)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_STORE_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.mxu_store_context(cont)
             core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_UOP):
-            op_sig = env.op_sigs[cmd.op_id]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+            op_sig = env.op_meta[cmd.op_id].op_sig
             tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
             
             uop_kwargs = tiled_op.op_kwargs[cmd.uop_idx]
@@ -279,24 +287,24 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, env: MCA_OperatorG
             raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
 
 @jit_prototype
-def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperatorGraph, stage: MCA_CompiledOperatorGraph.Stage):
-    for cmd in stage.execute_commands:
-        if isinstance(cmd, MCA_CompiledOperatorGraph.Command.NOP):
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperator, commands: list[MCA_CompiledOperator.Command.Base]):
+    for cmd in commands:
+        if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_LOAD_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
             core.mxu_load_context(cont)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_STORE_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.mxu_store_context(cont)
             core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_UOP):
-            op_sig = env.op_sigs[cmd.op_id]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+            op_sig = env.op_meta[cmd.op_id].op_sig
             tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
             
             uop_kwargs = tiled_op.op_kwargs[cmd.uop_idx]
@@ -343,24 +351,24 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, env: MCA_Operat
             
 
 @jit_prototype
-def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_AVGPOOL2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperatorGraph, stage: MCA_CompiledOperatorGraph.Stage):
-    for cmd in stage.execute_commands:
-        if isinstance(cmd, MCA_CompiledOperatorGraph.Command.NOP):
+def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_AVGPOOL2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperator, commands: list[MCA_CompiledOperator.Command.Base]):
+    for cmd in commands:
+        if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_LOAD_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
             core.mxu_load_context(cont)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_STORE_CONTEXT):
-            buf = env.buffers[cmd.buf_name]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
+            buf = env.buffers[cmd.tile_sig.buf_name]
             cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
             
             core.mxu_store_context(cont)
             core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_UOP):
-            op_sig = env.op_sigs[cmd.op_id]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+            op_sig = env.op_meta[cmd.op_id].op_sig
             tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
             
             uop_kwargs = tiled_op.op_kwargs[cmd.uop_idx]
@@ -416,16 +424,16 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_AVGPOOL2D(core: NPUCore, env: MCA_Operat
             
 
 @jit_prototype
-def MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperatorGraph, stage: MCA_CompiledOperatorGraph.Stage):
-    for cmd in stage.execute_commands:
-        if isinstance(cmd, MCA_CompiledOperatorGraph.Command.NOP):
+def MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, operator: MCA_CompiledOperator, commands: list[MCA_CompiledOperator.Command.Base]):
+    for cmd in commands:
+        if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_LOAD_CONTEXT):
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
             raise NotImplementedError("STORE_CONTEXT is not supported in DIRECT_COPY kernel.")
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_STORE_CONTEXT):
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
             raise NotImplementedError("STORE_CONTEXT is not supported in DIRECT_COPY kernel.")
-        elif isinstance(cmd, MCA_CompiledOperatorGraph.Command.EXE_UOP):
-            op_sig = env.op_sigs[cmd.op_id]
+        elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+            op_sig = env.op_meta[cmd.op_id].op_sig
             tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
             
             src_buf = env.buffers[tiled_op.i_tiles[cmd.uop_idx][0].buf_name]

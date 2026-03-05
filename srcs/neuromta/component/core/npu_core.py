@@ -199,7 +199,7 @@ class NPUCore(Core):
         if not isinstance(dst_ptr, Pointer) or not isinstance(src_ptr, Pointer):
             raise ValueError("dst_ptr and src_ptr must be Pointer instances.")
         if dst_ptr.addr is None or src_ptr.addr is None:
-            raise ValueError("dst_ptr and src_ptr must have valid addresses before 'mem_copy' method is compiled.")
+            raise ValueError(f"dst_ptr and src_ptr must have valid addresses before 'mem_copy' method is compiled. {dst_ptr}, {src_ptr}")
         
         dst_mem_info = self.global_context.get_mem_info_by_address(dst_ptr.addr)
         src_mem_info = self.global_context.get_mem_info_by_address(src_ptr.addr)

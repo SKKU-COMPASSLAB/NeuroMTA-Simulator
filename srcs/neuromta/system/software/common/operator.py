@@ -14,7 +14,7 @@ import neuromta.system.software.common.mapping as common_mapping_lib
 
 __all__ = [
     "MCA_OP_LINEAR",
-    "MCA_OP_RELU_INPLACE",
+    "MCA_OP_RELU",
     "MCA_OP_LINEAR_RELU",
     "MCA_OP_CONV2D",
     "MCA_OP_MAXPOOL2D",
@@ -45,18 +45,20 @@ def MCA_OP_LINEAR(
 
 
 @mca_operator_method    
-def MCA_OP_RELU_INPLACE(
+def MCA_OP_RELU(
     ifm:  MCA_TensorBuffer,
+    ofm:  MCA_TensorBuffer,
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
-        op_type="RELU_INPLACE",
+        op_type="RELU",
         op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
-        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU_INPLACE],
+        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU],
     )
     
-    op_sig.add_buffer("ifm", ifm, is_input=True, is_output=True)
+    op_sig.add_buffer("ifm", ifm, is_input=True)
+    op_sig.add_buffer("ofm", ofm, is_output=True)
     
-    return common_mapping_lib.MCA_MAPPER_UNARY_INPLACE(op_sig)
+    return common_mapping_lib.MCA_MAPPER_UNARY(op_sig)
 
 
 @mca_operator_method  
@@ -88,8 +90,8 @@ def MCA_OP_CONV2D(
     ofm:  MCA_TensorBuffer,
     
     stride: Sequence[int],
-    padding: Sequence[int],
-    dilation: Sequence[int],
+    padding: Sequence[int]=(0, 0),
+    dilation: Sequence[int]=(1, 1),
     groups: int=1,
     
     use_collective_tile_load: bool=False,
@@ -124,8 +126,8 @@ def MCA_OP_MAXPOOL2D(
     
     window: Sequence[int],
     stride: Sequence[int],
-    padding: Sequence[int],
-    dilation: Sequence[int],
+    padding: Sequence[int]=(0, 0),
+    dilation: Sequence[int]=(1, 1),
     
     use_collective_tile_load: bool=False,
 ) -> MCA_OperatorSignature:

@@ -11,7 +11,7 @@ from neuromta.component.implementation.mapping import *
 
 __all__ = [
     "MCA_MAPPER_LINEAR",
-    "MCA_MAPPER_UNARY_INPLACE",
+    "MCA_MAPPER_UNARY",
     "MCA_MAPPER_CONV2D",
     "MCA_MAPPER_FLATTEN",
 ]
@@ -77,7 +77,22 @@ def MCA_MAPPER_LINEAR(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
     
     return op_sig
     
-def MCA_MAPPER_UNARY_INPLACE(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
+# def MCA_MAPPER_UNARY_INPLACE(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
+#     ifm = op_sig.buffers["ifm"]
+    
+#     for m_s in range(ifm.shard_grid[0]):
+#         for k_s in range(ifm.shard_grid[1]):
+#             for m_t in range(ifm.tile_grid_per_shard[0]):
+#                 for k_t in range(ifm.tile_grid_per_shard[1]):
+#                     tiled_op = op_sig.new_tiled_op()
+#                     tiled_op.add_uop(
+#                         i_tiles=[op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)]],
+#                         o_tile=op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)],
+#                     )
+    
+#     return op_sig
+
+def MCA_MAPPER_UNARY(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
     ifm = op_sig.buffers["ifm"]
     
     for m_s in range(ifm.shard_grid[0]):
@@ -87,7 +102,7 @@ def MCA_MAPPER_UNARY_INPLACE(op_sig: MCA_OperatorSignature) -> MCA_OperatorSigna
                     tiled_op = op_sig.new_tiled_op()
                     tiled_op.add_uop(
                         i_tiles=[op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)]],
-                        o_tile=op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)],
+                        o_tile=op_sig.tiles["ofm"][(m_s, k_s, m_t, k_t)],
                     )
     
     return op_sig

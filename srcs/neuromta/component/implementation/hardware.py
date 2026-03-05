@@ -48,6 +48,10 @@ class MCA_CoreGroup(list):
             subgroups.append(MCA_CoreGroup(sub_core_ids))
         return subgroups
     
+    def intersection(self, other: 'MCA_CoreGroup') -> 'MCA_CoreGroup':
+        new_core_ids = list(set(self).intersection(set(other)))
+        return MCA_CoreGroup(new_core_ids)
+    
     def __add__(self, other: 'MCA_CoreGroup') -> 'MCA_CoreGroup':
         return self.merge(other)
     

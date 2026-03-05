@@ -14,16 +14,13 @@ __all__ = [
     "TileSignature",
     "CollectiveTileSignature",
     "TiledOperatorSignature",
-    # "MCA_OperatorSignature",
-    # "MCA_CompiledOperatorGraph",
-    # "MCA_OperatorGraphCompiler",
-    # "mca_operator_method",
 ]
 
 
 class TileSignature:
-    def __init__(self, buf_name: str, y_s: int, x_s: int, y_t: int, x_t: int):
+    def __init__(self, buf_name: str, tile_size: int, y_s: int, x_s: int, y_t: int, x_t: int):
         self.buf_name = buf_name
+        self.tile_size = tile_size
         self.coords: tuple[int, int, int, int] = (y_s, x_s, y_t, x_t)
         
     def depends_on(self, other: 'TileSignature') -> bool:
@@ -32,6 +29,14 @@ class TileSignature:
     @property
     def signature(self) -> str:
         return f"{self.buf_name}{self.coords}"
+    
+    def __hash__(self):
+        return hash((self.buf_name, self.coords))
+    
+    def __eq__(self, other):
+        if not isinstance(other, TileSignature):
+            return NotImplemented
+        return self.buf_name == other.buf_name and self.coords == other.coords
     
 
 class CollectiveTileSignature(TileSignature):

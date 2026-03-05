@@ -20,7 +20,7 @@ if __name__ == "__main__":
     
     config = TenstorrentConfig.BLACKHOLE()
     device = TenstorrentDevice(**config).initialize()
-    device.set_command_debug_verbosity(verbose=True)
+    device.set_command_debug_verbosity(verbose=False)
 
     module = torchvision.models.alexnet(weights=torchvision.models.AlexNet_Weights.DEFAULT).eval()
     dummy_input = torch.randn(1, 3, 224, 224)
@@ -35,19 +35,11 @@ if __name__ == "__main__":
         core_group_shape=core_group_shape, 
         
         main_data_mem_space_size_per_channel=parse_mem_cap_str("30GB"),
-        l1_data_mem_space_size_per_core=parse_mem_cap_str("1MB"),
-        l1_spad_ld_space_size_per_core=parse_mem_cap_str("480KB"),
-        l1_spad_st_space_size_per_core=parse_mem_cap_str("32KB"),
+        l1_data_mem_space_size_per_core=parse_mem_cap_str("256KB"),
+        spad_mem_space_size_per_core=parse_mem_cap_str("1.2MB"),
         
-        dtype=torch.float16, 
-        acc_dtype=torch.float16,
-        
-        op_recipes={
-            MCA_OperatorGraphCompiler.DEFAULT: MCA_OperatorGraphCompiler.OperatorRecipe(
-                spatial_reuse_target_buf_idx=0,
-                use_broadcast_optimize=True,
-            )
-        }
+        dtype=torch.float32, 
+        acc_dtype=torch.float32,
     )
     
     graph = MCA_NetworkGraphCompiler.from_trace(module, graph_recipe, dummy_input)
@@ -92,7 +84,11 @@ if __name__ == "__main__":
         reference = module(dummy_input)
         
         st = time.time()
-        simulated = graph.run_graph(dummy_input)
+        try:
+            simulated = graph.run_graph(dummy_input, pcc_check=False)  # run the graph with pre-run for compiled-entry validation
+        except Exception as e:
+            logger.error(f"simulation terminated early due to compiled-entry validation failure: {e}")
+            raise
         ed = time.time()
         
     logger.info(f"reference computation time: {ed - st:.4f} sec")

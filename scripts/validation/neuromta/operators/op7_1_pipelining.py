@@ -9,8 +9,13 @@ from neuromta.system.hardware.tenstorrent import *
 from neuromta.system.software.tenstorrent import *
 
 
-TMP_DIR = os.path.join(os.curdir, ".tmp")
-os.makedirs(TMP_DIR, exist_ok=True)
+FILEROOT = os.path.dirname(os.path.abspath(__file__))
+FILENAME = os.path.splitext(os.path.basename(__file__))[0]
+LOGDIR = os.path.join(FILEROOT, ".logs")
+SUMMARY_DIR = os.path.join(LOGDIR, FILENAME)
+
+os.makedirs(LOGDIR, exist_ok=True)
+os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
@@ -23,9 +28,10 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_group = device.get_npu_core_group((0, 0), (6, 2))
+    core_group = device.get_npu_core_group((0, 0), (8, 8))
+    sub_core_groups = core_group.split(shape=(4, 4))
     
-    M, N, K = 256, 256, 256
+    M, N, K = 512, 512, 512
     dtype = torch.int16
     acc_dtype = torch.int16
     broadcast_optimize = False  # Enable broadcast optimization to reduce memory and NoC traffic
@@ -41,69 +47,49 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    set_global_mca_op_option(
-        spad_ld_mem_space_size=parse_mem_cap_str("32KB"), 
-        spad_st_mem_space_size=parse_mem_cap_str("4KB"),
-    )
-    
-    ifm1_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(ifm)
+    ifm1_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(ifm)
     wgt1_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
     bias1_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
-    ofm1_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
+    ofm1_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32))  # does not allocate intermediate buffer to check pipelining effect 
     wgt2_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
     bias2_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
-    ofm2_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
+    ofm2_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32))  # does not allocate intermediate buffer to check pipelining effect
     wgt3_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
     bias3_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
-    ofm3_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
+    ofm3_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
     
-    operator1 = MCA_OP_LINEAR(ifm1_b, wgt1_b, bias1_b, ofm1_b)
-    operator2 = MCA_OP_LINEAR(ofm1_b, wgt2_b, bias2_b, ofm2_b)
-    operator3 = MCA_OP_LINEAR(ofm2_b, wgt3_b, bias3_b, ofm3_b)
+    operator1 = MCA_OP_LINEAR(ifm1_b, wgt1_b, bias1_b, ofm1_b).initialize_core_group(sub_core_groups[0])
+    operator2 = MCA_OP_LINEAR(ofm1_b, wgt2_b, bias2_b, ofm2_b).initialize_core_group(sub_core_groups[1])
+    operator3 = MCA_OP_LINEAR(ofm2_b, wgt3_b, bias3_b, ofm3_b).initialize_core_group(sub_core_groups[2])
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator1)
     compiler.add_op(operator2)
     compiler.add_op(operator3)
     
-    global_recipe=MCA_OperatorGraphCompiler.GlobalRecipe(
+    global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        global_core_group=core_group,
-        core_group_shape=(2, 2),
-        op_recipes={
-            operator1.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
-                spatial_reuse_target_buf_idx=1,
-                use_broadcast_optimize=broadcast_optimize,
-            ),
-            operator2.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
-                spatial_reuse_target_buf_idx=1,
-                use_broadcast_optimize=broadcast_optimize,
-            ),
-            operator3.op_id: MCA_OperatorGraphCompiler.OperatorRecipe(
-                spatial_reuse_target_buf_idx=1,
-                use_broadcast_optimize=broadcast_optimize,
-            ),
-        },
+        spad_space_size_per_core=parse_mem_cap_str("512KB")
     )
     
-    compiled_ops = compiler.compile(global_recipe, target_ops="ALL")
+    compiled_ops = compiler.compile(global_recipe)
     
     for op_id, compiled_op in compiled_ops.items():
         compiled_op.dispatch(device, slot_id="MAIN")
         
-        tmp_output_path = os.path.join(TMP_DIR, f"op_summary_{op_id}.json")
+        tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
         with open(tmp_output_path, "w") as f:
             json.dump(compiled_op.summary(), f, indent=4)
             logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")
         
     with MonitoringWindow() as monitor:
-        for core_id in core_group.core_ids:
-            core = device.get_npu_core(core_id=core_id)
-            pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
-            monitor.pbar_handles[pbar_idx].bind_core(core)
+        for core_group in [sub_core_groups[0], sub_core_groups[1], sub_core_groups[2]]:
+            for core_id in core_group.core_ids:
+                core = device.get_npu_core(core_id=core_id)
+                pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
+                monitor.pbar_handles[pbar_idx].bind_core(core)
         
         st = time.time()
         device.run_kernels()
@@ -116,8 +102,8 @@ if __name__ == "__main__":
     throughput = (total_ops / device.timestamp)
     print(f"overall throughput: {throughput:.2f} OP/cycle")
     
-    simulated1 = ofm1_b.restore()
-    simulated2 = ofm2_b.restore()
+    # simulated1 = ofm1_b.restore()
+    # simulated2 = ofm2_b.restore()
     simulated3 = ofm3_b.restore()
     reference1 = torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
     reference2 = torch.matmul(reference1.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
@@ -125,10 +111,11 @@ if __name__ == "__main__":
     
     # print(f"simulated1:\n{simulated1}")
     # print(f"simulated2:\n{simulated2}")
-    # print(f"simulated3:\n{simulated3}")
+    print(f"simulated3:\n{simulated3}")
     # print(f"reference1:\n{reference1}")
     # print(f"reference2:\n{reference2}")
-    # print(f"reference3:\n{reference3}")
-    print(f"simulation1 {'PASSED' if torch.equal(simulated1, reference1) else 'FAILED'}")
-    print(f"simulation2 {'PASSED' if torch.equal(simulated2, reference2) else 'FAILED'}")
+    print(f"reference3:\n{reference3}")
+    
+    # print(f"simulation1 {'PASSED' if torch.equal(simulated1, reference1) else 'FAILED'}")
+    # print(f"simulation2 {'PASSED' if torch.equal(simulated2, reference2) else 'FAILED'}")
     print(f"simulation3 {'PASSED' if torch.equal(simulated3, reference3) else 'FAILED'}")

@@ -9,8 +9,13 @@ from neuromta.system.hardware.tenstorrent import *
 from neuromta.system.software.tenstorrent import *
 
 
-TMP_DIR = os.path.join(os.curdir, ".tmp")
-os.makedirs(TMP_DIR, exist_ok=True)
+FILEROOT = os.path.dirname(os.path.abspath(__file__))
+FILENAME = os.path.splitext(os.path.basename(__file__))[0]
+LOGDIR = os.path.join(FILEROOT, ".logs")
+SUMMARY_DIR = os.path.join(LOGDIR, FILENAME)
+
+os.makedirs(LOGDIR, exist_ok=True)
+os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
@@ -25,7 +30,7 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
-    M, N, K = 256, 256, 1024
+    M, N, K = 512, 512, 512
     dtype = torch.int16
     acc_dtype = torch.int16
     blocked_mapping = True  # Enable blocked mapping for better data locality
@@ -42,45 +47,27 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    # l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=device.get_npu_core_group()).override(core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    set_global_mca_op_option(
-        spad_ld_mem_space_size=parse_mem_cap_str("256KB"), 
-        spad_st_mem_space_size=parse_mem_cap_str("256KB"),
-    )
-    
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32))#.allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32), blocked_mapping=False          ).tiling((32, 32))#.allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32), blocked_mapping=False          ).tiling((1,  32))#.allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32))#.allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32)).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32), blocked_mapping=False          ).tiling((32, 32)).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32), blocked_mapping=False          ).tiling((1,  32)).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32), blocked_mapping=blocked_mapping).tiling((32, 32)).allocate()
     
     operator = MCA_OP_LINEAR(
         ifm_b, wgt_b, bias_b, ofm_b, 
-    )
+    ).initialize_core_group(core_group)
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
     
-    global_recipe=MCA_OperatorGraphCompiler.GlobalRecipe(
+    global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        global_core_group=core_group,
-        core_group_shape=(4, 4),
-        op_recipes={
-            operator.op_type: MCA_OperatorGraphCompiler.OperatorRecipe(
-                spatial_reuse_target_buf_idx=1,
-                use_broadcast_optimize=broadcast_optimize,
-            )
-        },
+        spad_space_size_per_core=parse_mem_cap_str("512KB")
     )
     
-    compiled_ops = compiler.compile(global_recipe, target_ops="ALL")
-    
-    ifm_b.allocate().update(ifm)
-    wgt_b.allocate().update(wgt)
-    bias_b.allocate().update(bias)
-    ofm_b.allocate()
+    compiled_ops = compiler.compile(global_recipe)
     
     device.remove_all_l1_mem_space()
     device.remove_all_main_mem_space()
@@ -88,7 +75,7 @@ if __name__ == "__main__":
     for op_id, compiled_op in compiled_ops.items():
         compiled_op.dispatch(device, slot_id="MAIN")
         
-        tmp_output_path = os.path.join(TMP_DIR, f"op_summary_{op_id}.json")
+        tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
         with open(tmp_output_path, "w") as f:
             json.dump(compiled_op.summary(), f, indent=4)
             logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")
@@ -118,7 +105,7 @@ if __name__ == "__main__":
     print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
     
     if not torch.equal(simulated, reference):
-        mismatch_report = os.path.join(TMP_DIR, "mismatch_report.txt")
+        mismatch_report = os.path.join(SUMMARY_DIR, "mismatch_report.txt")
         with open(mismatch_report, "w") as f:
             content = []
             for i in range(M):
@@ -129,3 +116,11 @@ if __name__ == "__main__":
                         content.append(f"Mismatch at position ({i}, {j}): simulated={sim_val}, reference={ref_val}\n")
             f.writelines(content)
         logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+        logger.error(f"Total mismatches: {len(content)}/{reference.numel()}")
+        
+    # reference = reference.reshape(M // 32, 32, N // 32, 32).permute(0, 2, 1, 3)
+    # for ms in range(M // 32):
+    #     for ns in range(N // 32):
+    #         ref_tile = reference[ms, ns]
+    #         print(f"Reference tile at ({ms}, {ns}):")
+    #         print(ref_tile)

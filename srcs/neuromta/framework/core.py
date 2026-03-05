@@ -1003,22 +1003,31 @@ class Core:
         
     @core_command_method
     def var_atomic_barrier(self, arrival_cnt: VariableHandle, blocking: VariableHandle, total_cnt: int):
+        current_epoch = blocking.value
         arrival_cnt.atomic_update(arrival_cnt.value + 1)
         # logger.info(f"[{self.core_id}] Barrier arrival count updated: {arrival_cnt.value}/{total_cnt}")
         
         if arrival_cnt.value >= total_cnt:
             arrival_cnt.atomic_update(0)
-            blocking.atomic_update(1 - blocking.value)  # release the barrier (toggle the blocking variable 1->0 or 0->1)
+            blocking.atomic_update(current_epoch + 1)  # release the current barrier epoch
         else:
             context = get_global_kernel_context()
             context.set_blocked(True)
-            blocking.atomic_wait(expected_value=1 - blocking.value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-        
+            blocking.atomic_wait(expected_value=current_epoch + 1, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+    
+    @core_command_method
+    def var_atomic_init(self, var: VariableHandle, value: int=0):
+        var.atomic_update(value)
+    
     @core_command_method
     def var_atomic_compare_and_swap(self, var: VariableHandle, cmp_value: int, new_value: int) -> bool:
         context = get_global_kernel_context()
         context.set_blocked(True)
         var.atomic_compare_and_swap(cmp_value, new_value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+        
+    @core_conditional_command_method
+    def var_conditional_wait(self, vars: list[VariableHandle], condition: Callable[[int], bool]):
+        return all(condition(var.value) for var in vars)
         
     @core_command_method
     def var_atomic_wait(self, var: VariableHandle, expected_value: int):

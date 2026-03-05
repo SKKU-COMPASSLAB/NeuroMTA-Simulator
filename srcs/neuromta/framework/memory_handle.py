@@ -7,6 +7,7 @@ from neuromta.framework.debug_utils import *
 
 __all__ = [
     "Pointer",
+    "ReferencePointer",
     "MemoryBankHandle",
     "MemoryHandle",
 ]
@@ -37,6 +38,23 @@ class Pointer:
         if self._addr is None:
             return ReferencePointer(ref=self, offset=offset)
         return Pointer(addr=self._addr + offset)
+    
+    def __sub__(self, offset: int):
+        if isinstance(offset, torch.Tensor):
+            offset = offset.item()
+        if not isinstance(offset, int):
+            raise ValueError(f"Subtraction only supports Pointer or integer types, but got {type(offset)}.")
+        if self._addr is None:
+            return ReferencePointer(ref=self, offset=-offset)
+        return Pointer(addr=self._addr - offset)    
+        
+    def __hash__(self):
+        return hash((self._addr,))
+    
+    def __eq__(self, other):
+        if not isinstance(other, Pointer):
+            return NotImplemented
+        return self._addr == other._addr
     
     def __str__(self):
         return f"Pointer(id={hex(id(self))}, addr={self._addr})"

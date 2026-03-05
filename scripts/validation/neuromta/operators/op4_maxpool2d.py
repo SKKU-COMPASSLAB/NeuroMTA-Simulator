@@ -9,8 +9,13 @@ from neuromta.system.hardware.tenstorrent import *
 from neuromta.system.software.tenstorrent import *
 
 
-TMP_DIR = os.path.join(os.curdir, ".tmp")
-os.makedirs(TMP_DIR, exist_ok=True)
+FILEROOT = os.path.dirname(os.path.abspath(__file__))
+FILENAME = os.path.splitext(os.path.basename(__file__))[0]
+LOGDIR = os.path.join(FILEROOT, ".logs")
+SUMMARY_DIR = os.path.join(LOGDIR, FILENAME)
+
+os.makedirs(LOGDIR, exist_ok=True)
+os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
@@ -24,7 +29,7 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_group = device.get_npu_core_group((0, 0), (8, 8))
+    core_group = device.get_npu_core_group((0, 0), (4, 4))
     
     N, H, W, C = 1, 60, 60, 64
     WINDOW = (2, 2)
@@ -50,11 +55,6 @@ if __name__ == "__main__":
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    set_global_mca_op_option(
-        spad_ld_mem_space_size=parse_mem_cap_str("480KB"), 
-        spad_st_mem_space_size=parse_mem_cap_str("32KB"),
-    )
-    
     ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(W,  Cs)).tiling((32, 32)).allocate().update(ifm)
     ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OW, Cs)).tiling((32, 32)).allocate()
     
@@ -62,29 +62,22 @@ if __name__ == "__main__":
         ifm_b, ofm_b, 
         window=WINDOW, stride=STRIDE, padding=PADDING, dilation=DILATION,
         use_collective_tile_load=False,
-    )
+    ).initialize_core_group(core_group)
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
     
-    global_recipe=MCA_OperatorGraphCompiler.GlobalRecipe(
+    global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        global_core_group=core_group,
-        core_group_shape=(4, 4),
-        op_recipes={
-            operator.op_type: MCA_OperatorGraphCompiler.OperatorRecipe(
-                spatial_reuse_target_buf_idx=1,
-                use_broadcast_optimize=broadcast_optimize,
-            )
-        },
+        spad_space_size_per_core=parse_mem_cap_str("512KB")
     )
     
-    compiled_ops = compiler.compile(global_recipe, target_ops="ALL")
+    compiled_ops = compiler.compile(global_recipe)
     
     for op_id, compiled_op in compiled_ops.items():
         compiled_op.dispatch(device, slot_id="MAIN")
         
-        tmp_output_path = os.path.join(TMP_DIR, f"op_summary_{op_id}.json")
+        tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
         with open(tmp_output_path, "w") as f:
             json.dump(compiled_op.summary(), f, indent=4)
             logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")

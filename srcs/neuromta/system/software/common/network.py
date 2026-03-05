@@ -39,20 +39,12 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
         
         main_data_mem_space_size_per_channel: int,
         l1_data_mem_space_size_per_core: int,
-        l1_spad_ld_space_size_per_core: int,
-        l1_spad_st_space_size_per_core: int,
+        spad_mem_space_size_per_core: int,
     
         dtype: torch.dtype,
         acc_dtype: torch.dtype,
-        
-        op_recipes: 'dict[str, MCA_OperatorGraphCompiler.OperatorRecipe]'=None,
     ):
-        super().__init__(device, global_core_group, core_group_shape, main_data_mem_space_size_per_channel, l1_data_mem_space_size_per_core, op_recipes)
-
-        set_global_mca_op_option(
-            spad_ld_mem_space_size=l1_spad_ld_space_size_per_core,
-            spad_st_mem_space_size=l1_spad_st_space_size_per_core,
-        )
+        super().__init__(device, global_core_group, core_group_shape, main_data_mem_space_size_per_channel, l1_data_mem_space_size_per_core, spad_mem_space_size_per_core)
         
         self.dtype = dtype
         self.acc_dtype = acc_dtype
@@ -94,6 +86,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
+            max_n_cores=buf_sigs[-1].n_tiles
         )
         
     
@@ -153,6 +146,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
+            max_n_cores=buf_sigs[-1].n_tiles
         )
     
     @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
@@ -187,13 +181,16 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             NetworkGraphEntryCompileTarget.BufferSignature(
                 buffer_shape, self.dtype, shard_shape, (32, 32), False, ifm.dtype,
                 preprocessings=preprocessing,
+            ).load_from(node.inputsAt(1), CONTEXT),
+            NetworkGraphEntryCompileTarget.BufferSignature(
+                buffer_shape, self.dtype, shard_shape, (32, 32), False, ifm.dtype,
                 postprocessings=postprocessing,
-            ).load_from(node.inputsAt(1), CONTEXT).store_to(node.outputsAt(0), CONTEXT)
+            ).store_to(node.outputsAt(0), CONTEXT),
         ]
         
         op_kwargs = {}
         
-        op_method = MCA_OP_RELU_INPLACE
+        op_method = MCA_OP_RELU
         
         _total_ops = ifm.numel()  # 1 for ReLU
         _total_buf_bytes = ifm.numel() * (self.dtype.itemsize) * 2  # load and store
@@ -204,6 +201,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
+            max_n_cores=buf_sigs[-1].n_tiles
         )
         
     @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
@@ -251,6 +249,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=_total_ops / _total_buf_bytes,
+            max_n_cores=buf_sigs[-1].n_tiles
         )
         
     @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
@@ -299,6 +298,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
+            max_n_cores=buf_sigs[-1].n_tiles
         )
         
     @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
@@ -345,6 +345,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
+            max_n_cores=buf_sigs[-1].n_tiles
         )
         
     @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
@@ -391,4 +392,5 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
+            max_n_cores=buf_sigs[-1].n_tiles
         )
