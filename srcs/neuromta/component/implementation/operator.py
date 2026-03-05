@@ -37,11 +37,21 @@ class MCA_OperatorSignature:
         ROW_MAJOR = "ROW_MAJOR"
         COL_MAJOR = "COL_MAJOR"
     
-    def __init__(self, op_type: str, op_template: Callable, op_ex_kernels: list[Callable]):
+    def __init__(
+        self, 
+        op_type: str, 
+        ld_thread_template: Callable,
+        ex_thread_template: Callable,
+        st_thread_template: Callable, 
+        op_ex_kernels: list[Callable]
+    ):
         self._op_type = op_type
         self.op_id = op_type    # will be initialized by MCA_OperatorGraphCompiler (initially set to op_type) 
         
-        self.op_template = op_template
+        # self.op_template = op_template
+        self.ld_thread_template = ld_thread_template
+        self.ex_thread_template = ex_thread_template
+        self.st_thread_template = st_thread_template
         self.op_ex_kernels = op_ex_kernels
         
         self._buffers: dict[str, MCA_TensorBuffer] = {}
@@ -325,7 +335,7 @@ class MCA_CompiledOperator:
     class Stage:
         def __init__(self):
             # STAGE 1: Preprocessing & Memory Load
-            #   - Preprocessing commands can be executed simultaneously
+            #   - Preprocessing commands cannot be executed simultaneously
             #   - Memory load commands can be executed simultaneously
             #   - However, preprocessing commands should always be executed before memory load commands
             #
@@ -334,7 +344,7 @@ class MCA_CompiledOperator:
             #
             # STAGE 3: Memory Store & Postprocessing
             #   - Memory store commands can be executed simultaneously
-            #   - Postprocessing commands can be executed simultaneously
+            #   - Postprocessing commands cannot be executed simultaneously
             #   - However, memory store commands should always be executed before postprocessing commands
 
             self.preprocessing_commands:    list[MCA_CompiledOperator.Command.Base] = []
@@ -347,11 +357,38 @@ class MCA_CompiledOperator:
         def is_bubble(self) -> bool:
             return len(self.preprocessing_commands) == 0 and len(self.mem_load_commands) == 0 and len(self.execute_commands) == 0 and len(self.mem_store_commands) == 0 and len(self.postprocessing_commands) == 0
             
-    def __init__(self, env: 'MCA_OperatorGraphCompiler.Environment', op_sig: 'MCA_OperatorSignature'):
+    def __init__(self, env: 'MCA_OperatorGraphCompiler.Environment', op_meta: 'MCA_OperatorGraphCompiler.OperatorMetadata'):
         self._env = env
-        self._op_template = op_sig.op_template
-        self._op_ex_kernels = op_sig.op_ex_kernels
-        self._mappings: dict[int, list[MCA_CompiledOperator.Stage]] = {core_id: [] for core_id in op_sig.core_group.core_ids}  # {core_id: [stage1, stage2, ...]}
+        # self._op_template = op_meta.op_sig.op_template
+        self._ld_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.ld_thread_template
+        self._ex_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.ex_thread_template
+        self._st_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.st_thread_template
+        self._op_ex_kernels = op_meta.op_sig.op_ex_kernels
+        self._mappings: dict[int, list[MCA_CompiledOperator.Stage]] = {core_id: [] for core_id in op_meta.op_sig.core_group.core_ids}  # {core_id: [stage1, stage2, ...]}
+        
+        self._ld_ex_sync_barriers = {
+            core_id: (
+                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_ld_ex_sync_barrier_arrived_count", initial_value=0).handle_name,
+                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_ld_ex_sync_barrier_block_state", initial_value=0).handle_name,
+                2,  # total_arrivals: 1 for LD stage + 1 for EX stage
+            )
+            for core_id in op_meta.op_sig.core_group.core_ids
+        }
+        
+        self._ex_st_sync_barriers = {
+            core_id: (
+                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_ex_st_sync_barrier_arrived_count", initial_value=0).handle_name,
+                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_ex_st_sync_barrier_block_state", initial_value=0).handle_name,
+                2,  # total_arrivals: 1 for EX stage + 1 for ST stage
+            )
+            for core_id in op_meta.op_sig.core_group.core_ids
+        }
+        
+        self._global_sync_barrier = (
+            env.add_variable(f"op_{op_meta.op_sig.op_id}_global_sync_barrier_arrived_count", initial_value=0).handle_name,
+            env.add_variable(f"op_{op_meta.op_sig.op_id}_global_sync_barrier_block_state", initial_value=0).handle_name,
+            len(op_meta.op_sig.core_group.core_ids) * 3,  # total_arrivals: 1 for LD stage + 1 for EX stage + 1 for ST stage per core
+        )
     
     def add_stage(self, core_id: int, stage: 'MCA_CompiledOperator.Stage'):
         self._mappings[core_id].append(stage)
@@ -359,15 +396,30 @@ class MCA_CompiledOperator:
     def dispatch(self, device: MCA_DeviceBase, slot_id: int="MAIN"):
         for core_id in self.mappings.keys():
             core = device.get_npu_core(core_id)
-            n_stages = len(self.mappings[core_id])
+            ld_ex_b = self._ld_ex_sync_barriers[core_id]
+            ex_st_b = self._ex_st_sync_barriers[core_id]
             
-            for cursor in range(n_stages + 2):
-                stage1_cursor = cursor
-                stage2_cursor = cursor - 1
-                stage3_cursor = cursor - 2
+            for stage_idx, stage in enumerate(self.mappings[core_id]):
+                presync_b = self._global_sync_barrier if stage_idx == 0 else None
+                postsync_b = self._global_sync_barrier if stage_idx == (len(self.mappings[core_id]) - 1) else None
+                    
+                ld_thread = self._ld_thread_template(core, self._env, stage.preprocessing_commands, stage.mem_load_commands, ld_ex_b, presync_b, postsync_b)
+                ex_thread = self._ex_thread_template(core, self._env, stage.execute_commands, self._op_ex_kernels, ld_ex_b, ex_st_b, presync_b, postsync_b)
+                st_thread = self._st_thread_template(core, self._env, stage.mem_store_commands, stage.postprocessing_commands, ex_st_b, presync_b, postsync_b)
                 
-                kernel: KernelPrototype = self._op_template(core, self._env, self, stage1_cursor, stage2_cursor, stage3_cursor, self._op_ex_kernels)
-                kernel.dispatch(slot_id)
+                ld_thread.dispatch("LD")
+                ex_thread.dispatch("EX")
+                st_thread.dispatch("ST")
+            
+            # n_stages = len(self.mappings[core_id])
+            
+            # for cursor in range(n_stages + 2):
+            #     stage1_cursor = cursor
+            #     stage2_cursor = cursor - 1
+            #     stage3_cursor = cursor - 2
+                
+            #     kernel: KernelPrototype = self._op_template(core, self._env, self, stage1_cursor, stage2_cursor, stage3_cursor, self._op_ex_kernels)
+            #     kernel.dispatch(slot_id)
         
     @property
     def mappings(self):
@@ -1091,7 +1143,7 @@ class MCA_OperatorGraphCompiler:
         op_metas = {target_op_id: env.op_meta[target_op_id] for target_op_id in op_ids}
         
         # compiled op contexts
-        compiled_ops   = {op_id: MCA_CompiledOperator(env, op_meta.op_sig) for op_id, op_meta in op_metas.items()}
+        compiled_ops   = {op_id: MCA_CompiledOperator(env, op_meta) for op_id, op_meta in op_metas.items()}
         mem_states     = {op_id: MCA_OperatorGraphCompiler.MemoryState(op_meta, env.recipe) for op_id, op_meta in op_metas.items()} 
         
         thread_progress_vars: dict[str, dict[int, VariableHandle]] = {
@@ -1323,24 +1375,23 @@ class MCA_OperatorGraphCompiler:
                                         _evicted_tiles.add(tile)
                                 
                                 if len(_evicted_tiles) > 0:
-                                    # for _evicted_tile in _evicted_tiles:
-                                    # _evicted_tile = _evicted_tiles.pop()
-                                    _evicted_tile, evicted_tile_dep_uop_idx = None, None
-                                    for tile in _evicted_tiles:
-                                        for dst_op_id, dst_dept in tile_dependencies[op_id][tile].items():
+                                    # _evicted_tile, evicted_tile_dep_uop_idx = None, None
+                                    # for tile in _evicted_tiles:
+                                    #     for dst_op_id, dst_dept in tile_dependencies[op_id][tile].items():
+                                    #         for dst_core_id, dep_uop_idx in dst_dept.items():
+                                    #             if _evicted_tile is None or dep_uop_idx < evicted_tile_dep_uop_idx:
+                                    #                 _evicted_tile = tile
+                                    #                 evicted_tile_dep_uop_idx = dep_uop_idx
+                                    
+                                    for _evicted_tile in _evicted_tiles:
+                                        mem_states[op_id].evict_shared_tiles(core_id, [_evicted_tile])
+                                        
+                                        for dst_op_id, dst_dept in tile_dependencies[op_id][_evicted_tile].items():
                                             for dst_core_id, dep_uop_idx in dst_dept.items():
-                                                if _evicted_tile is None or dep_uop_idx < evicted_tile_dep_uop_idx:
-                                                    _evicted_tile = tile
-                                                    evicted_tile_dep_uop_idx = dep_uop_idx
-                                    
-                                    mem_states[op_id].evict_shared_tiles(core_id, [_evicted_tile])
-                                    
-                                    for dst_op_id, dst_dept in tile_dependencies[op_id][_evicted_tile].items():
-                                        for dst_core_id, dep_uop_idx in dst_dept.items():
-                                            current_stages[op_id][core_id].mem_load_commands.append(MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT(
-                                                var_names=[thread_progress_vars[dst_op_id][dst_core_id]],
-                                                condition=MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT.greater_equal(dep_uop_idx+1)
-                                            ))
+                                                current_stages[op_id][core_id].mem_load_commands.append(MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT(
+                                                    var_names=[thread_progress_vars[dst_op_id][dst_core_id]],
+                                                    condition=MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT.greater_equal(dep_uop_idx+1)
+                                                ))
                         
                         # 3-2) ping-pong the buffer and create new stages         
                         for core_id, current_stage in current_stages[op_id].items():
@@ -1408,31 +1459,6 @@ class MCA_OperatorGraphCompiler:
                     mark_compiled_op_thread_progress(op_id)
                     exe_stat_cursors[op_id] += 1
                     exe_iter_cnt += 1
-                    
-                    # progress_thread(op_id)
-                    
-                    # # change stage for all cores if the operator has executed all prefetched uops
-                    # has_shared_src = any(src_type.is_tile_shared for src_type in op_meta.i_buf_src.values())
-                
-                    # if has_shared_src and exe_stat_cursors[op_id] >= prefetch_cursors[op_id]:
-                    #     src_op_ids = [src_type.k for src_type in op_meta.i_buf_src.values() if src_type.is_tile_shared]
-                        
-                    #     current_stage_progress = max(len(stages) for stages in compiled_ops[op_id]._mappings.values())
-                        
-                    #     for core_id, stages in compiled_ops[op_id]._mappings.items():
-                    #         if len(stages) < current_stage_progress:
-                    #             raise Exception(f"Debug: not synchronous compiled stages??")
-                        
-                    #     exchange_new_stage(op_id)
-                        
-                    #     for src_op_id in src_op_ids:
-                    #         for src_core_id, src_current_stage in current_stages[src_op_id].items():
-                    #             src_current_stage.postprocessing_commands.append(MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT(
-                    #                 var_names=list(stage_progress_vars[op_id].values()),
-                    #                 condition=MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT.greater_equal(current_stage_progress + 1)
-                    #             ))
-                                
-                    #         exchange_new_stage(src_op_id)
                         
         for op_id in op_ids:
             for core_id, current_stage in current_stages[op_id].items():

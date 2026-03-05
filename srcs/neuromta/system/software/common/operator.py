@@ -32,7 +32,9 @@ def MCA_OP_LINEAR(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="LINEAR",
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
+        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
+        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR],
     )
     
@@ -51,7 +53,9 @@ def MCA_OP_RELU(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="RELU",
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
+        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
+        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU],
     )
     
@@ -70,7 +74,9 @@ def MCA_OP_LINEAR_RELU(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="LINEAR_RELU",
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
+        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
+        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU],
     )
     
@@ -98,7 +104,9 @@ def MCA_OP_CONV2D(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="CONV2D",
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
+        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
+        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D],
     )
     
@@ -133,7 +141,9 @@ def MCA_OP_MAXPOOL2D(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="MAXPOOL2D",
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
+        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
+        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D],
     )
     
@@ -166,7 +176,9 @@ def MCA_OP_AVGPOOL2D(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="AVGPOOL2D",
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
+        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
+        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_AVGPOOL2D],
     )
     
@@ -194,7 +206,9 @@ def MCA_OP_FLATTEN(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="FLATTEN",
-        op_template=mca_kernel_lib.MCA_OP_CORE_TEMPLATE,
+        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
+        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
+        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
         op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY],
     )
     
