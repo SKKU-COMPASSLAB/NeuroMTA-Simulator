@@ -30,17 +30,17 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=True)
     
-    core_group = device.get_npu_core_group((0, 0), (4, 4))
+    core_group = MCA_CoreGroup.merge_core_groups(device.get_npu_core_group((0, 0), (8, 8)).split(shape=(4, 4)))
     
-    N, H, W, C = 1, 55, 55, 64
-    FH, FW, K = 3, 3, 64
-    STRIDE, PADDING, DILATION = (2, 2), (0, 0), (1, 1)
+    N, H, W, C = 1, 224, 224, 3
+    FH, FW, K = 11, 11, 96
+    STRIDE, PADDING, DILATION = (4, 4), (2, 2), (1, 1)
     OH = (H + 2 * PADDING[0] - DILATION[0] * (FH - 1) - 1) // STRIDE[0] + 1
     OW = (W + 2 * PADDING[1] - DILATION[1] * (FW - 1) - 1) // STRIDE[1] + 1
     
-    Wt = 55
-    OWt = 27
-    Ct = 32
+    Wt = 56
+    OWt = 55
+    Ct = 10
     Kt = 32
     
     if (W % Wt != 0): Wt = W
@@ -128,3 +128,17 @@ if __name__ == "__main__":
     num_mismatches = (simulated != reference).sum().item()
     print(f"total elements: {total_elements}, mismatches: {num_mismatches}")
     print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
+    
+    mismatch_report = os.path.join(SUMMARY_DIR, "conv_mismatch_report.txt")
+    with open(mismatch_report, "w") as f:
+        content = []
+        s = simulated.flatten()
+        r = reference.flatten()
+        for i in range(s.shape[0]):
+            sim_val = s[i].item()
+            ref_val = r[i].item()
+            if sim_val != ref_val:
+                content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
+        f.writelines(content)
+    logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+    logger.error(f"Total mismatches: {len(content)}/{s.numel()}")

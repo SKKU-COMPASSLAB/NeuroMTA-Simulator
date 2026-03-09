@@ -83,7 +83,7 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        spad_space_size_per_core=parse_mem_cap_str("1.4MB")
+        spad_space_size_per_core=parse_mem_cap_str("1MB")
     )
     
     compiled_ops = compiler.compile(global_recipe)
@@ -132,3 +132,48 @@ if __name__ == "__main__":
     print(f"simulation1 {'PASSED' if torch.equal(conv_simulated, conv_ofm) else 'FAILED'}")
     print(f"simulation2 {'PASSED' if torch.equal(relu_simulated, relu_ofm) else 'FAILED'}")
     print(f"simulation3 {'PASSED' if torch.equal(maxpool_simulated, maxpool_ofm) else 'FAILED'}")
+    
+    if not torch.equal(conv_simulated, conv_ofm):
+        mismatch_report = os.path.join(SUMMARY_DIR, "conv_mismatch_report.txt")
+        with open(mismatch_report, "w") as f:
+            content = []
+            s = conv_simulated.flatten()
+            r = conv_ofm.flatten()
+            for i in range(s.shape[0]):
+                sim_val = s[i].item()
+                ref_val = r[i].item()
+                if sim_val != ref_val:
+                    content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
+            f.writelines(content)
+        logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+        logger.error(f"Total mismatches: {len(content)}/{s.numel()}")
+        
+    if not torch.equal(relu_simulated, relu_ofm):
+        mismatch_report = os.path.join(SUMMARY_DIR, "relu_mismatch_report.txt")
+        with open(mismatch_report, "w") as f:
+            content = []
+            s = relu_simulated.flatten()
+            r = relu_ofm.flatten()
+            for i in range(s.shape[0]):
+                sim_val = s[i].item()
+                ref_val = r[i].item()
+                if sim_val != ref_val:
+                    content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
+            f.writelines(content)
+        logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+        logger.error(f"Total mismatches: {len(content)}/{s.numel()}")
+        
+    if not torch.equal(maxpool_simulated, maxpool_ofm):
+        mismatch_report = os.path.join(SUMMARY_DIR, "maxpool_mismatch_report.txt")
+        with open(mismatch_report, "w") as f:
+            content = []
+            s = maxpool_simulated.flatten()
+            r = maxpool_ofm.flatten()
+            for i in range(s.shape[0]):
+                sim_val = s[i].item()
+                ref_val = r[i].item()
+                if sim_val != ref_val:
+                    content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
+            f.writelines(content)
+        logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+        logger.error(f"Total mismatches: {len(content)}/{s.numel()}")

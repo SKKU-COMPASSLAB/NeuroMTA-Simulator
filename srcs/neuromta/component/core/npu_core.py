@@ -185,14 +185,16 @@ class NPUCore(Core):
             cont_row_stride = row_size
         if row_pattern is None:
             row_pattern = {i: i for i in range(row_num)}
-            
-        if container.is_mem_segment:
-            container.data = container.data.flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
-        else:
-            container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
+
+        if not container.is_mem_segment:
+            raise ValueError("container.data must be a Tensor for local_mem_page_write.")
+
+        # Keep container immutable during writes because broadcast can fan-out
+        # to multiple destination cores with the same DataContainer instance.
+        cont_data = container.data.flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
         
         for d, s in row_pattern.items():
-            dst_data = container.data[d, cont_row_offset:cont_row_offset+row_size]
+            dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
             self.mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
         
     def local_mem_copy(self, dst_ptr: Pointer, src_ptr: Pointer, row_size: int, row_num: int=1, src_row_stride: int=None, dst_row_stride: int=None, nowait: bool=False):
@@ -344,7 +346,11 @@ class NPUCore(Core):
         if not isinstance(src_ptr, Pointer):
             raise ValueError("dst_ptr and src_ptr must be Pointer instances.")
         if src_ptr.addr is None:
-            raise ValueError("dst_ptr and src_ptr must have valid addresses before 'mem_copy' method is compiled.")
+            if isinstance(src_ptr, ReferencePointer):
+                print(src_ptr.ref.addr, src_ptr.addr)
+            else:
+                print(src_ptr.addr)
+            raise ValueError("src_ptr must have valid addresses before 'mem_copy' method is compiled.")
         
         src_mem_info = self.global_context.get_mem_info_by_address(src_ptr.addr)
         
@@ -381,33 +387,35 @@ class NPUCore(Core):
                 self.async_rpc_send_req_msg(data_rd_request)
                 self.async_rpc_wait_rsp_msg(data_rd_request)
                 
+            # Use deterministic sequential fan-out for destination writes.
+            # Nested per-destination parallel threads can race in simulator RPC
+            # scheduling for shared broadcast payloads.
             for dst_ptr in dst_ptrs:
-                with new_parallel_thread("BCAST"):
-                    dst_mem_info = self.global_context.get_mem_info_by_address(dst_ptr.addr)
-                    
-                    if dst_mem_info.mem_type == GlobalContextMemType.L1:
-                        dst_owner_core_id = dst_mem_info.owner_core_ids[0]
-                    else:
-                        dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
-            
-                    if dst_owner_core_id == self.core_id:
-                        self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size)
-                    else:
-                        data_wr_request = RPCMessage(
-                            src_core_id=self.core_id,
-                            dst_core_id=dst_owner_core_id,
-                            cmd_id="local_mem_page_write"
-                        ).with_args(
-                            ptr=dst_ptr,
-                            container=container,
-                            row_size=row_size,
-                            row_num=row_num,
-                            mem_row_stride=dst_row_stride,
-                            cont_row_stride=row_size,
-                        )
-                        
-                        self.async_rpc_send_req_msg(data_wr_request)
-                        self.async_rpc_wait_rsp_msg(data_wr_request)
+                dst_mem_info = self.global_context.get_mem_info_by_address(dst_ptr.addr)
+
+                if dst_mem_info.mem_type == GlobalContextMemType.L1:
+                    dst_owner_core_id = dst_mem_info.owner_core_ids[0]
+                else:
+                    dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
+
+                if dst_owner_core_id == self.core_id:
+                    self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size)
+                else:
+                    data_wr_request = RPCMessage(
+                        src_core_id=self.core_id,
+                        dst_core_id=dst_owner_core_id,
+                        cmd_id="local_mem_page_write"
+                    ).with_args(
+                        ptr=dst_ptr,
+                        container=container,
+                        row_size=row_size,
+                        row_num=row_num,
+                        mem_row_stride=dst_row_stride,
+                        cont_row_stride=row_size,
+                    )
+
+                    self.async_rpc_send_req_msg(data_wr_request)
+                    self.async_rpc_wait_rsp_msg(data_wr_request)
                         
         # THREAD: DRAM Transactions
         with new_parallel_thread("DRAM_TX"):

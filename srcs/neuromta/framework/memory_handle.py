@@ -52,9 +52,29 @@ class Pointer:
         return hash((self._addr,))
     
     def __eq__(self, other):
-        if not isinstance(other, Pointer):
-            return NotImplemented
+        if isinstance(other, int): other = Pointer(addr=other)
+        if not isinstance(other, Pointer): return NotImplemented
         return self._addr == other._addr
+    
+    def __lt__(self, other):
+        if isinstance(other, int): other = Pointer(addr=other)
+        if not isinstance(other, Pointer): return NotImplemented
+        return self._addr < other._addr
+    
+    def __le__(self, other):
+        if isinstance(other, int): other = Pointer(addr=other)
+        if not isinstance(other, Pointer): return NotImplemented
+        return self._addr <= other._addr
+    
+    def __gt__(self, other):
+        if isinstance(other, int): other = Pointer(addr=other)
+        if not isinstance(other, Pointer): return NotImplemented
+        return self._addr > other._addr
+    
+    def __ge__(self, other):
+        if isinstance(other, int): other = Pointer(addr=other)
+        if not isinstance(other, Pointer): return NotImplemented
+        return self._addr >= other._addr
     
     def __str__(self):
         return f"Pointer(id={hex(id(self))}, addr={self._addr})"

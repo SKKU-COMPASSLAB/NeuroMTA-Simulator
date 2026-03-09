@@ -69,9 +69,6 @@ def MCA_KERNEL_CORE_LD_THREAD(
         elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_LOAD_TILE):
             tile_sig = cmd.tile_sig
             buf = env.buffers[cmd.tile_sig.buf_name]
-
-            for ptr in cmd.ptrs:
-                core.mem_init(ptr, buf.tile_size)
                 
             if isinstance(tile_sig, CollectiveTileSignature):
                 for ptr in cmd.ptrs:
@@ -86,6 +83,9 @@ def MCA_KERNEL_CORE_LD_THREAD(
 
                         core.local_mem_copy(dst_row_ptr, src_row_ptr, row_size, 1, src_row_stride, dst_row_stride, nowait=True)
             else:
+                for ptr in cmd.ptrs:
+                    core.mem_init(ptr, buf.tile_size)
+                
                 src_ptr, row_size, row_num, src_row_stride, dst_row_stride = buf.get_tile_ptr_read_args(*tile_sig.coords)
                 
                 if len(cmd.ptrs) > 1:  # BROADCAST: broadcast optimization
@@ -96,6 +96,9 @@ def MCA_KERNEL_CORE_LD_THREAD(
             tile_sig = cmd.tile_sig
             buf = env.buffers[cmd.tile_sig.buf_name]
             tile_size = buf.tile_size
+            
+            for ptr in cmd.dst_ptrs:
+                core.mem_init(ptr, buf.tile_size)
             
             if len(cmd.dst_ptrs) > 1:  # BROADCAST: broadcast optimization
                 core.local_mem_broadcast(cmd.dst_ptrs, cmd.src_ptr, tile_size, 1, nowait=True)
