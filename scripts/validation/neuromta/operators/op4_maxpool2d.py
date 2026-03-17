@@ -2,6 +2,7 @@ import os
 import json
 import time
 import torch
+import argparse
 
 from neuromta.framework import *
 from neuromta.component import *
@@ -19,15 +20,21 @@ os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Validate OP4 MaxPool2D operator on Tenstorrent hardware.")
+    parser.add_argument('--no-bcast', action="store_true", help="Whether not to use broadcast", dest="no_bcast")
+    parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
+    parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
+    args = parser.parse_args()
+
     # torch.set_printoptions(linewidth=1024, threshold=10000)
     torch.set_printoptions(linewidth=1024)
-    logger.set_print_options(log_level=LogLevel.DEBUG)
+    logger.set_print_options(log_level=LogLevel.DEBUG if args.monitor else LogLevel.INFO)
     
     config = TenstorrentConfig.BLACKHOLE()
     device = TenstorrentDevice(**config)
     
     device.initialize()
-    device.set_command_debug_verbosity(verbose=True)
+    device.set_command_debug_verbosity(verbose=args.monitor)
     
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
@@ -43,8 +50,7 @@ if __name__ == "__main__":
     dtype = torch.int16
     acc_dtype = torch.int16
     blocked_mapping = True  # Enable blocked mapping for better data locality
-    broadcast_optimize = True  # Enable broadcast optimization to reduce memory and NoC traffic
-    sim_mode = "partial_l1"
+    broadcast_optimize = not args.no_bcast  # Enable broadcast optimization to reduce memory and NoC traffic
     
     ifm  = torch.randint(low=0, high=64, size=(N, H, W, C), dtype=dtype)
     ofm  = torch.zeros((N, OH, OW, C), dtype=acc_dtype)
@@ -61,7 +67,6 @@ if __name__ == "__main__":
     operator = MCA_OP_MAXPOOL2D(
         ifm_b, ofm_b, 
         window=WINDOW, stride=STRIDE, padding=PADDING, dilation=DILATION,
-        use_collective_tile_load=False,
     ).initialize_core_group(core_group)
     
     compiler = MCA_OperatorGraphCompiler()
@@ -69,25 +74,29 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        spad_space_size_per_core=parse_mem_cap_str("512KB")
+        spad_space_size_per_core=parse_mem_cap_str("512KB"),
+        broadcast_optimize=broadcast_optimize,
     )
     
-    compiled_ops = compiler.compile(global_recipe)
+    compiled_ops = compiler.compile(global_recipe).dispatch()
     
-    for op_id, compiled_op in compiled_ops.items():
-        compiled_op.dispatch(device, slot_id="MAIN")
-        
+    for op_id, summary in compiled_ops.summary().items():
         tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
         with open(tmp_output_path, "w") as f:
-            json.dump(compiled_op.summary(), f, indent=4)
-            logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")
+            json.dump(summary, f, indent=4)
+            logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
         
-    with MonitoringWindow() as monitor:
-        for core_id in core_group.core_ids:
-            core = device.get_npu_core(core_id=core_id)
-            pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
-            monitor.pbar_handles[pbar_idx].bind_core(core)
-        
+    if args.monitor:
+        with MonitoringWindow() as monitor:
+            for core_id in core_group.core_ids:
+                core = device.get_npu_core(core_id=core_id)
+                pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
+                monitor.pbar_handles[pbar_idx].bind_core(core)
+
+            st = time.time()
+            device.run_kernels()
+            ed = time.time()
+    else:
         st = time.time()
         device.run_kernels()
         ed = time.time()
@@ -114,3 +123,19 @@ if __name__ == "__main__":
     num_mismatches = (simulated != reference).sum().item()
     print(f"total elements: {total_elements}, mismatches: {num_mismatches}")
     print(f"simulation {'PASSED' if torch.equal(simulated, reference) else 'FAILED'}")
+
+    if args.report_mismatch:
+        if not torch.equal(simulated, reference):
+            mismatch_report = os.path.join(SUMMARY_DIR, "maxpool_mismatch_report.txt")
+            with open(mismatch_report, "w") as f:
+                content = []
+                s = simulated.flatten()
+                r = reference.flatten()
+                for i in range(s.shape[0]):
+                    sim_val = s[i].item()
+                    ref_val = r[i].item()
+                    if sim_val != ref_val:
+                        content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
+                f.writelines(content)
+            logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+            logger.error(f"Total mismatches: {len(content)}/{s.numel()}")

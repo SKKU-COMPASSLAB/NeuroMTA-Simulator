@@ -1,111 +1,202 @@
 import os
-import abc
-import math
-import shutil
-from collections import deque
+import json
+import torch
 
-from neuromta.framework.core import Core, Kernel, Command
+from neuromta.framework.core import Core, Kernel, Command, RPCMessage
 from neuromta.framework.logger import logger
+from neuromta.framework.device import Device
+from typing import Callable
 
 
 __all__ = [
-    "Profiler",
-    "CommandUtilizationProfiler",
-    "ProfilerHub",
+    "CommandTracer",
+    "ExecutionTimeProfiler",
 ]
 
 
-NEUROMTA_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
-DEFAULT_TRACE_DIR = os.path.join(NEUROMTA_ROOT_DIR, ".logs", "profiles")
-
-
-class Profiler(metaclass=abc.ABCMeta):
-    def __init__(self, core: Core):
-        self._core = core
-        self._hook_id = core.register_command_debug_hook(self.profile_step)
-        
-    def __del__(self):
-        if self._core is not None and self._hook_id is not None:
-            self._core.unregister_command_debug_hook(self._hook_id)
+class CommandTracer:
+    ALL_COMMANDS = lambda x: True
     
-    def save_as_file(self, filename: str):
-        with open(filename, "wt") as file:
-            file.write(self.dump())
+    def __init__(self, device: Device, core_ids: list[int]=None, command_filter: Callable[[Command], bool]=ALL_COMMANDS):
+        if core_ids is None:
+            core_ids = list(device.initialized_cores.keys())
             
-    @abc.abstractmethod
-    def profile_step(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
-        pass
-    
-    @abc.abstractmethod
-    def dump(self) -> str:
-        pass
-    
-    @abc.abstractmethod
-    def clear(self):
-        pass
-    
+        for core_id in core_ids:
+            core = device.initialized_cores[core_id]
+            core.register_command_debug_hook(self.command_debug_hook)
+            
+        self.command_filter = command_filter
+        
+        self.command_trace: dict[int, dict[str, list[Command]]] = {core_id: {} for core_id in core_ids}
 
-class CommandUtilizationProfiler(Profiler):
-    def __init__(self, core: Core, window_size: int = 8, thres: float=0.05, cmd_ids: list[str] = None):
-        super().__init__(core)
+    def command_debug_hook(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
+        if not self.command_filter(cmd):
+            return
+        if core.core_id not in self.command_trace.keys():
+            return
+        if kernel.slot_id not in self.command_trace[core.core_id]:
+            self.command_trace[core.core_id][kernel.slot_id] = []
+            
+        self.command_trace[core.core_id][kernel.slot_id].append(cmd)
         
-        if window_size < 2:
-            raise Exception("[ERROR] window_size must be at least 2.")
+    @staticmethod
+    def _convert_arg_to_str(arg):
+        if isinstance(arg, (int, float, str)):
+            return str(arg)
+        elif isinstance(arg, (list, tuple)):
+            return "[" + ", ".join(CommandTracer._convert_arg_to_str(x) for x in arg) + "]"
+        elif isinstance(arg, dict):
+            return "{" + ", ".join(f"{CommandTracer._convert_arg_to_str(k)}: {CommandTracer._convert_arg_to_str(v)}" for k, v in arg.items()) + "}"
+        elif isinstance(arg, torch.Tensor):
+            if arg.ndim == 0:
+                return str(arg.item())
+            else:
+                return f"Tensor(shape={list(arg.shape)}, dtype={arg.dtype})"
+        else:
+            return repr(arg)
         
-        if cmd_ids is None:
-            cmd_ids = [cmd_id for cmd_id in dir(core) if hasattr(getattr(core, cmd_id), "_is_command_method")]
+    def save_as_file(self, dirname: str):
+        os.makedirs(dirname, exist_ok=True)
+        coredir_fmt = os.path.join(dirname, "core_{core_id}")
+        filepath_fmt = os.path.join(dirname, "core_{core_id}", "core_{core_id}_slot_{slot_id}.json")
+        
+        for core_id, slot_traces in self.command_trace.items():
+            for slot_id, traces in slot_traces.items():
+                if len(traces) == 0:
+                    continue
+                
+                os.makedirs(coredir_fmt.format(core_id=core_id), exist_ok=True)
+                with open(filepath_fmt.format(core_id=core_id, slot_id=slot_id), "w") as f:
+                    content = []
+                    for command in traces:
+                        content.append({
+                            "issue_time": command.issue_time,
+                            "commit_time": command.commit_time,
+                            "command": {
+                                "cmd_id": command.cmd_id,
+                                "args": [self._convert_arg_to_str(arg) for arg in command.args],
+                                "kwargs": {k: self._convert_arg_to_str(v) for k, v in command.kwargs.items()},
+                            }
+                        })
+                        
+                    json.dump(content, f, indent=4)
+                    logger.info(f"Command trace for core {core_id} slot {slot_id} saved to '{filepath_fmt.format(core_id=core_id, slot_id=slot_id)}'.")
 
-        if isinstance(cmd_ids, str):
-            cmd_ids = [cmd_ids]
+class ExecutionTimeProfiler:
+    ALL_COMMANDS = lambda x: True
+    NO_VAR_WAIT = lambda cmd: cmd.cmd_id not in ["var_atomic_barrier", "var_conditional_wait", "var_atomic_wait", "var_atomic_compare_and_swap"]
+
+    class ProcessState:
+        def __init__(self):
+            self.active_timelines: list[tuple[int, int]] = []
+            self.wait_for_rpc_timestamp: int | None = None
+            self.final_commit: int = 0
+            
+        def _add_active_timeline(self, start: int, end: int):
+            if len(self.active_timelines) == 0:
+                self.active_timelines.append((start, end))
+            else:
+                last_start, last_end = self.active_timelines[-1]
+                if start <= last_end:
+                    self.active_timelines[-1] = (last_start, max(last_end, end))
+                else:
+                    self.active_timelines.append((start, end))
+            
+        def add_cmd(self, issue_time: int, commit_time: int, is_rpc_wait: bool):
+            if self.wait_for_rpc_timestamp is not None:
+                if self.wait_for_rpc_timestamp < issue_time:
+                    self._add_active_timeline(self.wait_for_rpc_timestamp, issue_time)
+            
+            self._add_active_timeline(issue_time, commit_time)
+
+            self.final_commit = max(self.final_commit, commit_time)
+            
+            if is_rpc_wait:
+                self.wait_for_rpc_timestamp = commit_time
+            
+        def add_kernel(self, commit_time: int):
+            self.final_commit = max(self.final_commit, commit_time)
+            
+        @property
+        def active_time(self) -> int:
+            return sum(end - start for start, end in self.active_timelines)
         
-        self._profiles: dict[str, list[int, int]] = {cmd_id: [0, 0] for cmd_id in cmd_ids}
+        @property
+        def active_utilization(self) -> float:
+            if self.final_commit == 0:
+                return 0.0
+            return self.active_time / self.final_commit
+            
+    class CommandState:
+        def __init__(self):
+            self.command_counter: dict[str, list[int, int]] = {}
+            
+        def add_cmd(self, cmd: Command, issue_time: int, commit_time: int):
+            cmd_id = cmd.cmd_id
+            if cmd_id == "async_rpc_send_req_msg":
+                msg: RPCMessage = cmd.args[0]
+                cmd_id = f"{cmd_id}::{msg.cmd_id}"
+            if cmd_id not in self.command_counter.keys():
+                self.command_counter[cmd_id] = [0, 0]
+            self.command_counter[cmd_id][0] += 1
+            self.command_counter[cmd_id][1] += (commit_time - issue_time)
+            
+    def __init__(self, device: Device, core_ids: list[int], slot_ids: list[str], target_cmd_condition: Callable[[Command], bool]=NO_VAR_WAIT):
+        self.proc_states: dict[int, dict[str, ExecutionTimeProfiler.ProcessState]] = {
+            core_id: {
+                slot_id: ExecutionTimeProfiler.ProcessState()
+                for slot_id in slot_ids
+            } 
+            for core_id in core_ids
+        }
         
-    def profile_step(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
-        if cmd.cmd_id not in self._profiles.keys():
+        self.cmd_states: dict[int, dict[str, ExecutionTimeProfiler.CommandState]] = {
+            core_id: {
+                slot_id: ExecutionTimeProfiler.CommandState()
+                for slot_id in slot_ids
+            }
+            for core_id in core_ids
+        }
+        
+        for slot_id in slot_ids:
+            device.register_kernel_debug_hook(self.kernel_debug_hook, slot_id, core_ids)
+        
+        for core_id in core_ids:
+            core = device.initialized_cores[core_id]
+            core.register_command_debug_hook(self.command_debug_hook)
+            
+        self.target_cmd_condition = target_cmd_condition
+
+    def command_debug_hook(self, core: Core, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
+        if core.core_id not in self.proc_states.keys():
+            return
+        if kernel.slot_id not in self.proc_states[core.core_id].keys():
             return
 
-        history = self._profiles[cmd.cmd_id]
+        if not self.target_cmd_condition(cmd):
+            return
+
+        is_rpc_wait = False # (cmd.cmd_id == "async_rpc_wait_rsp_msg" and kernel.is_blocked)
+        self.proc_states[core.core_id][kernel.slot_id].add_cmd(issue_time, commit_time, is_rpc_wait)
+        self.cmd_states[core.core_id][kernel.slot_id].add_cmd(cmd, issue_time, commit_time)
         
-        history[0] = commit_time
-        history[1] += (commit_time - issue_time)
-    
-    def dump(self):
-        content = ["command_id,last_commit_time,duration"]
-        for cmd_id, history in self._profiles.items():
-            if len(history):
-                content.append(f"{cmd_id},{history[0]},{history[1]}")
-        return "\n".join(content)
-
-    def clear(self):
-        self._profiles.clear()
-
-
-class ProfilerHub:
-    def __init__(self):
-        self._profilers: dict[str, Profiler] = {}
+    def kernel_debug_hook(self, core: Core, kernel: Kernel):
+        if core.core_id not in self.proc_states.keys():
+            return
+        if kernel.slot_id not in self.proc_states[core.core_id].keys():
+            return
         
-    def register_profiler(self, profiler_id: str, profiler: Profiler):
-        if profiler_id in self._profilers.keys():
-            raise Exception(f"Profiler with name '{profiler_id}' already exists. Please use a unique name.")
-        self._profilers[profiler_id] = profiler
-        
-    def unregister_profiler(self, profiler_id: str):
-        if profiler_id not in self._profilers.keys():
-            raise Exception(f"Profiler with name '{profiler_id}' does not exist.")
-        del self._profilers[profiler_id]
-
-    def save_profiles(self, save_profile_dir: str = DEFAULT_TRACE_DIR):
-        if os.path.isdir(save_profile_dir):
-            shutil.rmtree(save_profile_dir)  # Remove existing directory
-        os.makedirs(save_profile_dir, exist_ok=True)
-
-        for profiler_id, profiler in self._profilers.items():
-            profile_path = os.path.join(save_profile_dir, f"{profiler_id}.csv")
-            profiler.save_as_file(profile_path)
-
-            logger.info(f"Profile {profiler_id} saved to \"{profile_path}\"")
+        self.proc_states[core.core_id][kernel.slot_id].add_kernel(kernel.commit_time)
             
-    def clear_profiles(self):
-        for profiler in self._profilers.values():
-            profiler.clear()
-
+    def summary(self):
+        report = {}
+        for core_id, thread_states in self.proc_states.items():
+            report[core_id] = {}
+            for slot_id, thread_state in thread_states.items():
+                report[core_id][slot_id] = {
+                    "active_time_cycles": thread_state.active_time,
+                    "final_commit_cycles": thread_state.final_commit,
+                    "active_utilization": thread_state.active_utilization,
+                    "command_count": self.cmd_states[core_id][slot_id].command_counter,
+                }
+        return report

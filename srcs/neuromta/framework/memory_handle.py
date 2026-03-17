@@ -76,8 +76,11 @@ class Pointer:
         if not isinstance(other, Pointer): return NotImplemented
         return self._addr >= other._addr
     
-    def __str__(self):
+    def __repr__(self):
         return f"Pointer(id={hex(id(self))}, addr={self._addr})"
+    
+    def __str__(self):
+        return self.__repr__()
     
 class ReferencePointer(Pointer):
     def __init__(self, ref: Pointer, offset: int=0):
@@ -105,7 +108,7 @@ class ReferencePointer(Pointer):
             raise ValueError(f"Offset must be an integer, but got {type(offset)}.")
         return ReferencePointer(ref=self.ref, offset=self.offset + offset)
         
-    def __str__(self):
+    def __repr__(self):
         return f"ReferencePointer(ref={self.ref}, offset={self.offset})"
         
 

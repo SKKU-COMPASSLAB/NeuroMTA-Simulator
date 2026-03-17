@@ -45,7 +45,7 @@ class TenstorrentConfig(dict):
     def BLACKHOLE(cls) -> 'TenstorrentConfig':
         config_name = "blackhole"
         
-        processor_clock_freq    = parse_freq_str("1GHz")
+        processor_clock_freq    = parse_freq_str("1.5GHz")
         main_mem_channel_size   = parse_mem_cap_str("4GB")
         l1_mem_bank_size        = parse_mem_cap_str("1.5MB")
 

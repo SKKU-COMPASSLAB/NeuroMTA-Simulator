@@ -60,12 +60,13 @@ if __name__ == "__main__":
     nmta_maxpool_ofm_shape = maxpool_ofm.permute(0, 2, 3, 1).shape  # NCHW -> NHWC
     
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
+    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group)
     
     x_b           = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_x_shape,           dtype=x.dtype,           shard_shape=(56, 3 )).tiling((32, 32)).allocate().update(x.permute(0, 2, 3, 1))  # NCHW -> NHWC
     conv_wgt_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_wgt_shape,    dtype=conv_wgt.dtype,    shard_shape=(32, 3 )).tiling((32, 32)).allocate().update(conv_wgt.permute(2, 3, 0, 1))  # OIHW -> OHWI
     conv_bias_b   = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_bias_shape,   dtype=conv_bias.dtype,   shard_shape=(1,  32)).tiling((1,  32)).allocate().update(conv_bias.unsqueeze(0))
-    conv_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_ofm_shape,    dtype=conv_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
-    relu_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_relu_ofm_shape,    dtype=relu_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
+    conv_ofm_b    = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=nmta_conv_ofm_shape,    dtype=conv_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
+    relu_ofm_b    = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=nmta_relu_ofm_shape,    dtype=relu_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
     maxpool_ofm_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_maxpool_ofm_shape, dtype=maxpool_ofm.dtype, shard_shape=(27, 32)).tiling((32, 32)).allocate()
     
     conv_core_group = core_group
@@ -83,19 +84,22 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        spad_space_size_per_core=parse_mem_cap_str("1.4MB")
+        spad_space_size_per_core=parse_mem_cap_str("512KB")
     )
     
-    compiled_ops = compiler.compile(global_recipe)
+    compiled_ops = compiler.compile(global_recipe).dispatch()
     
-    for op_id, compiled_op in compiled_ops.items():
-        compiled_op.dispatch(device, slot_id="MAIN")
-        
+    for op_id, summary in compiled_ops.summary().items():
         tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
         with open(tmp_output_path, "w") as f:
-            json.dump(compiled_op.summary(), f, indent=4)
-            logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")
-        
+            json.dump(summary, f, indent=4)
+            logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
+    
+    profilers = {
+        op.op_id: ExecutionTimeProfiler(device, op.core_group, ["MEM", "EXE"])
+        for op in [operator1, operator2, operator3]
+    }
+    
     with MonitoringWindow() as monitor:
         # core_group_with_names = {
         #     "CV": conv_core_group,
@@ -112,6 +116,12 @@ if __name__ == "__main__":
         st = time.time()
         device.run_kernels()
         ed = time.time()
+        
+    for op_id, profiler in profilers.items():
+        profiler_report_path = os.path.join(SUMMARY_DIR, f"execution_time_profile_{op_id}.json")
+        with open(profiler_report_path, "w") as f:
+            json.dump(profiler.summary(), f, indent=4)
+            logger.info(f"Execution time profile saved to '{profiler_report_path}'.")
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

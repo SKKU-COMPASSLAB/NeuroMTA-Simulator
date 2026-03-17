@@ -99,8 +99,6 @@ def MCA_OP_CONV2D(
     padding: Sequence[int]=(0, 0),
     dilation: Sequence[int]=(1, 1),
     groups: int=1,
-    
-    use_collective_tile_load: bool=False,
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="CONV2D",
@@ -123,7 +121,6 @@ def MCA_OP_CONV2D(
     return common_mapping_lib.MCA_MAPPER_CONV2D(
         op_sig, 
         is_conv2d=True, 
-        use_collective_tile_load=use_collective_tile_load,
     )
 
 
@@ -136,8 +133,6 @@ def MCA_OP_MAXPOOL2D(
     stride: Sequence[int],
     padding: Sequence[int]=(0, 0),
     dilation: Sequence[int]=(1, 1),
-    
-    use_collective_tile_load: bool=False,
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="MAXPOOL2D",
@@ -158,7 +153,6 @@ def MCA_OP_MAXPOOL2D(
     return common_mapping_lib.MCA_MAPPER_CONV2D(
         op_sig,
         is_conv2d=False,
-        use_collective_tile_load=use_collective_tile_load,
     )
 
 
@@ -193,7 +187,6 @@ def MCA_OP_AVGPOOL2D(
     return common_mapping_lib.MCA_MAPPER_CONV2D(
         op_sig,
         is_conv2d=False,
-        use_collective_tile_load=use_collective_tile_load,
     )
 
 

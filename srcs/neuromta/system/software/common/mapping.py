@@ -110,7 +110,6 @@ def MCA_MAPPER_UNARY(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
 def MCA_MAPPER_CONV2D(
     op_sig: MCA_OperatorSignature,
     is_conv2d: bool=True,
-    use_collective_tile_load: bool=False,
 ) -> MCA_OperatorSignature:
     ifm = op_sig.buffers["ifm"]
     if is_conv2d:
@@ -342,22 +341,11 @@ def MCA_MAPPER_CONV2D(
                                         uop_i_tiles = []
                                         uop_kwargs = {}
                                         
-                                        if use_collective_tile_load:
-                                            # DMA engine handles the collective tile load and memcpy patterns
-                                            uop_kwargs["use_collective_tile_load"] = True
-                                            ifm_tile_sig = CollectiveTileSignature(
-                                                buf_name="ifm",
-                                                buf=ifm,
-                                                src_tiles=[op_sig.tiles["ifm"][idx] for idx in ifm_tile_idx_with_memcpy_pattern.keys()],
-                                                memcpy_patterns=list(ifm_tile_idx_with_memcpy_pattern.values()),
-                                            )
-                                            uop_i_tiles.append(ifm_tile_sig)
-                                        else:
-                                            # Compute core uses all the individual IFM tiles and handles the memcpy patterns internally
-                                            uop_kwargs["use_collective_tile_load"] = False
-                                            uop_kwargs["ifm_tile_count"] = len(ifm_tile_idx_with_memcpy_pattern)
-                                            uop_kwargs["memcpy_pattern"] = list(ifm_tile_idx_with_memcpy_pattern.values())
-                                            uop_i_tiles.extend([op_sig.tiles["ifm"][idx] for idx in ifm_tile_idx_with_memcpy_pattern.keys()])
+                                        # Compute core uses all the individual IFM tiles and handles the memcpy patterns internally
+                                        uop_kwargs["use_collective_tile_load"] = False
+                                        uop_kwargs["ifm_tile_count"] = len(ifm_tile_idx_with_memcpy_pattern)
+                                        uop_kwargs["memcpy_pattern"] = list(ifm_tile_idx_with_memcpy_pattern.values())
+                                        uop_i_tiles.extend([op_sig.tiles["ifm"][idx] for idx in ifm_tile_idx_with_memcpy_pattern.keys()])
                                                 
                                         if is_conv2d:
                                             uop_i_tiles.append(wgt_tile)
@@ -368,12 +356,7 @@ def MCA_MAPPER_CONV2D(
                                             o_tile=ofm_tile,
                                             op_kwargs=uop_kwargs,
                                         )    
-                                        
-                                        # tiled_op.i_tiles.append(tuple(uop_i_tiles))
-                                        # tiled_op.op_kwargs["ifm_load_kwargs"].append(uop_kwargs)
                     
-                            # logger.debug(f"Generated CONV2D tiled_op for OFM tile idx {tiled_op.o_tile.coords} with {len(tiled_op.i_tiles)} uops")
-                            # tiled_ops.append(tiled_op)
                             pbar.update(1)
     
     logger.debug(f"mapper generated {len(op_sig.tiled_ops)} in total")

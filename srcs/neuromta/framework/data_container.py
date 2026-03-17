@@ -37,8 +37,9 @@ class DataContainer(Generic[T]):
         if isinstance(value, torch.Tensor):
             self._dtype = value.dtype
             self._shape = tuple(value.size())
-        
-        self._data = value
+            self._data = value
+        else:
+            self._data = value
         
     @property
     def shape(self) -> Sequence[int]:
@@ -57,3 +58,9 @@ class DataContainer(Generic[T]):
     @property
     def is_mem_segment(self) -> bool:
         return isinstance(self.data, torch.Tensor)  # TODO: More robust check
+    
+    def __repr__(self):
+        return f"DataContainer(shape={self.shape}, dtype={self.dtype}, size={self.size}, is_mem_segment={self.is_mem_segment})"
+    
+    def __str__(self):
+        return self.__repr__()

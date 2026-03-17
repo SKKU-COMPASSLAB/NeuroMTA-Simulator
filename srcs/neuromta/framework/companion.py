@@ -131,7 +131,7 @@ class CompanionCore(Core):
         kernel = get_global_kernel_context()
         self._command_execution_context[cmd_id] = [kernel, 1]  # 2 means dispatch and execute
         self._capsule_to_signature_mapping[cmd_id] = cmd
-        kernel.set_blocked(True)
+        kernel.set_blocked(self, True)
         
         callback = functools.partial(self._callback_common, module_id)
         cmod.dispatch_command(cmd, None, callback)
@@ -152,7 +152,7 @@ class CompanionCore(Core):
         cnt -= 1
         
         if cnt <= 0:
-            kernel.set_blocked(False)
+            kernel.set_blocked(self, False)
             self._is_any_cmd_retired = True
             cmd.commit_time = self.timestamp
             

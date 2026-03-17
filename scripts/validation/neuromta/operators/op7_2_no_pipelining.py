@@ -74,15 +74,18 @@ if __name__ == "__main__":
         spad_space_size_per_core=parse_mem_cap_str("512KB")
     )
     
-    compiled_ops = compiler.compile(global_recipe)
+    compiled_ops = compiler.compile(global_recipe).dispatch()
     
-    for op_id, compiled_op in compiled_ops.items():
-        compiled_op.dispatch(device, slot_id="MAIN")
-        
+    for op_id, summary in compiled_ops.summary().items():
         tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
         with open(tmp_output_path, "w") as f:
-            json.dump(compiled_op.summary(), f, indent=4)
-            logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")
+            json.dump(summary, f, indent=4)
+            logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
+            
+    profilers = {
+        op.op_id: ExecutionTimeProfiler(device, op.core_group, ["MEM", "EXE"])
+        for op in [operator1, operator2, operator3]
+    }
         
     with MonitoringWindow() as monitor:
         for core_group in [sub_core_groups[0], sub_core_groups[1], sub_core_groups[2]]:
@@ -94,6 +97,12 @@ if __name__ == "__main__":
         st = time.time()
         device.run_kernels()
         ed = time.time()
+        
+    for op_id, profiler in profilers.items():
+        profiler_report_path = os.path.join(SUMMARY_DIR, f"execution_time_profile_{op_id}.json")
+        with open(profiler_report_path, "w") as f:
+            json.dump(profiler.summary(), f, indent=4)
+            logger.info(f"Execution time profile saved to '{profiler_report_path}'.")
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
@@ -102,20 +111,20 @@ if __name__ == "__main__":
     throughput = (total_ops / device.timestamp)
     print(f"overall throughput: {throughput:.2f} OP/cycle")
     
-    # simulated1 = ofm1_b.restore()
-    # simulated2 = ofm2_b.restore()
+    simulated1 = ofm1_b.restore()
+    simulated2 = ofm2_b.restore()
     simulated3 = ofm3_b.restore()
     reference1 = torch.matmul(ifm.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
     reference2 = torch.matmul(reference1.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
     reference3 = torch.matmul(reference2.to(acc_dtype), wgt.t().to(acc_dtype)) + bias
     
-    # print(f"simulated1:\n{simulated1}")
-    # print(f"simulated2:\n{simulated2}")
+    print(f"simulated1:\n{simulated1}")
+    print(f"simulated2:\n{simulated2}")
     print(f"simulated3:\n{simulated3}")
-    # print(f"reference1:\n{reference1}")
-    # print(f"reference2:\n{reference2}")
+    print(f"reference1:\n{reference1}")
+    print(f"reference2:\n{reference2}")
     print(f"reference3:\n{reference3}")
     
-    # print(f"simulation1 {'PASSED' if torch.equal(simulated1, reference1) else 'FAILED'}")
-    # print(f"simulation2 {'PASSED' if torch.equal(simulated2, reference2) else 'FAILED'}")
+    print(f"simulation1 {'PASSED' if torch.equal(simulated1, reference1) else 'FAILED'}")
+    print(f"simulation2 {'PASSED' if torch.equal(simulated2, reference2) else 'FAILED'}")
     print(f"simulation3 {'PASSED' if torch.equal(simulated3, reference3) else 'FAILED'}")

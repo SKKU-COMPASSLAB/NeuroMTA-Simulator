@@ -24,19 +24,7 @@ __all__ = [
 
 @jit_prototype
 def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, cmd: MCA_CompiledOperator.Command.Base):
-    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
-        core.mxu_load_context(cont)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.mxu_store_context(cont)
-        core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
         op_sig = env.op_meta[cmd.op_id].op_sig
         tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
         
@@ -87,19 +75,7 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, env: MCA_OperatorG
             
 @jit_prototype
 def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, cmd: MCA_CompiledOperator.Command.Base):
-    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
-        core.mxu_load_context(cont)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.mxu_store_context(cont)
-        core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
         op_sig = env.op_meta[cmd.op_id].op_sig
         tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
         
@@ -136,19 +112,7 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU(core: NPUCore, env: MCA_OperatorGra
         
 @jit_prototype
 def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, cmd: MCA_CompiledOperator.Command.Base):
-    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
-        core.mxu_load_context(cont)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.mxu_store_context(cont)
-        core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
         op_sig = env.op_meta[cmd.op_id].op_sig
         tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
         
@@ -201,34 +165,16 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU(core: NPUCore, env: M
 
 @jit_prototype    
 def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, cmd: MCA_CompiledOperator.Command.Base):
-    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
-        core.mxu_load_context(cont)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.mxu_store_context(cont)
-        core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
         op_sig = env.op_meta[cmd.op_id].op_sig
         tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
         
         uop_kwargs = tiled_op.op_kwargs[cmd.uop_idx]
-        use_collective_tile_load = uop_kwargs.get("use_collective_tile_load", False)
         
-        if use_collective_tile_load:
-            ifm_tile_count = 1
-            ifm_sig = tiled_op.i_tiles[cmd.uop_idx][0]
-            ifm_buf  = env.buffers[ifm_sig.buf_name]
-        else:
-            ifm_tile_count = uop_kwargs["ifm_tile_count"]
-            ifm_sig_arr = tiled_op.i_tiles[cmd.uop_idx][:ifm_tile_count]
-            ifm_memcpy_pattern_arr = uop_kwargs["memcpy_pattern"]
-            ifm_buf  = env.buffers[ifm_sig_arr[0].buf_name]
+        ifm_tile_count = uop_kwargs["ifm_tile_count"]
+        ifm_sig_arr = tiled_op.i_tiles[cmd.uop_idx][:ifm_tile_count]
+        ifm_memcpy_pattern_arr = uop_kwargs["memcpy_pattern"]
+        ifm_buf  = env.buffers[ifm_sig_arr[0].buf_name]
             
         wgt_sig  = tiled_op.i_tiles[cmd.uop_idx][ifm_tile_count]
         bias_sig = tiled_op.i_tiles[cmd.uop_idx][ifm_tile_count + 1]
@@ -249,11 +195,8 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, env: MCA_OperatorG
         if cmd.uop_idx == 0:
             core.mxu_reconfigure(dtype=ifm_buf.dtype, acc_dtype=ofm_buf.dtype)
         
-        if use_collective_tile_load:
-            core.local_mem_page_read(cmd.i_tile_ptrs[0], ifm, ifm_buf.tile_size)
-        else:
-            for i, (ifm_sig, ifm_memcpy_pattern) in enumerate(zip(ifm_sig_arr, ifm_memcpy_pattern_arr)):
-                core.local_mem_page_read(cmd.i_tile_ptrs[i], ifm, ifm_buf.tile_shape[-1] * ifm_buf.dtype.itemsize, row_pattern=ifm_memcpy_pattern)
+        for i, (ifm_sig, ifm_memcpy_pattern) in enumerate(zip(ifm_sig_arr, ifm_memcpy_pattern_arr)):
+            core.local_mem_page_read(cmd.i_tile_ptrs[i], ifm, ifm_buf.tile_shape[-1] * ifm_buf.dtype.itemsize, row_pattern=ifm_memcpy_pattern)
         
         core.local_mem_page_read(cmd.i_tile_ptrs[ifm_tile_count], wgt, wgt_buf.tile_size)
         if preload_psum:
@@ -274,34 +217,16 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D(core: NPUCore, env: MCA_OperatorG
 
 @jit_prototype
 def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, cmd: MCA_CompiledOperator.Command.Base):
-    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
-        core.mxu_load_context(cont)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.mxu_store_context(cont)
-        core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
         op_sig = env.op_meta[cmd.op_id].op_sig
         tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
         
         uop_kwargs = tiled_op.op_kwargs[cmd.uop_idx]
-        use_collective_tile_load = uop_kwargs.get("use_collective_tile_load", False)
         
-        if use_collective_tile_load:
-            ifm_tile_count = 1
-            ifm_sig = tiled_op.i_tiles[cmd.uop_idx][0]
-            ifm_buf  = env.buffers[ifm_sig.buf_name]
-        else:
-            ifm_tile_count = uop_kwargs["ifm_tile_count"]
-            ifm_sig_arr = tiled_op.i_tiles[cmd.uop_idx][:ifm_tile_count]
-            ifm_memcpy_pattern_arr = uop_kwargs["memcpy_pattern"]
-            ifm_buf  = env.buffers[ifm_sig_arr[0].buf_name]
+        ifm_tile_count = uop_kwargs["ifm_tile_count"]
+        ifm_sig_arr = tiled_op.i_tiles[cmd.uop_idx][:ifm_tile_count]
+        ifm_memcpy_pattern_arr = uop_kwargs["memcpy_pattern"]
+        ifm_buf  = env.buffers[ifm_sig_arr[0].buf_name]
             
         ofm_sig = tiled_op.o_tile
         ofm_buf = env.buffers[ofm_sig.buf_name]
@@ -315,11 +240,8 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, env: MCA_Operat
         if cmd.uop_idx == 0:
             core.mxu_reconfigure(dtype=ifm_buf.dtype, acc_dtype=ofm_buf.dtype)
         
-        if use_collective_tile_load:
-            core.local_mem_page_read(cmd.i_tile_ptrs[0], ifm, ifm_buf.tile_size)
-        else:
-            for i, (ifm_sig, ifm_memcpy_pattern) in enumerate(zip(ifm_sig_arr, ifm_memcpy_pattern_arr)):
-                core.local_mem_page_read(cmd.i_tile_ptrs[i], ifm, ifm_buf.tile_shape[-1] * ifm_buf.dtype.itemsize, row_pattern=ifm_memcpy_pattern)
+        for i, (ifm_sig, ifm_memcpy_pattern) in enumerate(zip(ifm_sig_arr, ifm_memcpy_pattern_arr)):
+            core.local_mem_page_read(cmd.i_tile_ptrs[i], ifm, ifm_buf.tile_shape[-1] * ifm_buf.dtype.itemsize, row_pattern=ifm_memcpy_pattern)
         
         core.mxu_tiled_maxpool(
             ifm, ifm, ofm,
@@ -335,19 +257,7 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D(core: NPUCore, env: MCA_Operat
 
 @jit_prototype
 def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_AVGPOOL2D(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, cmd: MCA_CompiledOperator.Command.Base):
-    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.local_mem_page_read(cmd.ptr, cont, buf.tile_size)
-        core.mxu_load_context(cont)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
-        buf = env.buffers[cmd.tile_sig.buf_name]
-        cont  = DataContainer(shape=buf.tile_shape, dtype=buf.dtype)
-        
-        core.mxu_store_context(cont)
-        core.local_mem_page_write(cmd.ptr, cont, buf.tile_size)
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
         op_sig = env.op_meta[cmd.op_id].op_sig
         tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
         
@@ -405,11 +315,7 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_AVGPOOL2D(core: NPUCore, env: MCA_Operat
 
 @jit_prototype
 def MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY(core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, cmd: MCA_CompiledOperator.Command.Base):
-    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_LOAD_CONTEXT):
-        raise NotImplementedError("STORE_CONTEXT is not supported in DIRECT_COPY kernel.")
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_STORE_CONTEXT):
-        raise NotImplementedError("STORE_CONTEXT is not supported in DIRECT_COPY kernel.")
-    elif isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
+    if isinstance(cmd, MCA_CompiledOperator.Command.EXE_UOP):
         op_sig = env.op_meta[cmd.op_id].op_sig
         tiled_op = op_sig.tiled_ops[cmd.tiled_op_idx]
         

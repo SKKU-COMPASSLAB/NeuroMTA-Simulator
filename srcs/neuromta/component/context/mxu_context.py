@@ -129,7 +129,7 @@ class MXUContext:
         cycles = self.config.seq_len
         if self.config.peak_op_per_cycle is not None:
             total_ops = 2 * self.config.m_tile * self.config.n_tile * self.config.k_tile
-            cycles = int((total_ops + self.config.peak_op_per_cycle - 1) // self.config.peak_op_per_cycle)
+            cycles += int((total_ops + self.config.peak_op_per_cycle - 1) // self.config.peak_op_per_cycle)
         return math.ceil(cycles * self.config.op_latency_per_byte * self.dtype.itemsize)
     
     def get_flush_pe_arr_cycles(self) -> int:

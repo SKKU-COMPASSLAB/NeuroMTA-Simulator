@@ -15,6 +15,7 @@ from neuromta.component.implementation.mapping import *
 
 
 __all__ = [
+    "MCA_CompiledProgram",
     "MCA_OperatorSignature",
     "MCA_CompiledOperator",
     "MCA_OperatorGraphCompiler",
@@ -40,15 +41,18 @@ class MCA_OperatorSignature:
     def __init__(
         self, 
         op_type: str, 
+        # mem_thread_template: Callable,
         ld_thread_template: Callable,
         ex_thread_template: Callable,
-        st_thread_template: Callable, 
+        st_thread_template: Callable,
         op_ex_kernels: list[Callable]
     ):
         self._op_type = op_type
         self.op_id = op_type    # will be initialized by MCA_OperatorGraphCompiler (initially set to op_type) 
         
         # self.op_template = op_template
+        # self.mem_thread_template = mem_thread_template
+        # self.exe_thread_template = exe_thread_template
         self.ld_thread_template = ld_thread_template
         self.ex_thread_template = ex_thread_template
         self.st_thread_template = st_thread_template
@@ -362,27 +366,19 @@ class MCA_CompiledOperator:
             
     def __init__(self, env: 'MCA_OperatorGraphCompiler.Environment', op_meta: 'MCA_OperatorGraphCompiler.OperatorMetadata'):
         self._env = env
-        # self._op_template = op_meta.op_sig.op_template
+        # self._mem_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.mem_thread_template
+        # self._exe_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.exe_thread_template
         self._ld_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.ld_thread_template
         self._ex_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.ex_thread_template
         self._st_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.st_thread_template
         self._op_ex_kernels = op_meta.op_sig.op_ex_kernels
         self._mappings: dict[int, list[MCA_CompiledOperator.Stage]] = {core_id: [] for core_id in op_meta.op_sig.core_group.core_ids}  # {core_id: [stage1, stage2, ...]}
         
-        self._ld_ex_sync_barriers = {
+        self._stage_barriers = {
             core_id: (
-                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_ld_ex_sync_barrier_arrived_count", initial_value=0).handle_name,
-                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_ld_ex_sync_barrier_block_state", initial_value=0).handle_name,
-                2,  # total_arrivals: 1 for LD stage + 1 for EX stage
-            )
-            for core_id in op_meta.op_sig.core_group.core_ids
-        }
-        
-        self._ex_st_sync_barriers = {
-            core_id: (
-                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_ex_st_sync_barrier_arrived_count", initial_value=0).handle_name,
-                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_ex_st_sync_barrier_block_state", initial_value=0).handle_name,
-                2,  # total_arrivals: 1 for EX stage + 1 for ST stage
+                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_stage_sync_barrier_arrived_count", initial_value=0).handle_name,
+                env.add_variable(f"op_{op_meta.op_sig.op_id}_core_{core_id}_stage_sync_barrier_block_state", initial_value=0).handle_name,
+                3,
             )
             for core_id in op_meta.op_sig.core_group.core_ids
         }
@@ -390,25 +386,40 @@ class MCA_CompiledOperator:
         self._global_sync_barrier = (
             env.add_variable(f"op_{op_meta.op_sig.op_id}_global_sync_barrier_arrived_count", initial_value=0).handle_name,
             env.add_variable(f"op_{op_meta.op_sig.op_id}_global_sync_barrier_block_state", initial_value=0).handle_name,
-            len(op_meta.op_sig.core_group.core_ids) * 3,  # total_arrivals: 1 for LD stage + 1 for EX stage + 1 for ST stage per core
+            len(op_meta.op_sig.core_group.core_ids) * 3,
         )
     
     def add_stage(self, core_id: int, stage: 'MCA_CompiledOperator.Stage'):
         self._mappings[core_id].append(stage)
         
-    def dispatch(self, device: MCA_DeviceBase, slot_id: int="MAIN"):
+    def dispatch(self, device: MCA_DeviceBase):
         for core_id in self.mappings.keys():
             core = device.get_npu_core(core_id)
-            ld_ex_b = self._ld_ex_sync_barriers[core_id]
-            ex_st_b = self._ex_st_sync_barriers[core_id]
+            n_stages = len(self.mappings[core_id])
             
-            for stage_idx, stage in enumerate(self.mappings[core_id]):
-                presync_b = self._global_sync_barrier if stage_idx == 0 else None
-                postsync_b = self._global_sync_barrier if stage_idx == (len(self.mappings[core_id]) - 1) else None
-                    
-                ld_thread = self._ld_thread_template(core, self._env, stage.preprocessing_commands, stage.mem_load_commands, ld_ex_b, presync_b, postsync_b)
-                ex_thread = self._ex_thread_template(core, self._env, stage.execute_commands, self._op_ex_kernels, ld_ex_b, ex_st_b, presync_b, postsync_b)
-                st_thread = self._st_thread_template(core, self._env, stage.mem_store_commands, stage.postprocessing_commands, ex_st_b, presync_b, postsync_b)
+            for i in range(n_stages + 2):
+                presync_b = self._global_sync_barrier if i == 0 else None
+                postsync_b = self._global_sync_barrier if i == (n_stages + 1) else None
+                stage_b = self._stage_barriers[core_id]
+                
+                ld_preprocessing_commands = []
+                ld_mem_load_commands = []
+                ex_execute_commands = []
+                st_mem_store_commands = []
+                st_postprocessing_commands = []    
+                
+                if 0 <= i < n_stages:
+                    ld_preprocessing_commands = self.mappings[core_id][i].preprocessing_commands
+                    ld_mem_load_commands = self.mappings[core_id][i].mem_load_commands
+                if 1 <= i < n_stages + 1:
+                    ex_execute_commands = self.mappings[core_id][i-1].execute_commands
+                if 2 <= i < n_stages + 2:
+                    st_mem_store_commands = self.mappings[core_id][i-2].mem_store_commands
+                    st_postprocessing_commands = self.mappings[core_id][i-2].postprocessing_commands
+                
+                ld_thread = self._ld_thread_template(core, self._env, ld_preprocessing_commands, ld_mem_load_commands, stage_b, presync_b, postsync_b)
+                ex_thread = self._ex_thread_template(core, self._env, ex_execute_commands, self._op_ex_kernels, stage_b, presync_b, postsync_b)
+                st_thread = self._st_thread_template(core, self._env, st_mem_store_commands, st_postprocessing_commands, stage_b, presync_b, postsync_b)
                 
                 ld_thread.dispatch("LD")
                 ex_thread.dispatch("EX")
@@ -432,6 +443,20 @@ class MCA_CompiledOperator:
                 }
                 summary[core_id].append(stage_summary)
         return summary
+
+
+class MCA_CompiledProgram:
+    def __init__(self, device: MCA_DeviceBase, compiled_ops: dict[str, MCA_CompiledOperator]):
+        self._device = device
+        self._compiled_ops = compiled_ops
+        
+    def dispatch(self):
+        for op_id, compiled_op in self._compiled_ops.items():
+            compiled_op.dispatch(self._device)
+        return self
+            
+    def summary(self) -> dict:
+        return {op_id: compiled_op.summary() for op_id, compiled_op in self._compiled_ops.items()}
     
     
 class MCA_OperatorGraphCompiler:
@@ -929,20 +954,6 @@ class MCA_OperatorGraphCompiler:
             
             overlapped_st_tiles = self._get_st_tiles_to_be_stored_in_fragmented_st_area(core_id, new_st_tiles)
             
-            _cached_ld_ptrs = {}
-            
-            for tile in new_ld_tiles:
-                if tile in self.cached_ld_tiles[core_id][pp_idx]:
-                    _cached_ld_ptrs[tile] = self.cached_ld_tiles[core_id][pp_idx][tile]
-                    continue
-                
-                new_pointer = self.ld_cursors[core_id][pp_idx] - tile.tile_size
-                self.cached_ld_tiles[core_id][pp_idx][tile] = new_pointer
-                self.ld_cursors[core_id][pp_idx] = new_pointer
-                
-            if self.ld_cursors[core_id][pp_idx].addr < self.st_ld_boundaries[core_id][pp_idx].addr:
-                return None    # this implies that there is not enough space for new LD tiles
-            
             for tile in new_st_tiles:
                 for i in [0, 1]:
                     if tile in self.cached_st_tiles[core_id][i]:
@@ -955,6 +966,27 @@ class MCA_OperatorGraphCompiler:
                     self.st_ld_boundaries[core_id][pp_idx] = self.st_ld_boundaries[core_id][pp_idx] + tile.tile_size
                     
                 self.cached_st_tiles[core_id][pp_idx][tile] = (new_pointer, is_st_tiles_shared)
+            
+            _cached_ld_ptrs = {}
+            
+            for tile in new_ld_tiles:
+                if tile in self.cached_ld_tiles[core_id][pp_idx]:
+                    shared_ptr = self.cached_ld_tiles[core_id][pp_idx][tile]
+                    if shared_ptr < self.ld_cursors[core_id][pp_idx]:  
+                        raise Exception("Debug")
+                    if shared_ptr < self.st_ld_boundaries[core_id][pp_idx]:  
+                        # del self.cached_ld_tiles[core_id][pp_idx][tile]  # ST boundary has already passed this LD pointer; drop stale cache and reallocate below.
+                        raise Exception("Debug")
+                    else:
+                        _cached_ld_ptrs[tile] = self.cached_ld_tiles[core_id][pp_idx][tile]
+                        continue
+                
+                new_pointer = self.ld_cursors[core_id][pp_idx] - tile.tile_size
+                self.cached_ld_tiles[core_id][pp_idx][tile] = new_pointer
+                self.ld_cursors[core_id][pp_idx] = new_pointer
+                
+            if self.ld_cursors[core_id][pp_idx].addr < self.st_ld_boundaries[core_id][pp_idx].addr:
+                return None    # this implies that there is not enough space for new LD tiles
                 
             return _cached_ld_ptrs
         
@@ -996,15 +1028,6 @@ class MCA_OperatorGraphCompiler:
                 if is_shared:
                     evictable_tiles.add(tile)
             return evictable_tiles
-        
-        # def get_all_shared_st_tiles(self) -> set[TileSignature]:
-        #     shared_tiles = set()
-        #     for _, shared_cache_pps in self.cached_st_tiles.items():
-        #         for _, shared_cache in shared_cache_pps.items():
-        #             for tile, (_, is_shared) in shared_cache.items():
-        #                 if is_shared:
-        #                     shared_tiles.add(tile)
-        #     return shared_tiles
 
     def __init__(self):
         self._op_sigs: dict[str, MCA_OperatorSignature] = {}
@@ -1186,12 +1209,6 @@ class MCA_OperatorGraphCompiler:
                                 var_names=[thread_progress_vars[src_op_id][src_core_id]],
                                 condition=MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT.greater_equal(src_uop_idx + 1)
                             ))
-                        
-                        # for src_op_id in src_op_ids:    
-                        #     current_stages[op_id][core_id].mem_load_commands.append(MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT(
-                        #         var_names=list(thread_progress_vars[src_op_id].values()),
-                        #         condition=MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT.greater_equal(tile_producers[src_op_id][i_tile][1] + 1)
-                        #     ))
         
                 # update the prefetch cursor
                 prefetch_cursors[op_id] = prefetch_cursor
@@ -1201,9 +1218,6 @@ class MCA_OperatorGraphCompiler:
                 op_meta = op_metas[op_id]
                 thread_mapping = thread_mappings[op_id]
                 prefetch_cursor = prefetch_cursors[op_id]
-            
-                # if exe_stat_cursors[op_id] >= prefetch_cursor:
-                #     continue
                 
                 exe_iter_cnt = 0
                 
@@ -1219,8 +1233,6 @@ class MCA_OperatorGraphCompiler:
                             break
                         
                     if not is_executable:
-                        # if exe_iter_cnt > 0:
-                        #     mark_compiled_op_thread_progress(op_id)
                         break
                                         
                     # 3) check if there is sufficient space in the shared area for the output tiles of the current uop nodes of the operator
@@ -1361,9 +1373,18 @@ class MCA_OperatorGraphCompiler:
                 stage_cursor_limit = max(len(stages) for stages in compiled_op._mappings.values())
                 
                 for stage_cursor in range(stage_cursor_limit):
-                    bcast_mem_load_cmds: dict[TileSignature, list[tuple[int, int]]] = {}  # { tile_sig: [(core_id, command_idx), ...] }
-                    bcast_mem_copy_cmds: dict[TileSignature, list[tuple[int, int]]] = {}  # { tile_sig: [(core_id, command_idx), ...] }
-                    
+                    bcast_mem_load_cmds: dict[tuple[TileSignature, tuple[str, ...], int], list[tuple[int, int]]] = {}  # { (tile_sig, guard_key, command_idx): [(core_id, command_idx), ...] }
+                    bcast_mem_copy_cmds: dict[tuple[TileSignature, int, tuple[str, ...], int], list[tuple[int, int]]] = {}  # { (tile_sig, src_ptr_addr, guard_key, command_idx): [(core_id, command_idx), ...] }
+
+                    def _build_guard_key(mem_load_cmds: list[MCA_CompiledOperator.Command.Base], cmd_idx: int) -> tuple[str, ...]:
+                        guard_sigs: list[str] = []
+                        for prev_cmd in mem_load_cmds[:cmd_idx]:
+                            if isinstance(prev_cmd, MCA_CompiledOperator.Command.BARRIER):
+                                guard_sigs.append(prev_cmd.signature())
+                            elif isinstance(prev_cmd, MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT):
+                                guard_sigs.append(prev_cmd.signature())
+                        return tuple(guard_sigs)
+
                     for core_id, stages in compiled_op._mappings.items():
                         if stage_cursor >= len(stages):
                             continue
@@ -1372,26 +1393,20 @@ class MCA_OperatorGraphCompiler:
                         
                         for cmd_idx, cmd in enumerate(current_stage.mem_load_commands):
                             if isinstance(cmd, MCA_CompiledOperator.Command.MEM_LOAD_TILE):
-                                tile_sig = cmd.tile_sig
-
-                                # Keep collective tiles out of merge because they already carry
-                                # their own row-patterned multi-source copy behavior.
-                                if isinstance(tile_sig, CollectiveTileSignature):
-                                    continue    # skip collective tiles since they are already broadcasted to all cores
-
-                                if tile_sig not in bcast_mem_load_cmds:
-                                    bcast_mem_load_cmds[tile_sig] = []
-                                bcast_mem_load_cmds[tile_sig].append((core_id, cmd_idx))
+                                key = (cmd.tile_sig, _build_guard_key(current_stage.mem_load_commands, cmd_idx), cmd_idx)
+                                if key not in bcast_mem_load_cmds:
+                                    bcast_mem_load_cmds[key] = []
+                                bcast_mem_load_cmds[key].append((core_id, cmd_idx))
                             elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_CPY_TILE):
-                                tile_sig = cmd.tile_sig
-                                if tile_sig not in bcast_mem_copy_cmds:
-                                    bcast_mem_copy_cmds[tile_sig] = []
-                                bcast_mem_copy_cmds[tile_sig].append((core_id, cmd_idx))
+                                key = (cmd.tile_sig, cmd.src_ptr.addr, _build_guard_key(current_stage.mem_load_commands, cmd_idx), cmd_idx)
+                                if key not in bcast_mem_copy_cmds:
+                                    bcast_mem_copy_cmds[key] = []
+                                bcast_mem_copy_cmds[key].append((core_id, cmd_idx))
                     
                     _tmp_bcast_cnt = 0
                     _tmp_bcast_request_traffic: dict[int, int] = {core_id: 0 for core_id in op_meta.op_sig.core_group.core_ids}
                     
-                    for tile_sig, cmd_locs in bcast_mem_load_cmds.items():
+                    for (tile_sig, _, _), cmd_locs in bcast_mem_load_cmds.items():
                         if len(cmd_locs) <= 1:
                             continue
                         
@@ -1401,7 +1416,7 @@ class MCA_OperatorGraphCompiler:
                         _tmp_bcast_request_traffic[bcast_core_id] += env.buffers[tile_sig.buf_name].tile_size
                         
                         for core_id, cmd_idx in cmd_locs:
-                            if core_id == bcast_core_id:
+                            if core_id == bcast_core_id and cmd_idx == bcast_cmd_idx:
                                 continue
                             
                             consum_stage = compiled_op._mappings[core_id][stage_cursor]
@@ -1410,11 +1425,15 @@ class MCA_OperatorGraphCompiler:
                             consum_cmd: MCA_CompiledOperator.Command.MEM_LOAD_TILE = consum_stage.mem_load_commands[cmd_idx]
                             bcast_cmd: MCA_CompiledOperator.Command.MEM_LOAD_TILE = bcast_stage.mem_load_commands[bcast_cmd_idx]
                             
-                            bcast_cmd.ptrs.extend(consum_cmd.ptrs)
+                            existing_ptr_addrs = {ptr.addr for ptr in bcast_cmd.ptrs}
+                            for ptr in consum_cmd.ptrs:
+                                if ptr.addr not in existing_ptr_addrs:
+                                    bcast_cmd.ptrs.append(ptr)
+                                    existing_ptr_addrs.add(ptr.addr)
                             
                             compiled_op._mappings[core_id][stage_cursor].mem_load_commands[cmd_idx] = MCA_CompiledOperator.Command.NOP()
                             
-                    for tile_sig, cmd_locs in bcast_mem_copy_cmds.items():
+                    for (tile_sig, _, _, _), cmd_locs in bcast_mem_copy_cmds.items():
                         if len(cmd_locs) <= 1:
                             continue
                         
@@ -1424,7 +1443,7 @@ class MCA_OperatorGraphCompiler:
                         _tmp_bcast_request_traffic[bcast_core_id] += env.buffers[tile_sig.buf_name].tile_size
                         
                         for core_id, cmd_idx in cmd_locs:
-                            if core_id == bcast_core_id:
+                            if core_id == bcast_core_id and cmd_idx == bcast_cmd_idx:
                                 continue
                             
                             consum_stage = compiled_op._mappings[core_id][stage_cursor]
@@ -1433,14 +1452,19 @@ class MCA_OperatorGraphCompiler:
                             consum_cmd: MCA_CompiledOperator.Command.MEM_CPY_TILE = consum_stage.mem_load_commands[cmd_idx]
                             bcast_cmd: MCA_CompiledOperator.Command.MEM_CPY_TILE = bcast_stage.mem_load_commands[bcast_cmd_idx]
                             
-                            bcast_cmd.dst_ptrs.extend(consum_cmd.dst_ptrs)
+                            existing_dst_addrs = {ptr.addr for ptr in bcast_cmd.dst_ptrs}
+                            for dst_ptr in consum_cmd.dst_ptrs:
+                                if dst_ptr.addr not in existing_dst_addrs:
+                                    bcast_cmd.dst_ptrs.append(dst_ptr)
+                                    existing_dst_addrs.add(dst_ptr.addr)
                             
                             compiled_op._mappings[core_id][stage_cursor].mem_load_commands[cmd_idx] = MCA_CompiledOperator.Command.NOP()
                             
                     if _tmp_bcast_cnt > 0:
-                        for core_id, stages in compiled_op._mappings.items():   
+                        for core_id in op_meta.op_sig.core_group.core_ids:
+                            stages = compiled_op._mappings[core_id]
                             if stage_cursor >= len(stages):
-                                raise Exception(f"[Fatal Error] Stage cursor {stage_cursor} exceeds the number of stages for core {core_id} in operator {op_id}.")
+                                compiled_op._mappings[core_id].append(MCA_CompiledOperator.Stage())
                             
                             stages[stage_cursor].mem_load_commands.append(
                                 MCA_CompiledOperator.Command.BARRIER(
@@ -1478,7 +1502,7 @@ class MCA_OperatorGraphCompiler:
                 
         return compiled_ops
         
-    def compile(self, recipe: 'MCA_OperatorGraphCompiler.CompileRecipe') -> dict[str, MCA_CompiledOperator]:    
+    def compile(self, recipe: 'MCA_OperatorGraphCompiler.CompileRecipe') -> MCA_CompiledProgram:    
         # Initialize environment
         env = MCA_OperatorGraphCompiler.Environment(recipe)
             
@@ -1493,7 +1517,5 @@ class MCA_OperatorGraphCompiler:
         
         for grouped_op_ids in env.grouped_compile_targets:
             compiled_ops.update(self.compile_grouped_target_ops(env, grouped_op_ids))
-            # input("Press Enter to continue to the next group...")
-            # exit()
-                       
-        return compiled_ops
+        
+        return MCA_CompiledProgram(recipe.device, compiled_ops)

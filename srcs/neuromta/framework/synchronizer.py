@@ -34,18 +34,49 @@ class LockHandle:
     
 
 class VariableHandle:
+    class ActionCondition:
+        @classmethod
+        def equals_to(cls, value: int) -> Callable[[int], bool]:
+            return lambda x: x == value
+        
+        @classmethod
+        def greater_equal(cls, value: int) -> Callable[[int], bool]:
+            return lambda x: x >= value
+        
+        @classmethod
+        def less_equal(cls, value: int) -> Callable[[int], bool]:
+            return lambda x: x <= value
+
+        @classmethod
+        def greater_than(cls, value: int) -> Callable[[int], bool]:
+            return lambda x: x > value
+        
+        @classmethod
+        def less_than(cls, value: int) -> Callable[[int], bool]:
+            return lambda x: x < value
+
+    
     def __init__(self, handle_name: str="UNKNOWN", initial_value: int=0):
         self.handle_name = handle_name
         
         self._value: int = initial_value
-        self._actions: dict[int, list[Callable]] = {}
+        # self._actions: dict[int, list[Callable]] = {}
+        self._action_methods: list[tuple[Callable[[int], bool], Callable]] = []
     
     def _run_actions(self):
-        if self._value in self._actions:
-            for action in self._actions[self._value]:
+        processed = []
+        for i, (condition, action) in enumerate(self._action_methods):
+            if condition(self._value):
                 action()
-            if self._value in self._actions:
-                del self._actions[self._value]
+                processed.append(i)
+                
+        for i in reversed(processed):
+            del self._action_methods[i]
+        # if self._value in self._actions:
+        #     for action in self._actions[self._value]:
+        #         action()
+        #     if self._value in self._actions:
+        #         del self._actions[self._value]
             
     def atomic_update(self, value: int):
         self._value = value
@@ -58,8 +89,8 @@ class VariableHandle:
                 callback()
             self._run_actions()
         else:
-            if cmp_value not in self._actions:
-                self._actions[cmp_value] = []
+            # if cmp_value not in self._actions:
+            #     self._actions[cmp_value] = []
             
             def _action():
                 self._value = new_value
@@ -67,15 +98,23 @@ class VariableHandle:
                     callback()
                 self._run_actions()
                 
-            self._actions[cmp_value].append(_action)
+            self._action_methods.append((self.ActionCondition.equals_to(cmp_value), _action))
+            # self._actions[cmp_value].append(_action)
             
     def atomic_wait(self, expected_value: int, callback: Callable):
         if self._value == expected_value:
             callback()
         else:
-            if expected_value not in self._actions:
-                self._actions[expected_value] = []
-            self._actions[expected_value].append(callback)
+            # if expected_value not in self._actions:
+            #     self._actions[expected_value] = []
+            # self._actions[expected_value].append(callback)
+            self._action_methods.append((self.ActionCondition.equals_to(expected_value), callback))
+            
+    def atimic_wait_conditional(self, condition: Callable[[int], bool], callback: Callable):
+        if condition(self._value):
+            callback()
+        else:
+            self._action_methods.append((condition, callback))
     
     def atomic_increase(self, increment: int, callback: Callable = None):
         self._value += increment
@@ -90,6 +129,9 @@ class VariableHandle:
     @value.setter
     def value(self, new_value: int):
         self.atomic_update(new_value)
-        
+    
+    def __repr__(self):
+        return f"VariableHandle(name={self.handle_name}, value={self._value})"
+    
     def __str__(self):
         return f"VariableHandle(name={self.handle_name}, value={self._value})"

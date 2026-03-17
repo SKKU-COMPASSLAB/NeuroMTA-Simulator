@@ -67,35 +67,34 @@ class CoreProgressBarHandle(ProgressBarHandle):
     def __init__(self, desc: str="", ncols: int=80):
         super().__init__(desc, ncols)
         
-        self._hook_id = None
+        self._hook_ids: list[str] = []
         self._binded_core = None
         
     def bind_core(self, core: Core):
         self._binded_core = core
-        self._hook_id = core.register_kernel_debug_hook(self._update_pbar_kernel_status)
-        self._update_pbar_kernel_status(core=core)  # initial update
+        for slot_id in core._dispatched_main_kernels.keys():
+            self._hook_ids.append(core.register_kernel_debug_hook(self._update_pbar_kernel_status, slot_id, 0))  # slot_level=0 means the hook will be triggered for top level kernels in the slot
+            self._update_pbar_kernel_status(core=core)  # initial update
         
     def unbind_core(self):
-        if self._hook_id is not None and self._binded_core is not None:
-            self._binded_core.unregister_kernel_debug_hook(self._hook_id)
+        for hook_id in self._hook_ids:
+            self._binded_core.unregister_kernel_debug_hook(hook_id)
             
-            self._hook_id = None
-            self._binded_core = None
-            self._cached_total = None
+        self._hook_ids = []
+        self._binded_core = None
+        self._cached_total = None
     
-    def _update_pbar_kernel_status(self, core: Core, kernel: Kernel=None, issue_time: int=None, commit_time: int=None):
+    def _update_pbar_kernel_status(self, core: Core, kernel: Kernel=None):
         if core.is_idle:
             self._cached_total = 0
             self._cached_progress = 0
             return
         
-        if issue_time is not None:
-            self._cached_total += 1
-        if commit_time is not None:
-            self._cached_progress += 1
-            
-        if self._cached_total < core.n_dispatched_main_kernels:
+        if kernel is None:
             self._cached_total = core.n_dispatched_main_kernels
+            return
+        
+        self._cached_progress += 1
         
         
 class LogEntryHandle:

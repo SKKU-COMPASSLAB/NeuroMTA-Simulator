@@ -12,7 +12,6 @@ from neuromta.component.implementation.hardware import *
 
 __all__ = [
     "TileSignature",
-    "CollectiveTileSignature",
     "TiledOperatorSignature",
 ]
 
@@ -37,30 +36,6 @@ class TileSignature:
         if not isinstance(other, TileSignature):
             return NotImplemented
         return self.buf_name == other.buf_name and self.coords == other.coords
-    
-
-class CollectiveTileSignature(TileSignature):
-    def __init__(self, buf_name: str, src_tiles: Sequence[TileSignature], memcpy_patterns: Sequence[dict[int, int]]):
-        super().__init__(buf_name, 0, 0, 0, 0)
-        
-        self.src_tiles = list(src_tiles)
-        self.memcpy_patterns = list(memcpy_patterns)
-        self.coords = None  # override coords to None for collective tile signature
-        
-        for src_tile in self.src_tiles:
-            if src_tile.buf_name != buf_name:
-                raise ValueError("Source tile buffer names do not match collective buffer name.")
-            
-    def depends_on(self, other):
-        return any(src_tile.depends_on(other) for src_tile in self.src_tiles)
-
-    @property
-    def signature(self) -> str:
-        def tile_signature_with_pattern(tile: TileSignature, pattern: dict[int, int]) -> str:
-            pattern_str = "{" + ",".join([f"{k}:{v}" for k, v in pattern.items()]) + "}"
-            return f"{tile.signature}{pattern_str}"
-        return f"{self.buf_name}[COLLECTIVE {', '.join([tile_signature_with_pattern(tile, pattern) for tile, pattern in zip(self.src_tiles, self.memcpy_patterns)])}]"
-    
     
 class TiledOperatorSignature:
     def __init__(self):

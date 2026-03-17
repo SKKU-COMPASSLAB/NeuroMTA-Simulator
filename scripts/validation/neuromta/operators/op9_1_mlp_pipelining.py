@@ -105,15 +105,13 @@ if __name__ == "__main__":
         spad_space_size_per_core=parse_mem_cap_str("128KB")
     )
     
-    compiled_ops = compiler.compile(global_recipe)
+    compiled_ops = compiler.compile(global_recipe).dispatch()
     
-    for op_id, compiled_op in compiled_ops.items():
-        compiled_op.dispatch(device, slot_id="MAIN")
-        
+    for op_id, summary in compiled_ops.summary().items():
         tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
         with open(tmp_output_path, "w") as f:
-            json.dump(compiled_op.summary(), f, indent=4)
-            logger.info(f"Pipelined mapping summary saved to '{tmp_output_path}'.")
+            json.dump(summary, f, indent=4)
+            logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
         
     with MonitoringWindow() as monitor:
         core_group_with_names: dict[str, MCA_CoreGroup] = {

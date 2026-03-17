@@ -226,12 +226,12 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
             
             compiler.add_op(op)
 
-        self.compiled_ops: dict[str, MCA_CompiledOperator] = compiler.compile(
+        self.compiled_ops = compiler.compile(
             recipe=compiler_recipe,
         )
         
     def execute(self, graph_context: 'NetworkGraphContext', pcc_check: bool=False):
-        logger.debug(f"executing entry {self.__str__()} with {len(self.compiled_ops)} compiled operators")
+        logger.debug(f"executing entry {self.__str__()}")
         
         # STEP 1: load inputs to buffers
         for target in self.targets:
@@ -241,9 +241,7 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
                 buf_sig.load(graph_context)
         
         # STEP 2: execute compiled operators
-        for op_id, compiled_op in self.compiled_ops.items():
-            logger.debug(f"dispatched compiled operator {op_id} to device 0x{id(self.compiler_recipe.device):X}")
-            compiled_op.dispatch(self.compiler_recipe.device, slot_id="MAIN")
+        self.compiled_ops.dispatch()
         
         logger.debug(f"waiting for compiled operators to finish on device 0x{id(self.compiler_recipe.device):X}...")
         self.compiler_recipe.device.run_kernels()
@@ -257,10 +255,7 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
                 buf_sig.store(graph_context, pcc_check=pcc_check)
                 
     def summary(self) -> dict[str, Any]:
-        return {
-            op_id: compiled_op.summary()
-            for op_id, compiled_op in self.compiled_ops.items()
-        }
+        return self.compiled_ops.summary()
         
     def __str__(self):
         return f"COMPILED_ENTRY(id=0x{id(self):X}, targets={[target.op_method.__name__ for target in self.targets]})"

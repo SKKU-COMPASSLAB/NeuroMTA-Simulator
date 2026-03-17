@@ -27,7 +27,7 @@ if __name__ == "__main__":
     
     global_core_group = device.get_npu_core_group()
     core_group_shape = (2, 2)  # each core group has 4 cores
-    core_groups = global_core_group.split(core_group_shape)  # split into 4 core groups with 4 cores each
+    core_groups = global_core_group.split(core_group_shape)
     
     graph_recipe  = MCA_NetworkRecipe(
         device=device,
@@ -85,7 +85,7 @@ if __name__ == "__main__":
         
         st = time.time()
         try:
-            simulated = graph.run_graph(dummy_input, pcc_check=False)  # run the graph with pre-run for compiled-entry validation
+            simulated = graph.run_graph(dummy_input, pcc_check=True)  # run the graph with pre-run for compiled-entry validation
         except Exception as e:
             logger.error(f"simulation terminated early due to compiled-entry validation failure: {e}")
             raise

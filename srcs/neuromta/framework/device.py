@@ -208,6 +208,20 @@ class Device:
         
         for core in self._cores.values():
             core.register_command_debug_hook(hook)
+            
+    def register_kernel_debug_hook(self, hook: Callable, slot_id: str, core_ids: list[int]=None):
+        if not self.is_initialized:
+            raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
+        
+        if isinstance(core_ids, (int, str)):
+            core_ids = [core_ids]
+        
+        if core_ids is None:
+            core_ids = list(self._cores.keys())
+        
+        for core_id in core_ids:
+            core = self._cores[core_id]
+            core.register_kernel_debug_hook(hook, slot_id)
 
     @property
     def timestamp(self) -> int:
