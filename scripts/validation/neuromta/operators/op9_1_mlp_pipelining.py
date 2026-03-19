@@ -113,21 +113,23 @@ if __name__ == "__main__":
             json.dump(summary, f, indent=4)
             logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
         
-    with MonitoringWindow() as monitor:
-        core_group_with_names: dict[str, MCA_CoreGroup] = {
-            "L1": linear1_core_group,
-            "R1": relu1_core_group,
-            "L2": linear2_core_group,
-            "R2": relu2_core_group,
-            "L3": linear3_core_group,
-        }
+    # with MonitoringWindow() as monitor:
+    #     core_group_with_names: dict[str, MCA_CoreGroup] = {
+    #         "L1": linear1_core_group,
+    #         "R1": relu1_core_group,
+    #         "L2": linear2_core_group,
+    #         "R2": relu2_core_group,
+    #         "L3": linear3_core_group,
+    #     }
         
-        for core_group_name, core_group in core_group_with_names.items():
-            for core_id in core_group.core_ids:
-                core = device.get_npu_core(core_id=core_id)
-                pbar_idx = monitor.add_core_pbar(desc=f"{core_group_name} {core_id:<3d}", ncols=40)
-                monitor.pbar_handles[pbar_idx].bind_core(core)
-        
+    #     for core_group_name, core_group in core_group_with_names.items():
+    #         for core_id in core_group.core_ids:
+    #             core = device.get_npu_core(core_id=core_id)
+    #             pbar_idx = monitor.add_core_pbar(desc=f"{core_group_name} {core_id:<3d}", ncols=40)
+    #             monitor.pbar_handles[pbar_idx].bind_core(core)
+    
+    core_groups = [linear1_core_group, relu1_core_group, linear2_core_group, relu2_core_group, linear3_core_group]
+    with MonitoringWindow(device, core_groups) as monitor:
         st = time.time()
         device.run_kernels()
         ed = time.time()

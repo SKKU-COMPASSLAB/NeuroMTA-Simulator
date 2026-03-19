@@ -16,6 +16,7 @@ def run_single_test(task: dict) -> dict:
             stdout=f,
             stderr=subprocess.STDOUT,
             text=True,
+            env=task.get("env"),
             check=False,
         )
 
@@ -53,6 +54,12 @@ def parse_args() -> argparse.Namespace:
         help="Maximum number of processes to run concurrently.",
         dest="max_procs",
     )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Whether to show real-time monitoring window during simulation.",
+        dest="monitor",
+    )
     return parser.parse_args()
 
 
@@ -83,14 +90,19 @@ if __name__ == "__main__":
             test_name = f"{os.path.splitext(filename)[0]}::{option_name}"
 
             cmd = [sys.executable, os.path.join(root, filename)]
+            env = os.environ.copy()
+            env["NEUROMTA_MONITOR_SIM_NAME"] = test_name
             if not use_bcast:
                 cmd.append("--no-bcast")
+            if args.monitor:
+                cmd.append("--monitor")
 
             tasks.append(
                 {
                     "id": task_id,
                     "name": test_name,
                     "cmd": cmd,
+                    "env": env,
                     "log_path": os.path.join(logdir, f"{task_id:02d}_{test_name}.log"),
                 }
             )

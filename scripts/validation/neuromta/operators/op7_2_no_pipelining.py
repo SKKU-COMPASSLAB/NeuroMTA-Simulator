@@ -87,13 +87,7 @@ if __name__ == "__main__":
         for op in [operator1, operator2, operator3]
     }
         
-    with MonitoringWindow() as monitor:
-        for core_group in [sub_core_groups[0], sub_core_groups[1], sub_core_groups[2]]:
-            for core_id in core_group.core_ids:
-                core = device.get_npu_core(core_id=core_id)
-                pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
-                monitor.pbar_handles[pbar_idx].bind_core(core)
-        
+    with MonitoringWindow(device, sub_core_groups[:2]) as monitor:
         st = time.time()
         device.run_kernels()
         ed = time.time()

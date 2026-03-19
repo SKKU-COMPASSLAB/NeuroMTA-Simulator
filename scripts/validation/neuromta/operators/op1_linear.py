@@ -23,17 +23,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate OP1 Linear operator on Tenstorrent hardware.")
     parser.add_argument('--no-bcast', action="store_true", help="Whether not to use broadcast", dest="no_bcast")
     parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
+    parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
     args = parser.parse_args()
     
     torch.set_printoptions(linewidth=1024)
-    logger.set_print_options(log_level=LogLevel.DEBUG if args.monitor else LogLevel.INFO)
+    logger.set_print_options(log_level=LogLevel.DEBUG if args.debug_command else LogLevel.INFO)
     
     config = TenstorrentConfig.BLACKHOLE()
     device = TenstorrentDevice(**config)
     
     device.initialize()
-    device.set_command_debug_verbosity(verbose=args.monitor)
+    device.set_command_debug_verbosity(verbose=args.debug_command)
     
     core_group = device.get_npu_core_group((0, 0), (8, 8))
     
@@ -87,13 +88,16 @@ if __name__ == "__main__":
             json.dump(summary, f, indent=4)
             logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
     
-    if args.monitor:
-        with MonitoringWindow() as monitor:
-            for core_id in core_group.core_ids:
-                core = device.get_npu_core(core_id=core_id)
-                pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
-                monitor.pbar_handles[pbar_idx].bind_core(core)
+    profilers = [
+        DRAMBandwidthProfiler(device, record_type="BOTH"),
+        InterconnectBandwidthProfiler(device),
+        ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
+        ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
+        ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
+    ]
 
+    if args.monitor:
+        with MonitoringWindow(device, core_group, profilers) as monitor:
             st = time.time()
             device.run_kernels()
             ed = time.time()

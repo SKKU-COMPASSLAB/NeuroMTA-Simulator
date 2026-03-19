@@ -99,19 +99,19 @@ if __name__ == "__main__":
     #     for op in [operator1, operator2, operator3]
     # }
         
-    with MonitoringWindow() as monitor:
-        core_group_with_names = {
-            "CV": conv_core_group,
-            "RE": relu_core_group,
-            "MP": maxpool_core_group,
-        }
+    # with MonitoringWindow() as monitor:
+    #     core_group_with_names = {
+    #         "CV": conv_core_group,
+    #         "RE": relu_core_group,
+    #         "MP": maxpool_core_group,
+    #     }
         
-        for core_group_name, core_group in core_group_with_names.items():
-            for core_id in core_group.core_ids:
-                core = device.get_npu_core(core_id=core_id)
-                pbar_idx = monitor.add_core_pbar(desc=f"{core_group_name} {core_id:<3d}", ncols=40)
-                monitor.pbar_handles[pbar_idx].bind_core(core)
-        
+    #     for core_group_name, core_group in core_group_with_names.items():
+    #         for core_id in core_group.core_ids:
+    #             core = device.get_npu_core(core_id=core_id)
+    #             pbar_idx = monitor.add_core_pbar(desc=f"{core_group_name} {core_id:<3d}", ncols=40)
+    #             monitor.pbar_handles[pbar_idx].bind_core(core)
+    with MonitoringWindow(device, [conv_core_group, relu_core_group, maxpool_core_group]) as monitor:
         st = time.time()
         device.run_kernels()
         ed = time.time()

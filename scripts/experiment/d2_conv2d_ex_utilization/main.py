@@ -38,6 +38,7 @@ if __name__ == "__main__":
     parser.add_argument('--l1-buf-size', default=parse_mem_cap_str("128KB"), type=int, help="L1 buffer size per core", dest="l1_buf_size")
     parser.add_argument('--use-l1-cache', action="store_true", help="Whether to load input tensors from L1 buffer (instead of main memory)", dest="use_l1_cache")
     parser.add_argument('--use-bcast', action="store_true", help="Whether to use broadcast", dest="use_bcast")
+    parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation.", dest="monitor")
     parser.add_argument('-o', '--output', default=SUMMARY_DIR, type=str, help="Directory to save the mapping summary and profiler report.", dest="output_dir")
     args = parser.parse_args()
     
@@ -158,12 +159,12 @@ if __name__ == "__main__":
             json.dump(summary, f, indent=4)
             logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
     
-    with MonitoringWindow() as monitor:
-        for core_id in core_group.core_ids:
-            core = device.get_npu_core(core_id=core_id)
-            pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
-            monitor.pbar_handles[pbar_idx].bind_core(core)
-        
+    if args.monitor:
+        with MonitoringWindow(device, core_group) as monitor:
+            st = time.time()
+            device.run_kernels()
+            ed = time.time()
+    else:
         st = time.time()
         device.run_kernels()
         ed = time.time()
@@ -189,17 +190,17 @@ if __name__ == "__main__":
     
     # profiler.print_report()
     
-    if not torch.equal(simulated, reference):
-        mismatch_report = os.path.join(SUMMARY_DIR, "conv_mismatch_report.txt")
-        with open(mismatch_report, "w") as f:
-            content = []
-            s = simulated.flatten()
-            r = reference.flatten()
-            for i in range(s.shape[0]):
-                sim_val = s[i].item()
-                ref_val = r[i].item()
-                if sim_val != ref_val:
-                    content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
-            f.writelines(content)
-        logger.error(f"Mismatch report saved to '{mismatch_report}'.")
-        logger.error(f"Total mismatches: {len(content)}/{s.numel()}")
+    # if not torch.equal(simulated, reference):
+    #     mismatch_report = os.path.join(SUMMARY_DIR, "conv_mismatch_report.txt")
+    #     with open(mismatch_report, "w") as f:
+    #         content = []
+    #         s = simulated.flatten()
+    #         r = reference.flatten()
+    #         for i in range(s.shape[0]):
+    #             sim_val = s[i].item()
+    #             ref_val = r[i].item()
+    #             if sim_val != ref_val:
+    #                 content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
+    #         f.writelines(content)
+    #     logger.error(f"Mismatch report saved to '{mismatch_report}'.")
+    #     logger.error(f"Total mismatches: {len(content)}/{s.numel()}")

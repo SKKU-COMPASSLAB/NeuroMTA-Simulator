@@ -2,6 +2,7 @@ import os
 import json
 import argparse
 import multiprocessing as mp
+import time
 
 from neuromta.framework import logger
 from neuromta.framework.parser_utils import parse_mem_cap_str
@@ -20,6 +21,12 @@ def parse_args() -> argparse.Namespace:
         help="Maximum number of processes to run concurrently.",
         dest="max_procs",
     )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Whether to show real-time monitoring window during simulation.",
+        dest="monitor",
+    )
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -34,7 +41,7 @@ if __name__ == "__main__":
     commands = []
     
     M, N, K = 512, 512, 256
-    l1_buf_sizes = list(range(32, 1024+32, 32))
+    l1_buf_sizes = list(range(128, 1024+128, 128))
     
     def get_prefix(use_l1_cache, use_bcast):
         if use_l1_cache:
@@ -42,39 +49,51 @@ if __name__ == "__main__":
         else:
             prefix = "main"
         if use_bcast:
-            prefix += "_with_bcast"
+            prefix += "_bcast"
         else:
-            prefix += "_without_bcast"
+            prefix += "_wobcast"
         return prefix
     
-    def get_additional_options(use_l1_cache, use_bcast):
+    def get_additional_options(use_l1_cache, use_bcast, monitor):
         additional_options = ""
         if use_l1_cache:
             additional_options += " --use-l1-cache"
         if use_bcast:
             additional_options += " --use-bcast"
+        if monitor:
+            additional_options += " --monitor"
         return additional_options
 
     # Run with PP
-    cmd_fmt = f"python3 {ROOT}/main.py -m {M} -n {N} -k {K} --l1-buf-size {{l1_buf_size}} -o {{output_dir}}"
+    cmd_fmt = f"NEUROMTA_MONITOR_SIM_NAME={{prefix}}_{{l1_buf_size}} python3 {ROOT}/main.py -m {M} -n {N} -k {K} --l1-buf-size {{l1_buf_size}} -o {{output_dir}}"
     for use_l1_cache in [True, False]:
         for use_bcast in [True, False]:
             for l1_buf_size in l1_buf_sizes:
                 prefix = get_prefix(use_l1_cache, use_bcast)
-                additional_options = get_additional_options(use_l1_cache, use_bcast)
+                additional_options = get_additional_options(use_l1_cache, use_bcast, args.monitor)
                 
                 output_dir = output_dir_fmt.format(prefix=prefix, l1_buf_size=l1_buf_size)
-                cmd = cmd_fmt.format(l1_buf_size=l1_buf_size * parse_mem_cap_str("1KB"), output_dir=output_dir) + additional_options
+                cmd = cmd_fmt.format(prefix=prefix, l1_buf_size=l1_buf_size * parse_mem_cap_str("1KB"), output_dir=output_dir) + additional_options
                 commands.append(cmd)
     
     max_procs = args.max_procs
     processes: list[mp.Process] = []
     active_processes: list[mp.Process] = []
+    
+    def reap_finished(active: list[mp.Process]) -> list[mp.Process]:
+        remaining: list[mp.Process] = []
+        for proc in active:
+            if proc.is_alive():
+                remaining.append(proc)
+            else:
+                proc.join()
+        return remaining
 
     for cmd in commands:
         while len(active_processes) >= max_procs:
-            oldest = active_processes.pop(0)
-            oldest.join()
+            active_processes = reap_finished(active_processes)
+            if len(active_processes) >= max_procs:
+                time.sleep(0.05)
 
         p = mp.Process(target=run_command, args=(cmd,))
         p.start()
@@ -82,9 +101,11 @@ if __name__ == "__main__":
         active_processes.append(p)
         logger.info(f"Started process for command: {cmd}")
 
-    for p in active_processes:
-        p.join()
-        
+    while len(active_processes) > 0:
+        active_processes = reap_finished(active_processes)
+        if len(active_processes) > 0:
+            time.sleep(0.05)
+
     logger.info("All experiments completed.")
     
     summarized_results = ["l1_buffer_size,use_l1_cache,use_bcast,core_id,thread,active_time,total_time"]

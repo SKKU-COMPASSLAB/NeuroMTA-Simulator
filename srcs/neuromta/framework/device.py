@@ -93,11 +93,11 @@ class Device:
             callstack = callstack[:47] + " ... " + callstack[-47:]
         logger.debug(f"{issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {callstack:<100s} | command: {cmd.cmd_id}")
         
-        # if cmd.cmd_id == "async_rpc_send_req_msg":
-        #     req_msg = cmd.kwargs.get("req_msg", None)
-        #     if req_msg is None:
-        #         req_msg = cmd.args[0] if len(cmd.args) > 0 else None
-        #     logger.debug(f"    >> RPC REQ MSG SENT: {req_msg}")
+        # if cmd.cmd_id == "dispatch_command_with_module":
+        #     print(f"    >> Companion Command Dispatched: {cmd.args[0] if len(cmd.args) > 0 else cmd.kwargs.get('cmd', 'N/A')}")
+        #     print(f"       module_id: {cmd.kwargs.get('module_id', 'N/A')}")
+        #     print(f"       issue_time: {issue_time}, commit_time: {commit_time}")
+        #     input("        Press Enter to continue...")
 
     def run_single_step(self, cycle_resolution: int = 1):
         if not self.is_initialized:

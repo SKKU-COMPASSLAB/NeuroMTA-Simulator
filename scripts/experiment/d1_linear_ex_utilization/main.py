@@ -27,6 +27,7 @@ if __name__ == "__main__":
     parser.add_argument('--l1-buf-size', default=parse_mem_cap_str("128KB"), type=int, help="L1 buffer size per core", dest="l1_buf_size")
     parser.add_argument('--use-l1-cache', action="store_true", help="Whether to load input tensors from L1 buffer (instead of main memory)", dest="use_l1_cache")
     parser.add_argument('--use-bcast', action="store_true", help="Whether to use broadcast", dest="use_bcast")
+    parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation.", dest="monitor")
     parser.add_argument('-o', '--output', default=SUMMARY_DIR, type=str, help="Directory to save the mapping summary and profiler report.", dest="output_dir")
     args = parser.parse_args()
     
@@ -86,12 +87,12 @@ if __name__ == "__main__":
             json.dump(summary, f, indent=4)
             logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
     
-    with MonitoringWindow() as monitor:
-        for core_id in core_group.core_ids:
-            core = device.get_npu_core(core_id=core_id)
-            pbar_idx = monitor.add_core_pbar(desc=f"{core_id:<3d}", ncols=40)
-            monitor.pbar_handles[pbar_idx].bind_core(core)
-        
+    if args.monitor:
+        with MonitoringWindow(device, core_group) as monitor:
+            st = time.time()
+            device.run_kernels()
+            ed = time.time()
+    else:
         st = time.time()
         device.run_kernels()
         ed = time.time()

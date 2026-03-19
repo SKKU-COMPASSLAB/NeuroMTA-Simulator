@@ -31,6 +31,7 @@ _COLOR_RESET = "\033[0m"
 
 
 _global_current_log_level: LogLevel = LogLevel.INFO
+_global_current_monitor_log_level: LogLevel = LogLevel.INFO
 _global_monitoring_window = None
 
 
@@ -52,15 +53,25 @@ def get_global_monitoring_window():
 
 class logger:
     @classmethod
-    def set_print_options(cls, log_level: LogLevel):
+    def set_print_options(cls, log_level: LogLevel=None, monitor_log_level: LogLevel=None):
         global _global_current_log_level
-        
+        global _global_current_monitor_log_level
+
         if isinstance(log_level, int):
             log_level = LogLevel(log_level)
         elif isinstance(log_level, str):
             log_level = LogLevel[log_level.upper()]
         
-        _global_current_log_level = log_level
+        if log_level is not None:
+            _global_current_log_level = log_level
+
+        if isinstance(monitor_log_level, int):
+            monitor_log_level = LogLevel(monitor_log_level)
+        elif isinstance(monitor_log_level, str):
+            monitor_log_level = LogLevel[monitor_log_level.upper()]
+
+        if monitor_log_level is not None:
+            _global_current_monitor_log_level = monitor_log_level
 
     @classmethod
     def log(cls, message: str, level: LogLevel = LogLevel.INFO):
@@ -73,11 +84,13 @@ class logger:
             level = LogLevel[level.upper()]
         
         if level.value >= _global_current_log_level.value:
+            header = f"[{level.name}] "
+            sys.stdout.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + "\n")
+                
+        if level.value >= _global_current_monitor_log_level.value:
             if _global_monitoring_window is not None:
-                _global_monitoring_window.add_log(message, level)   # use monitoring window to print log
-            else:
-                header = f"[{level.name}] "
-                sys.stdout.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + "\n")
+                if _global_monitoring_window.is_initialized:
+                    _global_monitoring_window.add_log(message, level)   # also print to monitoring window for better visibility when log level is high enough
 
     @classmethod
     def debug(cls, message: str):

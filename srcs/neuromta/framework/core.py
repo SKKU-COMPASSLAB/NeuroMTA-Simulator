@@ -889,7 +889,7 @@ class Core:
     # Debugging Methods
     ###########################################################################
     
-    def register_command_debug_hook(self, hook: Callable[[Kernel, Command, int, int], None]) -> str:
+    def register_command_debug_hook(self, hook: 'Callable[[Core, Kernel, Command, int, int], None]') -> str:
         def create_hook_id(i: int) -> str:
             return f"hook_{i}"
         
@@ -917,7 +917,7 @@ class Core:
                 logger.error(f"Command debug hook '{hook_id}' failed with error: {e}")
                 raise e
             
-    def register_kernel_debug_hook(self, hook: 'Callable[[Core, Kernel], None]', slot_id: str, slot_level: int=-1) -> str:
+    def register_kernel_debug_hook(self, hook: 'Callable[[Core, Kernel], None]', slot_id: str=None, slot_level: int=-1, filter_rpc: bool=True) -> str:
         def create_hook_id(i: int) -> str:
             return f"hook_{i}"
         
@@ -926,7 +926,7 @@ class Core:
         for i in range(MAX_HOOK_NUM):
             hook_id = create_hook_id(i)
             if hook_id not in self._registered_kernel_debug_hooks:
-                self._registered_kernel_debug_hooks[hook_id] = (hook, slot_id, slot_level)
+                self._registered_kernel_debug_hooks[hook_id] = (hook, slot_id, slot_level, filter_rpc)
                 return hook_id
         
         raise Exception(f"Cannot register kernel debug hook since the maximum number of hooks ({MAX_HOOK_NUM}) is reached. Please remove some hooks before adding new ones.")
@@ -938,10 +938,12 @@ class Core:
             raise Exception(f"Hook ID '{hook_id}' is not registered")
         
     def run_kernel_debug_hook(self, kernel: Kernel):
-        for hook_id, (hook, slot_id, slot_level) in self._registered_kernel_debug_hooks.items():
+        for hook_id, (hook, slot_id, slot_level, filter_rpc) in self._registered_kernel_debug_hooks.items():
             try:
-                if kernel.slot_id == slot_id:
+                if kernel.slot_id == slot_id or slot_id is None:
                     if (slot_level < 0) or (0 <= kernel.slot_level <= slot_level):
+                        if filter_rpc and "MAIN<" not in kernel.root_callstack:
+                            continue
                         hook(self, kernel)
             except Exception as e:
                 logger.error(f"Kernel debug hook '{hook_id}' failed with error: {e}")

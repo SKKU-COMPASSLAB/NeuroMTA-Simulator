@@ -74,13 +74,13 @@ if __name__ == "__main__":
                     
     save_compiled_entry_summary(graph, os.path.join(LOGDIR, FILENAME), "summary")
     
-    with MonitoringWindow() as monitor:
-        for core_group_idx, core_group in enumerate(core_groups):
-            for core_id in core_group.core_ids:
-                core = device.get_npu_core(core_id=core_id)
-                pbar_idx = monitor.add_core_pbar(desc=f"G{core_group_idx+1:<2d} {core_id:<3d}", ncols=40)
-                monitor.pbar_handles[pbar_idx].bind_core(core)
-        
+    # with MonitoringWindow() as monitor:
+    #     for core_group_idx, core_group in enumerate(core_groups):
+    #         for core_id in core_group.core_ids:
+    #             core = device.get_npu_core(core_id=core_id)
+    #             pbar_idx = monitor.add_core_pbar(desc=f"G{core_group_idx+1:<2d} {core_id:<3d}", ncols=40)
+    #             monitor.pbar_handles[pbar_idx].bind_core(core)
+    with MonitoringWindow(device, core_groups) as monitor:
         reference = module(dummy_input)
         
         st = time.time()
