@@ -63,8 +63,8 @@ if __name__ == "__main__":
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(W,  Cs)).tiling((32, 32)).allocate().update(ifm)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OW, Cs)).tiling((32, 32)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(W,  Cs)).tiling((32, 32)).allocate().update(ifm)
+    ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OW, Cs)).tiling((32, 32)).allocate()
     
     operator = MCA_OP_AVGPOOL2D(
         ifm_b, ofm_b, 
@@ -97,6 +97,9 @@ if __name__ == "__main__":
         ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
     ]
     
+    profiler_saver = ProfilerFileSaverHub(output_dir=os.path.join(SUMMARY_DIR, "profiles"))
+    profiler_saver.add_profilers(*profilers)
+    
     if args.monitor:
         with MonitoringWindow(device, core_group, profilers) as monitor:
             st = time.time()
@@ -106,6 +109,11 @@ if __name__ == "__main__":
         st = time.time()
         device.run_kernels()
         ed = time.time()
+        
+    profiler_saver.close()
+    
+    for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
+        logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

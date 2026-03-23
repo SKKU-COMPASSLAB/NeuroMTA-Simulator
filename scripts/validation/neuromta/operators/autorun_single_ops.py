@@ -8,6 +8,14 @@ import subprocess
 
 from neuromta.framework import logger
 
+try:
+    sys.path.append(os.path.abspath(os.path.dirname(os.path.abspath(__file__))))
+    from visualize_single_ops import visualize_monitoring_data
+    VISUALIZE_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Visualization module not available: {e}")
+    VISUALIZE_AVAILABLE = False
+
 
 def run_single_test(task: dict) -> dict:
     with open(task["log_path"], "w", encoding="utf-8") as f:
@@ -60,6 +68,12 @@ def parse_args() -> argparse.Namespace:
         help="Whether to show real-time monitoring window during simulation.",
         dest="monitor",
     )
+    parser.add_argument(
+        "--no-bcast",
+        action="store_true",
+        help="Whether to disable broadcasting optimization in the test scripts (if supported).",
+        dest="no_bcast",
+    )
     return parser.parse_args()
 
 
@@ -67,6 +81,7 @@ if __name__ == "__main__":
     args = parse_args()
     if args.max_procs < 1:
         raise ValueError(f"--max-procs must be >= 1, got {args.max_procs}")
+    use_bcast = not args.no_bcast
 
     root = os.path.abspath(os.path.dirname(__file__))
     logdir = os.path.join(root, ".logs", "autorun_single_ops")
@@ -84,76 +99,88 @@ if __name__ == "__main__":
     tasks = []
     task_id = 0
 
+
     for filename in files:
-        for use_bcast in [True, False]:
-            option_name = "bcast_on" if use_bcast else "bcast_off"
-            test_name = f"{os.path.splitext(filename)[0]}::{option_name}"
+        test_name = f"{os.path.splitext(filename)[0]}"
 
-            cmd = [sys.executable, os.path.join(root, filename)]
-            env = os.environ.copy()
-            env["NEUROMTA_MONITOR_SIM_NAME"] = test_name
-            if not use_bcast:
-                cmd.append("--no-bcast")
-            if args.monitor:
-                cmd.append("--monitor")
+        cmd = [sys.executable, os.path.join(root, filename)]
+        env = os.environ.copy()
+        env["NEUROMTA_MONITOR_SIM_NAME"] = test_name
+        if not use_bcast:
+            cmd.append("--no-bcast")
+        if args.monitor:
+            cmd.append("--monitor")
 
-            tasks.append(
-                {
-                    "id": task_id,
-                    "name": test_name,
-                    "cmd": cmd,
-                    "env": env,
-                    "log_path": os.path.join(logdir, f"{task_id:02d}_{test_name}.log"),
-                }
-            )
-            task_id += 1
-
-    logger.info(f"Running {len(tasks)} tests with max {args.max_procs} processes")
-
-    with mp.Pool(processes=args.max_procs) as pool:
-        results = list(pool.imap_unordered(run_single_test, tasks))
-
-    results.sort(key=lambda x: x["id"])
-
-    passed = [r for r in results if r["passed"]]
-    failed = [r for r in results if not r["passed"]]
-
-    logger.info("=" * 80)
-    logger.info("Single OP Validation Summary")
-    logger.info("=" * 80)
-
-    for result in results:
-        verdict = "PASS" if result["passed"] else "FAIL"
-        logger.info(
-            f"[{verdict}] {result['name']:<30s} | status={result['simulation_status']} | "
-            f"returncode={result['returncode']} | log='{result['log_path']}'"
-        )
-
-    logger.info("-" * 80)
-    logger.info(f"Total: {len(results)} | Passed: {len(passed)} | Failed: {len(failed)}")
-
-    if len(passed) > 0:
-        logger.info("Passed Tests:")
-        for result in passed:
-            logger.info(f"  - {result['name']}")
-
-    if len(failed) > 0:
-        logger.info("Failed Tests:")
-        for result in failed:
-            reason = result["simulation_line"] if result["simulation_line"] else "simulation line not found"
-            logger.info(f"  - {result['name']} ({reason})")
-
-    summary_path = os.path.join(logdir, "summary.json")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(
+        tasks.append(
             {
-                "total": len(results),
-                "passed": len(passed),
-                "failed": len(failed),
-                "results": results,
-            },
-            f,
-            indent=2,
+                "id": task_id,
+                "name": test_name,
+                "cmd": cmd,
+                "env": env,
+                "log_path": os.path.join(logdir, f"{task_id:02d}_{test_name}.log"),
+            }
         )
+        task_id += 1
 
-    logger.info(f"Summary saved to '{summary_path}'")
+    # logger.info(f"Running {len(tasks)} tests with max {args.max_procs} processes")
+
+    # with mp.Pool(processes=args.max_procs) as pool:
+    #     results = list(pool.imap_unordered(run_single_test, tasks))
+
+    # results.sort(key=lambda x: x["id"])
+
+    # passed = [r for r in results if r["passed"]]
+    # failed = [r for r in results if not r["passed"]]
+
+    # logger.info("=" * 80)
+    # logger.info("Single OP Validation Summary")
+    # logger.info("=" * 80)
+
+    # for result in results:
+    #     verdict = "PASS" if result["passed"] else "FAIL"
+    #     logger.info(
+    #         f"[{verdict}] {result['name']:<30s} | status={result['simulation_status']} | "
+    #         f"returncode={result['returncode']} | log='{result['log_path']}'"
+    #     )
+
+    # logger.info("-" * 80)
+    # logger.info(f"Total: {len(results)} | Passed: {len(passed)} | Failed: {len(failed)}")
+
+    # if len(passed) > 0:
+    #     logger.info("Passed Tests:")
+    #     for result in passed:
+    #         logger.info(f"  - {result['name']}")
+
+    # if len(failed) > 0:
+    #     logger.info("Failed Tests:")
+    #     for result in failed:
+    #         reason = result["simulation_line"] if result["simulation_line"] else "simulation line not found"
+    #         logger.info(f"  - {result['name']} ({reason})")
+
+    # summary_path = os.path.join(logdir, "summary.json")
+    # with open(summary_path, "w", encoding="utf-8") as f:
+    #     json.dump(
+    #         {
+    #             "total": len(results),
+    #             "passed": len(passed),
+    #             "failed": len(failed),
+    #             "results": results,
+    #         },
+    #         f,
+    #         indent=2,
+    #     )
+
+    # logger.info(f"Summary saved to '{summary_path}'")
+
+    # Visualize monitoring data for passed tests
+    if VISUALIZE_AVAILABLE:
+        # for result in passed:
+        for result in tasks:
+            test_name = result["name"]
+            profile_dir = os.path.join(root, ".logs", test_name, "profiles")
+            output_dir = os.path.join(root, ".logs", test_name, "visualizations")
+            if os.path.isdir(profile_dir):
+                visualize_monitoring_data(profile_dir, output_dir)
+                logger.info(f"Visualizations saved for '{test_name}' in '{output_dir}'")
+            else:
+                logger.warning(f"Profile directory '{profile_dir}' not found for '{test_name}', skipping visualization")

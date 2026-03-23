@@ -94,7 +94,6 @@ if __name__ == "__main__":
         logger.debug(f"core id: {core.core_id}, kernel id: {kernel.kernel_id}, issue_time: {kernel.issue_time}, commit_time: {kernel.commit_time}")
     
     core_group = device.get_npu_core_group((0, 0), (12, 12))
-    profiler = ExecutionTimeProfiler(device, core_group, ["LD", "EX", "ST"])
     
     # Create memory space and buffers
     main_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
@@ -159,8 +158,19 @@ if __name__ == "__main__":
             json.dump(summary, f, indent=4)
             logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
     
+    profilers = [
+        DRAMBandwidthProfiler(device, record_type="BOTH"),
+        InterconnectBandwidthProfiler(device),
+        ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
+        ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
+        ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
+    ]
+    
+    profiler_saver = ProfilerFileSaverHub(output_dir=os.path.join(SUMMARY_DIR, "profiles"))
+    profiler_saver.add_profilers(*profilers)
+    
     if args.monitor:
-        with MonitoringWindow(device, core_group) as monitor:
+        with MonitoringWindow(device, core_group, profilers) as monitor:
             st = time.time()
             device.run_kernels()
             ed = time.time()
@@ -169,14 +179,10 @@ if __name__ == "__main__":
         device.run_kernels()
         ed = time.time()
     
-    for core_id, core_summary in profiler.summary().items():
-        for slot_id, slot_summary in core_summary.items():
-            logger.info(f"Core {core_id} Slot {slot_id}: Active Time = {slot_summary['active_time_cycles']} cycles out of {slot_summary['final_commit_cycles']} cycles total ({slot_summary['active_utilization']*100:.2f}% active)")
+    profiler_saver.close()
     
-    profiler_report_path = os.path.join(SUMMARY_DIR, "execution_time_profile.json")
-    with open(profiler_report_path, "w") as f:
-        json.dump(profiler.summary(), f, indent=4)
-        logger.info(f"Execution time profile saved to '{profiler_report_path}'.")
+    for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
+        logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

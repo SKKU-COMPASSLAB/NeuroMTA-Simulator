@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import argparse
 import multiprocessing as mp
@@ -6,6 +7,15 @@ import time
 
 from neuromta.framework import logger
 from neuromta.framework.parser_utils import parse_mem_cap_str
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    from visualize import visualize_monitoring_data
+    VISUALIZE_ENBALED = True
+except ImportError as e:
+    logger.error(f"Failed to import visualize_monitoring_data from visualize.py: {e}")
+    VISUALIZE_ENBALED = False
 
 
 def run_command(cmd: str) -> None:
@@ -28,6 +38,7 @@ def parse_args() -> argparse.Namespace:
         dest="monitor",
     )
     return parser.parse_args()
+
 
 if __name__ == "__main__":
     args = parse_args()
@@ -89,41 +100,50 @@ if __name__ == "__main__":
                 proc.join()
         return remaining
 
-    for cmd in commands:
-        while len(active_processes) >= max_procs:
-            active_processes = reap_finished(active_processes)
-            if len(active_processes) >= max_procs:
-                time.sleep(0.05)
+    # for cmd in commands:
+    #     while len(active_processes) >= max_procs:
+    #         active_processes = reap_finished(active_processes)
+    #         if len(active_processes) >= max_procs:
+    #             time.sleep(0.05)
 
-        p = mp.Process(target=run_command, args=(cmd,))
-        p.start()
-        processes.append(p)
-        active_processes.append(p)
-        logger.info(f"Started process for command: {cmd}")
+    #     p = mp.Process(target=run_command, args=(cmd,))
+    #     p.start()
+    #     processes.append(p)
+    #     active_processes.append(p)
+    #     logger.info(f"Started process for command: {cmd}")
 
-    while len(active_processes) > 0:
-        active_processes = reap_finished(active_processes)
-        if len(active_processes) > 0:
-            time.sleep(0.05)
+    # while len(active_processes) > 0:
+    #     active_processes = reap_finished(active_processes)
+    #     if len(active_processes) > 0:
+    #         time.sleep(0.05)
 
-    logger.info("All experiments completed.")
+    # logger.info("All experiments completed.")
     
-    summarized_results = ["l1_buffer_size,use_l1_cache,use_bcast,core_id,thread,active_time,total_time"]
-    for use_l1_cache in [True, False]:
-        for use_bcast in [True, False]:
-            for l1_buf_size in l1_buf_sizes:
-                prefix = get_prefix(use_l1_cache, use_bcast)
-                output_dir = output_dir_fmt.format(prefix=prefix, l1_buf_size=l1_buf_size)
+    # summarized_results = ["l1_buffer_size,use_l1_cache,use_bcast,core_id,thread,active_time,total_time"]
+    # for use_l1_cache in [True, False]:
+    #     for use_bcast in [True, False]:
+    #         for l1_buf_size in l1_buf_sizes:
+    #             prefix = get_prefix(use_l1_cache, use_bcast)
+    #             output_dir = output_dir_fmt.format(prefix=prefix, l1_buf_size=l1_buf_size)
                 
-                exe_time_profile_path = os.path.join(output_dir, "execution_time_profile.json")
-                with open(exe_time_profile_path, "r") as f:
-                    exe_time_profile = json.load(f)
+    #             exe_time_profile_path = os.path.join(output_dir, "execution_time_profile.json")
+    #             with open(exe_time_profile_path, "r") as f:
+    #                 exe_time_profile = json.load(f)
                 
-                for core_id, thread_profile in exe_time_profile.items():
-                    for thread_id, p in thread_profile.items():
-                        summarized_results.append(f"{l1_buf_size},{use_l1_cache},{use_bcast},{core_id},{thread_id},{p['active_time_cycles']},{p['final_commit_cycles']}")
+    #             for core_id, thread_profile in exe_time_profile.items():
+    #                 for thread_id, p in thread_profile.items():
+    #                     summarized_results.append(f"{l1_buf_size},{use_l1_cache},{use_bcast},{core_id},{thread_id},{p['active_time_cycles']},{p['final_commit_cycles']}")
                 
-    summarized_results_path = os.path.join(LOGDIR, "summarized_results.csv")
-    with open(summarized_results_path, "w") as f:
-        f.write("\n".join(summarized_results))
-        logger.info(f"Summarized results saved to '{summarized_results_path}'")
+    # summarized_results_path = os.path.join(LOGDIR, "summarized_results.csv")
+    # with open(summarized_results_path, "w") as f:
+    #     f.write("\n".join(summarized_results))
+    #     logger.info(f"Summarized results saved to '{summarized_results_path}'")
+    
+    if VISUALIZE_ENBALED:
+        for use_l1_cache in [True, False]:
+            for use_bcast in [True, False]:
+                for l1_buf_size in l1_buf_sizes:
+                    prefix = get_prefix(use_l1_cache, use_bcast)
+                    output_dir = output_dir_fmt.format(prefix=prefix, l1_buf_size=l1_buf_size)
+                    profile_dir = os.path.join(output_dir, "profiles")
+                    visualize_monitoring_data(profile_dir, os.path.join(output_dir, "visualizations"))

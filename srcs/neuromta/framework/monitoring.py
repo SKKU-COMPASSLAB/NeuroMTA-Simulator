@@ -1,10 +1,4 @@
-import signal
-import time
-import sys
-import os
-import threading as th
-import multiprocessing as mp
-from typing import Any, Sequence
+from typing import  Sequence
 
 from neuromta.framework.logger import logger, LogLevel, _LOG_LEVEL_COLORS, _COLOR_RESET, set_global_monitoring_window, unset_global_monitoring_window
 from neuromta.framework.core import Core, Kernel, Command
@@ -72,7 +66,18 @@ class MonitoringWindow(MonitorClient):
             raise Exception(f"Core ID {core.core_id} is not found in the core progress status. This should not happen if the monitoring window is properly initialized.")
         
         tracker = self._core_trackers[core.core_id]
+                
+        _amt = 0
+        for slot_id, _kernel in core._dispatched_main_kernels.items():
+            if _kernel.is_finished(core) or _kernel is kernel:
+                continue
+            _cursor = _kernel._execution_cursor
+            _totals = len(_kernel._execution_steps)
+            _n_kernels = tracker.totals
+            _amt += 0 if _totals == 0 else (_cursor / _totals / _n_kernels)
+
         tracker.update(1, acc=True)
+        tracker.update(_amt, temporary=True)
         self.update(cycle=self._device.timestamp)
     
     def _command_progress_debug_hook(self, core: Core, kernel: Kernel, command: Command, issue_time: int, commit_time: int):
