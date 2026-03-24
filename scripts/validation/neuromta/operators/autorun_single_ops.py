@@ -122,55 +122,55 @@ if __name__ == "__main__":
         )
         task_id += 1
 
-    # logger.info(f"Running {len(tasks)} tests with max {args.max_procs} processes")
+    logger.info(f"Running {len(tasks)} tests with max {args.max_procs} processes")
 
-    # with mp.Pool(processes=args.max_procs) as pool:
-    #     results = list(pool.imap_unordered(run_single_test, tasks))
+    with mp.Pool(processes=args.max_procs) as pool:
+        results = list(pool.imap_unordered(run_single_test, tasks))
 
-    # results.sort(key=lambda x: x["id"])
+    results.sort(key=lambda x: x["id"])
 
-    # passed = [r for r in results if r["passed"]]
-    # failed = [r for r in results if not r["passed"]]
+    passed = [r for r in results if r["passed"]]
+    failed = [r for r in results if not r["passed"]]
 
-    # logger.info("=" * 80)
-    # logger.info("Single OP Validation Summary")
-    # logger.info("=" * 80)
+    logger.info("=" * 80)
+    logger.info("Single OP Validation Summary")
+    logger.info("=" * 80)
 
-    # for result in results:
-    #     verdict = "PASS" if result["passed"] else "FAIL"
-    #     logger.info(
-    #         f"[{verdict}] {result['name']:<30s} | status={result['simulation_status']} | "
-    #         f"returncode={result['returncode']} | log='{result['log_path']}'"
-    #     )
+    for result in results:
+        verdict = "PASS" if result["passed"] else "FAIL"
+        logger.info(
+            f"[{verdict}] {result['name']:<30s} | status={result['simulation_status']} | "
+            f"returncode={result['returncode']} | log='{result['log_path']}'"
+        )
 
-    # logger.info("-" * 80)
-    # logger.info(f"Total: {len(results)} | Passed: {len(passed)} | Failed: {len(failed)}")
+    logger.info("-" * 80)
+    logger.info(f"Total: {len(results)} | Passed: {len(passed)} | Failed: {len(failed)}")
 
-    # if len(passed) > 0:
-    #     logger.info("Passed Tests:")
-    #     for result in passed:
-    #         logger.info(f"  - {result['name']}")
+    if len(passed) > 0:
+        logger.info("Passed Tests:")
+        for result in passed:
+            logger.info(f"  - {result['name']}")
 
-    # if len(failed) > 0:
-    #     logger.info("Failed Tests:")
-    #     for result in failed:
-    #         reason = result["simulation_line"] if result["simulation_line"] else "simulation line not found"
-    #         logger.info(f"  - {result['name']} ({reason})")
+    if len(failed) > 0:
+        logger.info("Failed Tests:")
+        for result in failed:
+            reason = result["simulation_line"] if result["simulation_line"] else "simulation line not found"
+            logger.info(f"  - {result['name']} ({reason})")
 
-    # summary_path = os.path.join(logdir, "summary.json")
-    # with open(summary_path, "w", encoding="utf-8") as f:
-    #     json.dump(
-    #         {
-    #             "total": len(results),
-    #             "passed": len(passed),
-    #             "failed": len(failed),
-    #             "results": results,
-    #         },
-    #         f,
-    #         indent=2,
-    #     )
+    summary_path = os.path.join(logdir, "summary.json")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "total": len(results),
+                "passed": len(passed),
+                "failed": len(failed),
+                "results": results,
+            },
+            f,
+            indent=2,
+        )
 
-    # logger.info(f"Summary saved to '{summary_path}'")
+    logger.info(f"Summary saved to '{summary_path}'")
 
     # Visualize monitoring data for passed tests
     if VISUALIZE_AVAILABLE:

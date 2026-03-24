@@ -13,7 +13,7 @@ __all__ = [
 ]
 
 
-class MCA_TensorBuffer:
+class MCA_TensorBuffer(SerializableCoreObject):
     def __init__(
         self, 
         
@@ -43,12 +43,6 @@ class MCA_TensorBuffer:
         self._shard_y = shard_shape[0]
         self._shard_x = shard_shape[1]
         
-        # self._pad_y = (self._shard_y - (self._shape[-2] % self._shard_y)) % self._shard_y
-        # self._pad_x = (self._shard_x - (self._shape[-1] % self._shard_x)) % self._shard_x
-        
-        # self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1) * (self._shape[-2] + self._pad_y)
-        # self._layout_x = self._shape[-1] + self._pad_x
-        
         if self._shape[-2] % self._shard_y != 0:
             raise ValueError(f"Height {self._shape[-2]} is not divisible by shard height {self._shard_y}.")
         if self._shape[-1] % self._shard_x != 0:
@@ -69,9 +63,10 @@ class MCA_TensorBuffer:
         self._n_x_tiles_per_shard = self._shard_x // self._tile_x
         
         # Memory Owners and Layout
-        self._blocked_mapping = blocked_mapping
-        if self._blocked_mapping and not isinstance(self.owner_ids, MTA_CoreGrid):
-            self._blocked_mapping = False  # fallback to non-blocked mapping if mem_ids is not MTA_CoreGrid
+        if self._mem_space is not None:
+            self._blocked_mapping = blocked_mapping
+            if self._blocked_mapping and not isinstance(self.owner_ids, MTA_CoreGrid):
+                self._blocked_mapping = False  # fallback to non-blocked mapping if mem_ids is not MTA_CoreGrid
         
         self._shard_size = self._shard_y * self._shard_x * self._dtype.itemsize
         self._shard_ptrs: list[list[Pointer]] = [[
@@ -80,6 +75,30 @@ class MCA_TensorBuffer:
             for _ in range(self._n_y_shards)]
         
         self._is_allocated = False
+        
+    def get_state(self):
+        return {
+            "mem_space": None,  # memory space is not serialized as it is part of the global context and can be accessed during restore
+            "shape": self._shape,
+            "dtype": self._dtype,
+            "shard_shape": (self._shard_y, self._shard_x),
+            "blocked_mapping": self._blocked_mapping,
+            "shard_ptrs": [[ptr for ptr in row] for row in self._shard_ptrs],
+            "is_allocated": self._is_allocated,
+        }
+        
+    @classmethod
+    def from_state(cls, core, state: dict) -> 'MCA_TensorBuffer':
+        buffer = cls(
+            mem_space=state["mem_space"],
+            shape=state["shape"],
+            dtype=state["dtype"],
+            shard_shape=state["shard_shape"],
+            blocked_mapping=state["blocked_mapping"]
+        )
+        buffer._shard_ptrs = state["shard_ptrs"]
+        buffer._is_allocated = state["is_allocated"]
+        return buffer
         
     def reshape(self, *new_shape: int) -> "MCA_TensorBuffer":
         if new_shape[-1] != self._shape[-1]:

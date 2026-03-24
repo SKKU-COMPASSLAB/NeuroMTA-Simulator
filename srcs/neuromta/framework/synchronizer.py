@@ -1,4 +1,5 @@
 from typing import Any, Callable
+from neuromta.framework.serializer import *
 
 
 __all__ = ["LockHandle", "VariableHandle"]
@@ -33,7 +34,7 @@ class LockHandle:
         return f"LockHandle(name={self.handle_name}, owner={self._owner})"
     
 
-class VariableHandle:
+class VariableHandle(SerializableCoreObject):
     class ActionCondition:
         @classmethod
         def equals_to(cls, value: int) -> Callable[[int], bool]:
@@ -60,8 +61,17 @@ class VariableHandle:
         self.handle_name = handle_name
         
         self._value: int = initial_value
-        # self._actions: dict[int, list[Callable]] = {}
         self._action_methods: list[tuple[Callable[[int], bool], Callable]] = []
+        
+    def get_state(self):
+        return {
+            "handle_name": self.handle_name,
+            "value": self._value
+        }
+    
+    @classmethod
+    def from_state(cls, core, state: dict):
+        return cls(handle_name=state.get("handle_name", "UNKNOWN"), initial_value=state.get("value", 0))
     
     def _run_actions(self):
         processed = []
@@ -72,11 +82,6 @@ class VariableHandle:
                 
         for i in reversed(processed):
             del self._action_methods[i]
-        # if self._value in self._actions:
-        #     for action in self._actions[self._value]:
-        #         action()
-        #     if self._value in self._actions:
-        #         del self._actions[self._value]
             
     def atomic_update(self, value: int):
         self._value = value

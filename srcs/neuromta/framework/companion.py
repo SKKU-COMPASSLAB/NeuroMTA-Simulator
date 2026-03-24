@@ -58,6 +58,12 @@ class CompanionCore(Core):
         
         self._registered_companion_debug_hooks: dict[str, dict[str, Callable]] = {}
         
+    def dump_core_states(self):
+        return {}
+    
+    def load_core_states(self, states: dict):
+        pass
+        
     def register_companion_module_hook(self, module_id: str, hook: Callable) -> str:
         def create_hook_id(i: int) -> str:
             return f"hook_{i}"

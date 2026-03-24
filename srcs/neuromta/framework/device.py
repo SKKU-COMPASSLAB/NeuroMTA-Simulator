@@ -239,3 +239,14 @@ class Device:
     @property
     def initialized_cores(self) -> dict[str, Core]:
         return self._cores
+    
+    
+class DeviceDump:
+    def __init__(self, device: Device):
+        self._device = device
+        
+    def save(self, path: str):
+        if not self._device.is_initialized:
+            raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
+        
+        os.makedirs(path, exist_ok=True)

@@ -2,7 +2,6 @@ import torch
 from neuromta.framework import *
 
 from neuromta.component.context.global_context import *
-from neuromta.component.context.icnt_context import IcntContext
 
 __all__ = [
     "DMACore",
@@ -25,6 +24,14 @@ class DMACore(Core):
         self.core_info  = self.global_context.get_core_info(GlobalContextCoreType.DMA, core_id)
         self.mem_info   = self.core_info.owned_mem_info  # Assume that each DMA core owns only one memory
         self.mem_handle = self.mem_info.mem_handle
+        
+    def dump_core_states(self):
+        return {
+            "mem_handle_state": self.mem_handle.dump_handle_state(),
+        }
+        
+    def load_core_states(self, states: dict):
+        self.mem_handle.load_handle_state(states["mem_handle_state"])
         
     def check_ptr_belonging(self, ptr: Pointer) -> bool:
         if isinstance(ptr, Pointer):

@@ -39,6 +39,14 @@ class NPUCore(Core):
         
         self._dma_engine_idx = self.core_id % self.global_context.n_dma_engine_per_channel  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
     
+    def dump_core_states(self):
+        return {
+            "mem_handle_state": self.mem_handle.dump_handle_state(),
+        }
+        
+    def load_core_states(self, states: dict):
+        self.mem_handle.load_handle_state(states["mem_handle_state"])
+    
     def get_buffer_owner(self, ptr: Pointer | int) -> int:
         if isinstance(ptr, Pointer):
             addr = ptr.addr
@@ -67,14 +75,11 @@ class NPUCore(Core):
     def local_mem_init(self, ptr: Pointer, size: int, init_data: torch.Tensor=None):
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_init' method.")
-        # mem_info = self.global_context.get_mem_info_by_address(ptr.addr)
-        # mem_handle = mem_info.mem_handle
-            
+        
         if init_data is None:
             init_data = torch.zeros((size,), dtype=torch.uint8)
         
         self.mem_handle.set_data(ptr, size=size, data=init_data)
-        # mem_handle.set_data(ptr, size=size, data=init_data)
             
     def mem_init(self, ptr: Pointer, size: int, init_data: torch.Tensor=None):
         if self.check_ptr_belonging(ptr):
@@ -94,14 +99,11 @@ class NPUCore(Core):
             
             self.async_rpc_send_req_msg(msg)
             self.async_rpc_wait_rsp_msg(msg)
-        # self.local_mem_init(ptr, size, init_data)
-    
+        
     @core_command_method
     def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_read' method.")
-        # mem_info = self.global_context.get_mem_info_by_address(ptr.addr)
-        # mem_handle = mem_info.mem_handle
         
         if mem_row_stride is None:
             mem_row_stride = row_size
@@ -117,7 +119,6 @@ class NPUCore(Core):
         
         for d, s in row_pattern.items():
             src_data = self.mem_handle.get_data(ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
-            # src_data = mem_handle.get_data(ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
             container.data[d, cont_row_offset:cont_row_offset+row_size] = src_data
         
     @core_command_method
@@ -144,7 +145,6 @@ class NPUCore(Core):
         for d, s in row_pattern.items():
             dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
             self.mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
-            # mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
     
     @jit_prototype
     def local_mem_copy(self, dst_ptr: Pointer, src_ptr: Pointer, row_size: int, row_num: int=1, src_row_stride: int=None, dst_row_stride: int=None, nowait: bool=False):
@@ -177,9 +177,6 @@ class NPUCore(Core):
         # THREAD: Data Read & Write
         with new_parallel_thread("DATA_RD_WR"):
             container = DataContainer()
-
-            # self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
-            # self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size)
             
             if src_owner_core_id == self.core_id:
                 self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
@@ -321,10 +318,6 @@ class NPUCore(Core):
         # THREAD: Data Read & Write
         with new_parallel_thread("DATA_RD_WR"):
             container = DataContainer()
-            
-            # self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
-            # for dst_ptr in dst_ptrs:
-            #     self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size)
             
             if src_owner_core_id == self.core_id:
                 self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
