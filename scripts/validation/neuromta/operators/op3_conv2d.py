@@ -29,7 +29,8 @@ if __name__ == "__main__":
 
     torch.set_printoptions(profile="full", linewidth=2048)
     # torch.set_printoptions(linewidth=1024)
-    logger.set_print_options(log_level=LogLevel.DEBUG if args.debug_command else LogLevel.INFO)
+    # logger.set_print_options(log_level=LogLevel.DEBUG if args.debug_command else LogLevel.INFO)
+    logger.set_print_options(log_level=LogLevel.DEBUG)
     torch.manual_seed(0)
     
     config = TenstorrentConfig.BLACKHOLE()
@@ -38,7 +39,7 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = MCA_CoreGroup.merge_core_groups(device.get_npu_core_group((0, 0), (12, 12)).split(shape=(4, 4)))
+    core_group = device.get_npu_core_group((0, 0), (4, 4))
     
     N, H, W, C = 1, 224, 224, 3
     FH, FW, K = 11, 11, 96
@@ -48,7 +49,7 @@ if __name__ == "__main__":
     
     Wt = 56
     OWt = 55
-    Ct = 10
+    Ct = 32
     Kt = 32
     
     if (W % Wt != 0): Wt = W
@@ -60,9 +61,12 @@ if __name__ == "__main__":
     acc_dtype = torch.int16
     broadcast_optimize = not args.no_bcast  # Enable broadcast optimization to reduce memory and NoC traffic
     
-    ifm  = torch.randint(low=0, high=64, size=(N, H, W, C), dtype=dtype)
-    wgt  = torch.randint(low=0, high=64, size=(FH, FW, K, C), dtype=dtype)
-    bias = torch.randint(low=0, high=64, size=(K,), dtype=acc_dtype)
+    # ifm  = torch.randint(low=0, high=64, size=(N, H, W, C), dtype=dtype)
+    # wgt  = torch.randint(low=0, high=64, size=(FH, FW, K, C), dtype=dtype)
+    # bias = torch.randint(low=0, high=64, size=(K,), dtype=acc_dtype)
+    ifm  = torch.ones((N, H, W, C), dtype=dtype)
+    wgt  = torch.ones((FH, FW, K, C), dtype=dtype)
+    bias = torch.ones((K,), dtype=acc_dtype)
     ofm  = torch.zeros((N, OH, OW, K), dtype=acc_dtype)
     
     ifm_size  = ifm.numel() * ifm.dtype.itemsize

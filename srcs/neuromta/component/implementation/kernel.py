@@ -1,5 +1,6 @@
 from typing import Callable
 
+from matplotlib import container
 from neuromta.framework import *
 from neuromta.component.core import *
 from neuromta.component.context import *
@@ -9,6 +10,8 @@ from neuromta.component.implementation.operator import *
 
 
 __all__ = [
+    # "MCA_KERNEL_CORE_MEM_THREAD",
+    # "MCA_KERNEL_CORE_EXE_THREAD",
     "MCA_KERNEL_CORE_LD_THREAD",
     "MCA_KERNEL_CORE_EX_THREAD",
     "MCA_KERNEL_CORE_ST_THREAD",
@@ -18,8 +21,7 @@ __all__ = [
 @jit_prototype
 def MCA_KERNEL_CORE_LD_THREAD(
     core: NPUCore, 
-    variables: dict[str, VariableHandle],
-    buffers: dict[str, MCA_TensorBuffer],
+    env: MCA_OperatorGraphCompiler.Environment, 
     preprocessing_cmds: list[MCA_CompiledOperator.Command.Base],
     mem_load_cmds: list[MCA_CompiledOperator.Command.Base],
     stage_sync_barrier: tuple[str, str, int],
@@ -27,30 +29,30 @@ def MCA_KERNEL_CORE_LD_THREAD(
     post_sync_barrier: tuple[str, str, int],  # (var_arrived_count_name, var_block_state_name, total_arrivals)
 ):
     if pre_sync_barrier is not None:
-        var_arrived_count = variables[pre_sync_barrier[0]]
-        var_block_state = variables[pre_sync_barrier[1]]
+        var_arrived_count = env.variables[pre_sync_barrier[0]]
+        var_block_state = env.variables[pre_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, pre_sync_barrier[2])
-    
+        
     if stage_sync_barrier is not None:
-        var_arrived_count = variables[stage_sync_barrier[0]]
-        var_block_state = variables[stage_sync_barrier[1]]
+        var_arrived_count = env.variables[stage_sync_barrier[0]]
+        var_block_state = env.variables[stage_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
     
     for cmd in preprocessing_cmds:
         if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
         elif isinstance(cmd, MCA_CompiledOperator.Command.BARRIER):
-            var_arrived_count = variables[cmd.var_arrived_count]
-            var_block_state = variables[cmd.var_block_state]
+            var_arrived_count = env.variables[cmd.var_arrived_count]
+            var_block_state = env.variables[cmd.var_block_state]
             core.var_atomic_barrier(var_arrived_count, var_block_state, cmd.total_arrivals)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_INIT):
-            var = variables[cmd.var_name]
+            var = env.variables[cmd.var_name]
             core.var_atomic_init(var, cmd.initial_value)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_COMPARE_AND_SWAP):
-            var = variables[cmd.var_name]
+            var = env.variables[cmd.var_name]
             core.var_atomic_compare_and_swap(var, cmd.expected_value, cmd.new_value)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT):
-            vars = [variables[var_name] for var_name in cmd.var_names]
+            vars = [env.variables[var_name] for var_name in cmd.var_names]
             core.var_conditional_wait(vars, cmd.condition)
         else:
             raise NotImplementedError(f"Preprocessing command {type(cmd)} is not implemented.")
@@ -61,19 +63,19 @@ def MCA_KERNEL_CORE_LD_THREAD(
         elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_INIT):
             core.local_mem_init(cmd.ptr, cmd.size)
         elif isinstance(cmd, MCA_CompiledOperator.Command.BARRIER):
-            core.async_rpc_wait_all()  # Ensure all previous async operations are completed before the barrier
+            core.async_rpc_wait_all()
             
-            var_arrived_count = variables[cmd.var_arrived_count]
-            var_block_state = variables[cmd.var_block_state]
+            var_arrived_count = env.variables[cmd.var_arrived_count]
+            var_block_state = env.variables[cmd.var_block_state]
             core.var_atomic_barrier(var_arrived_count, var_block_state, cmd.total_arrivals)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT):
-            core.async_rpc_wait_all()  # Ensure all previous async operations are completed before the barrier
+            core.async_rpc_wait_all()
 
-            vars = [variables[var_name] for var_name in cmd.var_names]
+            vars = [env.variables[var_name] for var_name in cmd.var_names]
             core.var_conditional_wait(vars, cmd.condition)
         elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_LOAD_TILE):
             tile_sig = cmd.tile_sig
-            buf = buffers[cmd.tile_sig.buf_name]
+            buf = env.buffers[cmd.tile_sig.buf_name]
             
             for ptr in cmd.ptrs:
                 core.mem_init(ptr, buf.tile_size)
@@ -86,7 +88,7 @@ def MCA_KERNEL_CORE_LD_THREAD(
                 core.local_mem_copy(cmd.ptrs[0], src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
         elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_CPY_TILE):
             tile_sig = cmd.tile_sig
-            buf = buffers[cmd.tile_sig.buf_name]
+            buf = env.buffers[cmd.tile_sig.buf_name]
             tile_size = buf.tile_size
             
             for ptr in cmd.dst_ptrs:
@@ -101,17 +103,21 @@ def MCA_KERNEL_CORE_LD_THREAD(
         
     core.async_rpc_wait_all()
     
+    # if stage_sync_barrier is not None:
+    #     var_arrived_count = env.variables[stage_sync_barrier[0]]
+    #     var_block_state = env.variables[stage_sync_barrier[1]]
+    #     core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
+    
     if post_sync_barrier is not None:
-        var_arrived_count = variables[post_sync_barrier[0]]
-        var_block_state = variables[post_sync_barrier[1]]
+        var_arrived_count = env.variables[post_sync_barrier[0]]
+        var_block_state = env.variables[post_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, post_sync_barrier[2])
 
 
 @jit_prototype
 def MCA_KERNEL_CORE_EX_THREAD(
     core: NPUCore, 
-    variables: dict[str, VariableHandle],
-    buffers: dict[str, MCA_TensorBuffer],
+    env: MCA_OperatorGraphCompiler.Environment, 
     execute_cmds: list[MCA_CompiledOperator.Command.Base],
     op_compute_methods: list[Callable],
     stage_sync_barrier: tuple[str, str, int],
@@ -119,46 +125,50 @@ def MCA_KERNEL_CORE_EX_THREAD(
     post_sync_barrier: tuple[str, str, int],  # (var_arrived_count_name, var_block_state_name, total_arrivals)
 ):
     if pre_sync_barrier is not None:
-        var_arrived_count = variables[pre_sync_barrier[0]]
-        var_block_state = variables[pre_sync_barrier[1]]
+        var_arrived_count = env.variables[pre_sync_barrier[0]]
+        var_block_state = env.variables[pre_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, pre_sync_barrier[2])
         
     if stage_sync_barrier is not None:
-        var_arrived_count = variables[stage_sync_barrier[0]]
-        var_block_state = variables[stage_sync_barrier[1]]
+        var_arrived_count = env.variables[stage_sync_barrier[0]]
+        var_block_state = env.variables[stage_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
     
     for cmd in execute_cmds:
         if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
         elif isinstance(cmd, MCA_CompiledOperator.Command.BARRIER):
-            var_arrived_count = variables[cmd.var_arrived_count]
-            var_block_state = variables[cmd.var_block_state]
+            var_arrived_count = env.variables[cmd.var_arrived_count]
+            var_block_state = env.variables[cmd.var_block_state]
             core.var_atomic_barrier(var_arrived_count, var_block_state, cmd.total_arrivals)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_INIT):
-            var = variables[cmd.var_name]
+            var = env.variables[cmd.var_name]
             core.var_atomic_init(var, cmd.initial_value)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_COMPARE_AND_SWAP):
-            var = variables[cmd.var_name]
+            var = env.variables[cmd.var_name]
             core.var_atomic_compare_and_swap(var, cmd.expected_value, cmd.new_value)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT):
-            vars = [variables[var_name] for var_name in cmd.var_names]
+            vars = [env.variables[var_name] for var_name in cmd.var_names]
             core.var_conditional_wait(vars, cmd.condition)
         else:
             for method in op_compute_methods:
-                method(core, variables, buffers, cmd)
+                method(core, env, cmd)
+                
+    # if stage_sync_barrier is not None:
+    #     var_arrived_count = env.variables[stage_sync_barrier[0]]
+    #     var_block_state = env.variables[stage_sync_barrier[1]]
+    #     core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
     
     if post_sync_barrier is not None:
-        var_arrived_count = variables[post_sync_barrier[0]]
-        var_block_state = variables[post_sync_barrier[1]]
+        var_arrived_count = env.variables[post_sync_barrier[0]]
+        var_block_state = env.variables[post_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, post_sync_barrier[2])
 
 
 @jit_prototype
 def MCA_KERNEL_CORE_ST_THREAD(
     core: NPUCore, 
-    variables: dict[str, VariableHandle],
-    buffers: dict[str, MCA_TensorBuffer],
+    env: MCA_OperatorGraphCompiler.Environment, 
     mem_store_cmds: list[MCA_CompiledOperator.Command.Base],
     postprocessing_cmds: list[MCA_CompiledOperator.Command.Base],
     stage_sync_barrier: tuple[str, str, int],
@@ -166,34 +176,34 @@ def MCA_KERNEL_CORE_ST_THREAD(
     post_sync_barrier: tuple[str, str, int],  # (var_arrived_count_name, var_block_state_name, total_arrivals)
 ):
     if pre_sync_barrier is not None:
-        var_arrived_count = variables[pre_sync_barrier[0]]
-        var_block_state = variables[pre_sync_barrier[1]]
+        var_arrived_count = env.variables[pre_sync_barrier[0]]
+        var_block_state = env.variables[pre_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, pre_sync_barrier[2])
-    
+        
     if stage_sync_barrier is not None:
-        var_arrived_count = variables[stage_sync_barrier[0]]
-        var_block_state = variables[stage_sync_barrier[1]]
+        var_arrived_count = env.variables[stage_sync_barrier[0]]
+        var_block_state = env.variables[stage_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
             
     for cmd in mem_store_cmds:
         if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
         elif isinstance(cmd, MCA_CompiledOperator.Command.BARRIER):
-            var_arrived_count = variables[cmd.var_arrived_count]
-            var_block_state = variables[cmd.var_block_state]
+            var_arrived_count = env.variables[cmd.var_arrived_count]
+            var_block_state = env.variables[cmd.var_block_state]
             core.async_rpc_wait_all()  # Ensure all previous async operations are completed before the barrier
             core.var_atomic_barrier(var_arrived_count, var_block_state, cmd.total_arrivals)
         elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_INIT):
             core.local_mem_init(cmd.ptr, cmd.size)
         elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_STORE_TILE):
             tile_sig = cmd.tile_sig
-            buf = buffers[cmd.tile_sig.buf_name]
+            buf = env.buffers[cmd.tile_sig.buf_name]
             dst_ptr, row_size, row_num, src_row_stride, dst_row_stride = buf.get_tile_ptr_write_args(*tile_sig.coords)
             
             core.local_mem_copy(dst_ptr, cmd.ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
         elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_CPY_TILE):
             tile_sig = cmd.tile_sig
-            buf = buffers[cmd.tile_sig.buf_name]
+            buf = env.buffers[cmd.tile_sig.buf_name]
             tile_size = buf.tile_size
             
             if len(cmd.dst_ptrs) > 1:  # BROADCAST: broadcast optimization
@@ -209,22 +219,27 @@ def MCA_KERNEL_CORE_ST_THREAD(
         if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
         elif isinstance(cmd, MCA_CompiledOperator.Command.BARRIER):
-            var_arrived_count = variables[cmd.var_arrived_count]
-            var_block_state = variables[cmd.var_block_state]
+            var_arrived_count = env.variables[cmd.var_arrived_count]
+            var_block_state = env.variables[cmd.var_block_state]
             core.var_atomic_barrier(var_arrived_count, var_block_state, cmd.total_arrivals)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_INIT):
-            var = variables[cmd.var_name]
+            var = env.variables[cmd.var_name]
             core.var_atomic_init(var, cmd.initial_value)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_COMPARE_AND_SWAP):
-            var = variables[cmd.var_name]
+            var = env.variables[cmd.var_name]
             core.var_atomic_compare_and_swap(var, cmd.expected_value, cmd.new_value)
         elif isinstance(cmd, MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT):
-            vars = [variables[var_name] for var_name in cmd.var_names]
+            vars = [env.variables[var_name] for var_name in cmd.var_names]
             core.var_conditional_wait(vars, cmd.condition)
         else:
             raise NotImplementedError(f"Postprocessing command {type(cmd)} is not implemented.")
     
+    # if stage_sync_barrier is not None:
+    #     var_arrived_count = env.variables[stage_sync_barrier[0]]
+    #     var_block_state = env.variables[stage_sync_barrier[1]]
+    #     core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
+        
     if post_sync_barrier is not None:
-        var_arrived_count = variables[post_sync_barrier[0]]
-        var_block_state = variables[post_sync_barrier[1]]
+        var_arrived_count = env.variables[post_sync_barrier[0]]
+        var_block_state = env.variables[post_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, post_sync_barrier[2])

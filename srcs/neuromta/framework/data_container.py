@@ -1,6 +1,5 @@
 import torch
 from typing import TypeVar, Generic, Sequence
-from neuromta.framework.serializer import *
 
 
 __all__ = [
@@ -10,7 +9,7 @@ __all__ = [
 
 T = TypeVar('T')
 
-class DataContainer(Generic[T], SerializableCoreObject):
+class DataContainer(Generic[T]):
     def __init__(self, data: T=None, shape: Sequence[int]=None, dtype: torch.dtype=None, initial_value: int=0):
         self._data = data
         self._shape = shape
@@ -28,23 +27,6 @@ class DataContainer(Generic[T], SerializableCoreObject):
             else:
                 self._shape = None
                 self._dtype = None
-                
-    def get_state(self):
-        return {
-            "data": self.data,
-            "shape": self.shape,
-            "dtype": self.dtype,
-            "initial_value": self._initial_value,
-        }
-    
-    @classmethod
-    def from_state(cls, core, state: dict) -> 'DataContainer':
-        return cls(
-            data=state.get("data", None),
-            shape=state.get("shape", None),
-            dtype=state.get("dtype", None),
-            initial_value=state.get("initial_value", 0),
-        )
     
     @property
     def data(self) -> T:

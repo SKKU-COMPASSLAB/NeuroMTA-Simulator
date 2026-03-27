@@ -39,14 +39,6 @@ class NPUCore(Core):
         
         self._dma_engine_idx = self.core_id % self.global_context.n_dma_engine_per_channel  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
     
-    def dump_core_states(self):
-        return {
-            "mem_handle_state": self.mem_handle.dump_handle_state(),
-        }
-        
-    def load_core_states(self, states: dict):
-        self.mem_handle.load_handle_state(states["mem_handle_state"])
-    
     def get_buffer_owner(self, ptr: Pointer | int) -> int:
         if isinstance(ptr, Pointer):
             addr = ptr.addr
@@ -80,7 +72,8 @@ class NPUCore(Core):
             init_data = torch.zeros((size,), dtype=torch.uint8)
         
         self.mem_handle.set_data(ptr, size=size, data=init_data)
-            
+    
+    @jit_prototype
     def mem_init(self, ptr: Pointer, size: int, init_data: torch.Tensor=None):
         if self.check_ptr_belonging(ptr):
             self.local_mem_init(ptr, size, init_data)
@@ -99,7 +92,7 @@ class NPUCore(Core):
             
             self.async_rpc_send_req_msg(msg)
             self.async_rpc_wait_rsp_msg(msg)
-        
+    
     @core_command_method
     def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
         if not self.check_ptr_belonging(ptr):
@@ -113,7 +106,7 @@ class NPUCore(Core):
             row_pattern = {i: i for i in range(row_num)}
             
         if container.is_mem_segment:
-            container.data = container.data.flatten().view(torch.uint8).reshape(-1, cont_row_stride)
+            container.data = container.data.detach().clone().flatten().view(torch.uint8).reshape(-1, cont_row_stride)
         else:
             container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
         
@@ -125,9 +118,7 @@ class NPUCore(Core):
     def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_write' method.")
-        mem_info = self.global_context.get_mem_info_by_address(ptr.addr)
-        mem_handle = mem_info.mem_handle
-        
+
         if mem_row_stride is None:
             mem_row_stride = row_size
         if cont_row_stride is None:
@@ -138,9 +129,7 @@ class NPUCore(Core):
         if not container.is_mem_segment:
             raise ValueError("container.data must be a Tensor for local_mem_page_write.")
 
-        # Keep container immutable during writes because broadcast can fan-out
-        # to multiple destination cores with the same DataContainer instance.
-        cont_data = container.data.flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
+        cont_data = container.data.detach().clone().flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
         
         for d, s in row_pattern.items():
             dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
@@ -177,7 +166,7 @@ class NPUCore(Core):
         # THREAD: Data Read & Write
         with new_parallel_thread("DATA_RD_WR"):
             container = DataContainer()
-            
+
             if src_owner_core_id == self.core_id:
                 self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
             else:

@@ -1,4 +1,3 @@
-import abc
 import enum
 import functools
 import itertools
@@ -7,17 +6,9 @@ from typing import Callable, Sequence, Any
 from neuromta.framework.logger import logger
 from neuromta.framework.debug_utils import *
 from neuromta.framework.synchronizer import LockHandle, VariableHandle
-from neuromta.framework.serializer import *
 
 
 __all__ = [
-    "SerializableCoreObject",
-    "Serializer",
-    "new_global_serializer",
-    "get_global_serializer",
-    "check_global_serializer",
-    "clear_global_serializer",
-
     "set_global_context",
     "get_global_core_context",
     "get_global_kernel_context",
@@ -198,7 +189,6 @@ def core_command_method(_func: Callable):
     return __core_command_method_wrapper
 
 def core_conditional_command_method(_func: Callable):
-    @functools.wraps(_func)
     def __core_command_method_wrapper(core: 'Core', *_args, **_kwargs) -> Command:
         if get_global_context_mode() == GlobalContextMode.IDLE:
             raise Exception(f"Command method '{_func.__name__}' cannot be called in IDLE context since it is neither in COMPILE nor EXECUTE context.")
@@ -253,28 +243,25 @@ class new_parallel_thread:
             raise Exception("[ERROR] Cannot end parallel kernel since the global context mode is not COMPILE")
 
         restore_global_parent_kernel_callstack()
-        
+
 
 #################################################
 # Implementation
 #################################################
         
-class RPCMessage(SerializableCoreObject):
-    def __init__(self, src_core_id: str, dst_core_id: str, cmd_id: str, _kernel_id: str=None, root_kernel_id: str=None, _init_kernel_ids: bool=True):
+class RPCMessage:
+    def __init__(self, src_core_id: str, dst_core_id: str, cmd_id: str):
         self.msg_type = 0        # 0 for request, 1 for response
         self.src_core_id = src_core_id
         self.dst_core_id = dst_core_id
-        self.kernel_id = _kernel_id
-        self.root_kernel_id = root_kernel_id
         
-        if _init_kernel_ids:
-            kernel_context = get_global_kernel_context()
-            if kernel_context is None:
-                self.kernel_id = "UNKNOWN"
-                self.root_kernel_id = "UNKNOWN"
-            else:
-                self.kernel_id = kernel_context.kernel_id
-                self.root_kernel_id = kernel_context.root_callstack
+        kernel_context = get_global_kernel_context()
+        if kernel_context is None:
+            self.kernel_id = "UNKNOWN"
+            self.root_kernel_id = "UNKNOWN"
+        else:
+            self.kernel_id = kernel_context.kernel_id
+            self.root_kernel_id = kernel_context.root_callstack
         
         self.cmd_id = cmd_id
         self.args = []
@@ -283,38 +270,6 @@ class RPCMessage(SerializableCoreObject):
         self.msg_id:  str = None  # message ID is None by default
         self.slot_id: str = None  # slot ID is None by default
         self.callstack: str = None  # callstack is None by default, but it can be set to any string for debugging purposes
-
-    def get_state(self):
-        return {
-            "msg_type": self.msg_type,
-            "src_core_id": self.src_core_id,
-            "dst_core_id": self.dst_core_id,
-            "kernel_id": self.kernel_id,
-            "root_kernel_id": self.root_kernel_id,
-            "cmd_id": self.cmd_id,
-            "args": self.args,
-            "kwargs": self.kwargs,
-            "msg_id": self.msg_id,
-            "slot_id": self.slot_id,
-            "callstack": self.callstack
-        }
-
-    @classmethod
-    def from_state(cls, core: 'Core', state: dict) -> 'RPCMessage':
-        msg = cls(
-            src_core_id=state["src_core_id"],
-            dst_core_id=state["dst_core_id"],
-            cmd_id=state["cmd_id"]
-        )
-        msg.msg_type = state["msg_type"]
-        msg.kernel_id = state["kernel_id"]
-        msg.root_kernel_id = state["root_kernel_id"]
-        msg.args = state["args"]
-        msg.kwargs = state["kwargs"]
-        msg.msg_id = state["msg_id"]
-        msg.slot_id = state["slot_id"]
-        msg.callstack = state["callstack"]
-        return msg
 
     def with_args(self, *args, **kwargs):
         self.args = list(args)
@@ -346,7 +301,7 @@ class RPCMessage(SerializableCoreObject):
         return self.__repr__()
 
 
-class Command(SerializableCoreObject):
+class Command:
     def __init__(
         self, 
         cmd_id: str,
@@ -362,32 +317,6 @@ class Command(SerializableCoreObject):
         self._cached_issue_time: int = None
         self._cached_commit_time: int = None
         self._is_behavioral_model_called: bool = False
-        
-    def get_state(self):
-        return {
-            "cmd_id": self.cmd_id,
-            "args": self.args,
-            "kwargs": self.kwargs,
-            "cached_cycle": self._cached_cycle,
-            "cached_cycle_slack": self._cached_cycle_slack,
-            "cached_issue_time": self._cached_issue_time,
-            "cached_commit_time": self._cached_commit_time,
-            "is_behavioral_model_called": self._is_behavioral_model_called,
-        }
-
-    @classmethod
-    def from_state(cls, core: 'Core', state: dict) -> 'Command':
-        cmd = cls(
-            state["cmd_id"],
-            *state["args"],
-            **state["kwargs"]
-        )
-        cmd._cached_cycle = state["cached_cycle"]
-        cmd._cached_cycle_slack = state["cached_cycle_slack"]
-        cmd._cached_issue_time = state["cached_issue_time"]
-        cmd._cached_commit_time = state["cached_commit_time"]
-        cmd._is_behavioral_model_called = state["is_behavioral_model_called"]
-        return cmd
         
     def get_remaining_cycles(self, core: 'Core', kernel: 'Kernel') -> int:
         if self._cached_cycle is None:
@@ -478,20 +407,6 @@ class ConditionalCommand(Command):
         
         self._is_async_finished = False
     
-    @classmethod
-    def from_state(cls, core: 'Core', state: dict) -> 'ConditionalCommand':
-        cmd = cls(
-            cmd_id=state["cmd_id"],
-            *state["args"],
-            **state["kwargs"]
-        )
-        cmd._cached_cycle = state["cached_cycle"]
-        cmd._cached_cycle_slack = state["cached_cycle_slack"]
-        cmd._cached_issue_time = state["cached_issue_time"]
-        cmd._cached_commit_time = state["cached_commit_time"]
-        cmd._is_behavioral_model_called = state["is_behavioral_model_called"]
-        return cmd
-    
     def get_remaining_cycles(self, core: 'Core', kernel: 'Kernel') -> int:
         return None  # TODO: currently, the conditional command is not used for remaining cycle estimation. However, it would be better if we can predict the execution time of the conditional command...
 
@@ -509,18 +424,8 @@ class ConditionalCommand(Command):
 
 
 class ThreadGroup(list['Kernel']):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        
-    # def get_state(self) -> dict:
-    #     return {"kernels": [kernel for kernel in self]}
-        
-    # @classmethod
-    # def from_state(cls, core: 'Core', state: dict) -> 'ThreadGroup':
-    #     thread_group = cls()
-    #     for kernel in state["kernels"]:
-    #         thread_group.append(kernel)
-    #     return thread_group
+    def __init__(self):
+        super().__init__()
     
     def append(self, kernel: 'Kernel'):
         if not isinstance(kernel, Kernel):
@@ -545,7 +450,7 @@ class ThreadGroup(list['Kernel']):
         return all(kernel.is_finished(core) for kernel in self)
     
     
-class KernelPrototype(SerializableCoreObject):
+class KernelPrototype:
     def __init__(self, core: 'Core', func: Callable, args: Sequence[Any], kwargs: dict[str, Any]):
         self.core = core
         self.func = func
@@ -554,29 +459,6 @@ class KernelPrototype(SerializableCoreObject):
         self.compiled_kernel_id = func.__name__
         self._slot_id = None
         self._slot_level = None
-        
-    def get_state(self) -> dict:
-        return {
-            "func": self.func,
-            "args": self.args,
-            "kwargs": self.kwargs,
-            "compiled_kernel_id": self.compiled_kernel_id,
-            "slot_id": self._slot_id,
-            "slot_level": self._slot_level,
-        }
-        
-    @classmethod
-    def from_state(cls, core: 'Core', state: dict) -> 'KernelPrototype':
-        prototype = cls(
-            core=core,
-            func=state["func"],
-            args=state["args"],
-            kwargs=state["kwargs"],
-        )
-        prototype.compiled_kernel_id = state["compiled_kernel_id"]
-        prototype._slot_id = state["slot_id"]
-        prototype._slot_level = state["slot_level"]
-        return prototype
         
     def dispatch(self, slot_id: str="MAIN"):
         self.core.dispatch_main_kernel(slot_id, self)
@@ -612,7 +494,7 @@ class KernelPrototype(SerializableCoreObject):
         self._slot_level = value
 
 
-class Kernel(SerializableCoreObject):
+class Kernel:
     def __init__(self, kernel_id: str):
         self.kernel_id = kernel_id
         self.root_kernel: Kernel = None
@@ -626,35 +508,8 @@ class Kernel(SerializableCoreObject):
         self._slot_level: int = None
         self._issue_time: int | None = None
         self._commit_time: int | None = None
-        
-    def get_state(self) -> dict:
-        return {
-            "kernel_id": self.kernel_id,
-            "root_kernel_id": self.root_kernel.kernel_id if self.root_kernel is not None else None,
-            "execution_steps": [step for step in self._execution_steps],
-            "execution_cursor": self._execution_cursor,
-            "n_blocked_cnt": self._n_blocked_cnt,
-            "slot_id": self._slot_id,
-            "slot_level": self._slot_level,
-            "issue_time": self._issue_time,
-            "commit_time": self._commit_time,
-        }
+        # self._activated_cnt: int = 0
     
-    @classmethod
-    def from_state(cls, core: 'Core', state: dict) -> 'Kernel':
-        kernel = cls(kernel_id=state["kernel_id"])
-        root_kernel_id = state["root_kernel_id"]
-        if root_kernel_id is not None:
-            kernel.root_kernel = Kernel(kernel_id=root_kernel_id)
-        kernel._execution_steps = [step for step in state["execution_steps"]]
-        kernel._execution_cursor = state["execution_cursor"]
-        kernel._n_blocked_cnt = state["n_blocked_cnt"]
-        kernel._slot_id = state["slot_id"]
-        kernel._slot_level = state["slot_level"]
-        kernel._issue_time = state["issue_time"]
-        kernel._commit_time = state["commit_time"]
-        return kernel
-
     def set_blocked(self, core: 'Core', flag: bool):
         if flag:
             self._n_blocked_cnt += 1
@@ -867,6 +722,10 @@ class Kernel(SerializableCoreObject):
                 for k in step:
                     k.slot_level = value + 1
     
+    # @property
+    # def activated_cycles(self) -> int:
+    #     return self._activated_cnt
+    
     @property
     def issue_time(self) -> int | None:
         return self._issue_time
@@ -880,7 +739,7 @@ class CoreCycleModel:
     def __init__(self):
         pass
 
-class Core(metaclass=abc.ABCMeta):
+class Core:
     def __init__(self, core_id: int, cycle_model: CoreCycleModel=None):
         self.core_id = core_id
 
@@ -892,6 +751,7 @@ class Core(metaclass=abc.ABCMeta):
 
         self._suspended_main_kernels: dict[str, list[Kernel | KernelPrototype]] = {}
         self._suspended_rpc_req_msg: dict[str, RPCMessage] = {}
+        # self._suspended_rpc_rsp_msg: dict[str, RPCMessage] = {}
         self._suspended_rpc_to_main_kernels_mapping: dict[str, str] = {}  # RPC request message ID -> main kernel slot ID (to resume the main kernel when the RPC response is received)
         self._suspended_rpc_kernel_blocking_condition: dict[str, list[Kernel]] = {}  # RPC kernel ID -> blocking condition (RPC request message)
 
@@ -907,48 +767,7 @@ class Core(metaclass=abc.ABCMeta):
         self._use_functional_model = True
 
         self._timestamp = 0
-    
-    @abc.abstractmethod
-    def dump_core_states(self) -> dict:
-        raise NotImplementedError("dump_core_states() method is not implemented yet. Please implement this method to dump the core states for checkpointing or debugging purposes.")
-    
-    @abc.abstractmethod
-    def load_core_states(self, states: dict):
-        raise NotImplementedError("load_core_states() method is not implemented yet. Please implement this method to load the core states from the dumped states for checkpointing or debugging purposes.")
 
-    def all_dump_core_states(self) -> dict:
-        if not check_global_serializer():
-            raise Exception("Global serializer is not initialized. Please initialize the global serializer before dumping the core states.")
-        
-        serializer = get_global_serializer()
-        states = {
-            "dispatched_main_kernels": {
-                slot_id: serializer.add_obj(kernel) 
-                for slot_id, kernel in self._dispatched_main_kernels.items()
-            },
-            "suspended_main_kernels": {
-                slot_id: [serializer.add_obj(kernel) for kernel in kernels]
-                for slot_id, kernels in self._suspended_main_kernels.items()
-            },
-            "additional_states": self.dump_core_states(),
-        }
-        return states
-    
-    def all_load_core_states(self, states: dict):
-        if not check_global_serializer():
-            raise Exception("Global serializer is not initialized. Please initialize the global serializer before dumping the core states.")
-        
-        serializer = get_global_serializer()
-        self._dispatched_main_kernels = {
-            slot_id: serializer.get_obj(self, kernel_state_id)
-            for slot_id, kernel_state_id in states["dispatched_main_kernels"].items()
-        }
-        self._suspended_main_kernels = {
-            slot_id: [serializer.get_obj(self, kernel_state_id) for kernel_state_id in kernels]
-            for slot_id, kernels in states["suspended_main_kernels"].items()
-        }
-        self.load_core_states(states["additional_states"])
-    
     ###########################################################################
     # Initialization
     ###########################################################################
@@ -989,15 +808,14 @@ class Core(metaclass=abc.ABCMeta):
         kernel.slot_id = slot_id
         kernel.slot_level = 0
         
-        if isinstance(kernel, KernelPrototype):
-            kernel = kernel.compile()
-        kernel.root_kernel_id = f"MAIN<{slot_id}>"
-        
         if slot_id in self._dispatched_main_kernels:
             if slot_id not in self._suspended_main_kernels:
                 self._suspended_main_kernels[slot_id] = []
             self._suspended_main_kernels[slot_id].append(kernel)
         else:
+            if isinstance(kernel, KernelPrototype):
+                kernel = kernel.compile()
+            kernel.root_kernel_id = f"MAIN<{slot_id}>"
             self._dispatched_main_kernels[slot_id] = kernel
             
     def dispatch_rpc_kernel(self, kernel: Kernel, msg: RPCMessage):
@@ -1229,6 +1047,7 @@ class Core(metaclass=abc.ABCMeta):
         if _debug:
             _target_suspended_rpc_req_msgs = [msg_id for msg_id, req_msg in self._suspended_rpc_req_msg.items() if req_msg.slot_id == context.slot_id and (context.callstack in req_msg.callstack)]
             _nontarget_suspended_rpc_req_msgs = [msg_id for msg_id, req_msg in self._suspended_rpc_req_msg.items() if req_msg.slot_id == context.slot_id and (context.callstack not in req_msg.callstack)]
+            logger.debug(f"CORE {self.core_id} - RPC WAIT ALL")
             print(f"[RPC WAIT ALL] called in {context.callstack} -> waiting for {_target_suspended_rpc_req_msgs} - {_nontarget_suspended_rpc_req_msgs}")
         
         for msg_id, req_msg in self._suspended_rpc_req_msg.items():
@@ -1245,6 +1064,18 @@ class Core(metaclass=abc.ABCMeta):
             self._suspended_rpc_kernel_blocking_condition[msg_id].append(context)
             
             context.set_blocked(self, True)
+            
+    @core_command_method
+    def print_rpc_wait_info(self):
+        logger.debug(f"CORE {self.core_id} - RPC WAIT INFO")
+        print(f"Current suspended RPC request messages:")
+        for msg_id, req_msg in self._suspended_rpc_req_msg.items():
+            print(f"  - {msg_id}: {req_msg}")
+        print(f"Current suspended RPC kernel blocking conditions:")
+        for msg_id, kernels in self._suspended_rpc_kernel_blocking_condition.items():
+            print(f"  - {msg_id}: {[kernel.callstack for kernel in kernels]}")
+            
+        input("Press Enter to continue...")
 
     def _rpc_req_kernel_dispatch_routine(self):
         while len(self.rpc_req_recv_queue):

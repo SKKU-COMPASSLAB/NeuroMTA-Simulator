@@ -50,6 +50,9 @@ class MCA_OperatorSignature:
         self._op_type = op_type
         self.op_id = op_type    # will be initialized by MCA_OperatorGraphCompiler (initially set to op_type) 
         
+        # self.op_template = op_template
+        # self.mem_thread_template = mem_thread_template
+        # self.exe_thread_template = exe_thread_template
         self.ld_thread_template = ld_thread_template
         self.ex_thread_template = ex_thread_template
         self.st_thread_template = st_thread_template
@@ -78,7 +81,7 @@ class MCA_OperatorSignature:
             for x_s in range(buffer.shard_grid[1]):
                 for y_t in range(buffer.tile_grid_per_shard[0]):
                     for x_t in range(buffer.tile_grid_per_shard[1]):
-                        self._tiles[buf_name][(y_s, x_s, y_t, x_t)] = TileSignature(buf_name, buffer.tile_shape, buffer.dtype, y_s, x_s, y_t, x_t)
+                        self._tiles[buf_name][(y_s, x_s, y_t, x_t)] = TileSignature(buf_name, buffer.tile_size, y_s, x_s, y_t, x_t)
         
         self.buffer_names.append(buf_name)
         if is_input:
@@ -163,7 +166,7 @@ class MCA_OperatorSignature:
     
 class MCA_CompiledOperator:
     class Command:
-        class Base(SerializableCoreObject, metaclass=abc.ABCMeta):
+        class Base(metaclass=abc.ABCMeta):
             @abc.abstractmethod
             def signature(self) -> str:
                 raise NotImplementedError("Command signature method must be implemented by subclasses.")
@@ -174,10 +177,6 @@ class MCA_CompiledOperator:
         class NOP(Base):
             def signature(self):
                 return "NOP"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls()
         
         class MEM_INIT(Base):
             def __init__(self, ptr: Pointer, size: int):
@@ -186,14 +185,7 @@ class MCA_CompiledOperator:
                 
             def signature(self):
                 return f"MEM_INIT MEM@{self.ptr.addr} size={self.size}"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    ptr=state.get("ptr", None),
-                    size=state.get("size", 0),
-                )
-
+        
         class MEM_LOAD_TILE(Base):
             def __init__(self, tile_sig: TileSignature, ptrs: list[Pointer]):
                 self.tile_sig = tile_sig
@@ -211,13 +203,6 @@ class MCA_CompiledOperator:
             def signature(self):
                 ptrs_str = ", ".join([f"SPM@{ptr.addr}" for ptr in self.ptrs])
                 return f"MEM_LOAD_TILE {self.tile_sig.signature} -> [{ptrs_str}]"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    tile_sig=state.get("tile_sig", None),
-                    ptrs=state.get("ptrs", []),
-                )
                 
         class MEM_STORE_TILE(Base):
             def __init__(self, tile_sig: TileSignature, ptr: Pointer, is_partial: bool=False):
@@ -233,14 +218,6 @@ class MCA_CompiledOperator:
                 if self.is_partial:
                     sig += " (partial)"
                 return sig
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    tile_sig=state.get("tile_sig", None),
-                    ptr=state.get("ptr", None),
-                    is_partial=state.get("is_partial", False),
-                )
             
         class MEM_CPY_TILE(Base):
             def __init__(self, tile_sig: TileSignature, src_ptr: Pointer, dst_ptrs: list[Pointer]):
@@ -261,14 +238,6 @@ class MCA_CompiledOperator:
             def signature(self):
                 dst_ptrs_str = ", ".join([f"SPM@{ptr.addr}" for ptr in self.dst_ptrs])
                 return f"MEM_CPY_TILE {self.tile_sig.signature} SPM@{self.src_ptr.addr} -> [{dst_ptrs_str}]"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    tile_sig=state.get("tile_sig", None),
-                    src_ptr=state.get("src_ptr", None),
-                    dst_ptrs=state.get("dst_ptrs", []),
-                )
                 
         class EXE_LOAD_CONTEXT(Base):
             def __init__(self, tile_sig: TileSignature, ptr: Pointer):
@@ -280,13 +249,6 @@ class MCA_CompiledOperator:
                     
             def signature(self):
                 return f"EXE_LOAD_CONTEXT SPM@{self.ptr.addr} -> {self.tile_sig.signature}"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    tile_sig=state.get("tile_sig", None),
-                    ptr=state.get("ptr", None),
-                )
 
         class EXE_STORE_CONTEXT(Base):
             def __init__(self, tile_sig: TileSignature, ptr: Pointer):
@@ -298,46 +260,23 @@ class MCA_CompiledOperator:
         
             def signature(self):
                 return f"EXE_STORE_CONTEXT {self.tile_sig.signature} -> SPM@{self.ptr.addr}"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    tile_sig=state.get("tile_sig", None),
-                    ptr=state.get("ptr", None),
-                )
 
         class EXE_UOP(Base):
-            def __init__(self, uop_idx: int, n_uops: int, i_tiles: list[tuple[TileSignature, Pointer]], o_tile: tuple[TileSignature, Pointer], uop_kwargs: dict[str, Any]=None):
+            def __init__(self, op_id: str, tiled_op_idx: int, uop_idx: int, i_tile_ptrs: list[Pointer], o_tile_ptr: Pointer, o_tile_sig: TileSignature):
+                self.op_id = op_id
+                self.tiled_op_idx = tiled_op_idx
                 self.uop_idx = uop_idx
-                self.n_uops = n_uops
-                self.i_tiles = i_tiles
-                self.o_tile = o_tile
-                self.uop_kwargs = uop_kwargs or {}
-
-                for i in range(len(self.i_tiles)):
-                    tile_sig, ptr = self.i_tiles[i]
-                    if isinstance(ptr, int):
-                        self.i_tiles[i] = (tile_sig, Pointer(addr=ptr))
-                        
-                o_tile_sig, o_ptr = self.o_tile
-                if isinstance(o_ptr, int):
-                    self.o_tile = (o_tile_sig, Pointer(addr=o_ptr))
-                    
+                self.i_tile_ptrs = i_tile_ptrs
+                self.o_tile_ptr = o_tile_ptr
+                self.o_tile_sig = o_tile_sig
+                
             def signature(self):
-                i_tiles_str = ", ".join([f"{tile_sig.signature} SPM@{ptr.addr}" for tile_sig, ptr in self.i_tiles])
-                o_tile_sig, o_ptr = self.o_tile
-                o_tile_str = f"{o_tile_sig.signature} SPM@{'UNDEFINED' if o_ptr is None else o_ptr.addr}"
-                return f"EXE_UOP idx={self.uop_idx}/{self.n_uops} ({i_tiles_str}) -> {o_tile_str}"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    uop_idx=state.get("uop_idx", 0),
-                    n_uops=state.get("n_uops", 0),
-                    i_tiles=state.get("i_tiles", []),
-                    o_tile=state.get("o_tile", None),
-                    uop_kwargs=state.get("uop_kwargs", {}),
-                )
+                i_ptrs_str = ", ".join([f"SPM@{ptr.addr}" for ptr in self.i_tile_ptrs])
+                if self.o_tile_ptr is None:
+                    o_ptr_str = f"{self.o_tile_sig.signature} SPM@UNDEFINED"
+                else:
+                    o_ptr_str = f"{self.o_tile_sig.signature} SPM@{self.o_tile_ptr.addr}"
+                return f"EXE_UOP {self.op_id} tiled_op_idx={self.tiled_op_idx} uop_idx={self.uop_idx} ({i_ptrs_str}) -> {o_ptr_str}"
                 
         class BARRIER(Base):
             def __init__(self, var_arrived_count: str, var_block_state: str, total_arrivals: int):
@@ -353,14 +292,6 @@ class MCA_CompiledOperator:
             def signature(self):
                 return f"BARRIER arrived_count={self.var_arrived_count} block_state={self.var_block_state} total_arrivals={self.total_arrivals}"
             
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    var_arrived_count=state.get("var_arrived_count", ""),
-                    var_block_state=state.get("var_block_state", ""),
-                    total_arrivals=state.get("total_arrivals", 0),
-                )
-            
         class VAR_INIT(Base):
             def __init__(self, var_name: str, initial_value: int=0):
                 self.var_name = var_name
@@ -371,13 +302,6 @@ class MCA_CompiledOperator:
                     
             def signature(self):
                 return f"VAR_INIT {self.var_name}={self.initial_value}"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    var_name=state.get("var_name", ""),
-                    initial_value=state.get("initial_value", 0),
-                )
             
         class VAR_COMPARE_AND_SWAP(Base):
             def __init__(self, var_name: str, expected_value: int, new_value: int):
@@ -390,14 +314,6 @@ class MCA_CompiledOperator:
                     
             def signature(self):
                 return f"VAR_COMPARE_AND_SWAP {self.var_name} expected={self.expected_value} new={self.new_value}"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    var_name=state.get("var_name", ""),
-                    expected_value=state.get("expected_value", 0),
-                    new_value=state.get("new_value", 0),
-                )
             
         class VAR_CONDITIONAL_WAIT(Base):
             def __init__(self, var_names: list[str], condition: Callable[[int], bool]):
@@ -412,13 +328,6 @@ class MCA_CompiledOperator:
                     
             def signature(self):
                 return f"VAR_CONDITIONAL_WAIT condition={self.condition.__name__} vars={self.var_names}"
-            
-            @classmethod
-            def from_state(cls, core, state):
-                return cls(
-                    var_names=state.get("var_names", []),
-                    condition=state.get("condition", None),
-                )
             
             @staticmethod
             def _GE(threshold, value):
@@ -457,6 +366,8 @@ class MCA_CompiledOperator:
             
     def __init__(self, env: 'MCA_OperatorGraphCompiler.Environment', op_meta: 'MCA_OperatorGraphCompiler.OperatorMetadata'):
         self._env = env
+        # self._mem_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.mem_thread_template
+        # self._exe_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.exe_thread_template
         self._ld_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.ld_thread_template
         self._ex_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.ex_thread_template
         self._st_thread_template: Callable[..., KernelPrototype] = op_meta.op_sig.st_thread_template
@@ -506,9 +417,9 @@ class MCA_CompiledOperator:
                     st_mem_store_commands = self.mappings[core_id][i-2].mem_store_commands
                     st_postprocessing_commands = self.mappings[core_id][i-2].postprocessing_commands
                 
-                ld_thread = self._ld_thread_template(core, self._env.variables, self._env.buffers, ld_preprocessing_commands, ld_mem_load_commands, stage_b, presync_b, postsync_b)
-                ex_thread = self._ex_thread_template(core, self._env.variables, self._env.buffers, ex_execute_commands, self._op_ex_kernels, stage_b, presync_b, postsync_b)
-                st_thread = self._st_thread_template(core, self._env.variables, self._env.buffers, st_mem_store_commands, st_postprocessing_commands, stage_b, presync_b, postsync_b)
+                ld_thread = self._ld_thread_template(core, self._env, ld_preprocessing_commands, ld_mem_load_commands, stage_b, presync_b, postsync_b)
+                ex_thread = self._ex_thread_template(core, self._env, ex_execute_commands, self._op_ex_kernels, stage_b, presync_b, postsync_b)
+                st_thread = self._st_thread_template(core, self._env, st_mem_store_commands, st_postprocessing_commands, stage_b, presync_b, postsync_b)
                 
                 ld_thread.dispatch("LD")
                 ex_thread.dispatch("EX")
@@ -648,13 +559,13 @@ class MCA_OperatorGraphCompiler:
                 elif self.is_tile_shared:
                     return f"SrcType(TILE_SHARED from {self.k})"
         
-        def __init__(self, op_sig: 'MCA_OperatorSignature', spad_space_size_per_core: int):
+        def __init__(self, op_sig: 'MCA_OperatorSignature', recipe: 'MCA_OperatorGraphCompiler.CompileRecipe'):
             if not op_sig.is_core_group_initialized:
                 raise ValueError(f"Core group must be initialized for operator {op_sig.op_id} before creating metadata.")
             
             self.op_sig = op_sig
-            self.spad_space_size_per_pp = spad_space_size_per_core // 2
-
+            self.spad_space_size_per_pp = recipe.spad_space_size_per_core // 2
+            
             self.i_buf_src: dict[str, MCA_OperatorGraphCompiler.OperatorMetadata.SrcType] = {
                 buf_name: MCA_OperatorGraphCompiler.OperatorMetadata.SrcType.BUFFER() 
                 for buf_name in op_sig.input_buffer_names
@@ -690,6 +601,7 @@ class MCA_OperatorGraphCompiler:
             self.thread_mapping: dict[int, MCA_OperatorGraphCompiler.Thread] = {}
             
             self._is_frozen = False
+            
             
         def freeze(self, thread_mapping: 'dict[int, MCA_OperatorGraphCompiler.Thread]' = None):
             self.thread_mapping = MCA_OperatorGraphCompiler.Thread.from_op_sig(self.op_sig) if thread_mapping is None else thread_mapping
@@ -813,9 +725,8 @@ class MCA_OperatorGraphCompiler:
             return self._is_frozen
     
     class Environment:
-        def __init__(self, spad_space_size_per_core: int, broadcast_optimize: bool=True):
-            self.spad_space_size_per_core = spad_space_size_per_core
-            self.broadcast_optimize = broadcast_optimize
+        def __init__(self, recipe: 'MCA_OperatorGraphCompiler.CompileRecipe'):
+            self.recipe = recipe
             
             self.op_meta:     dict[str, MCA_OperatorGraphCompiler.OperatorMetadata] = {}
             self.buffers:     dict[str, MCA_TensorBuffer]   = {}
@@ -823,13 +734,6 @@ class MCA_OperatorGraphCompiler:
             
             self.target_op_order: list[str] = []  # order of operator addition (for debugging and visualization purposes)
             self.grouped_compile_targets: list[list[str]] = []
-            
-        def __getstate__(self):
-            state = self.__dict__.copy()
-            return state
-        
-        def __setstate__(self, state):
-            self.__dict__.update(state)
             
         def add_op_sig(self, op_sig: MCA_OperatorSignature):
             buf_names = list(op_sig.buffers.keys())
@@ -852,7 +756,7 @@ class MCA_OperatorGraphCompiler:
             
             self.buffers.update(op_sig.buffers)
             
-            op_meta = MCA_OperatorGraphCompiler.OperatorMetadata(op_sig, self.spad_space_size_per_core)
+            op_meta = MCA_OperatorGraphCompiler.OperatorMetadata(op_sig, self.recipe)
             self.op_meta[op_sig.op_id] = op_meta
             self.target_op_order.append(op_sig.op_id)
             
@@ -907,10 +811,11 @@ class MCA_OperatorGraphCompiler:
         def __init__(
             self,
             op_meta: 'MCA_OperatorGraphCompiler.OperatorMetadata',
-            device: MCA_DeviceBase,
+            recipe: 'MCA_OperatorGraphCompiler.CompileRecipe',
         ):
             op_sig = op_meta.op_sig
             core_group = op_sig.core_group
+            device = recipe.device
 
             self.spad_space_size_per_pp = op_meta.spad_space_size_per_pp
             l1_space = device.create_l1_mem_space(self.spad_space_size_per_pp * 2, core_group.core_ids)
@@ -1141,12 +1046,12 @@ class MCA_OperatorGraphCompiler:
         self._op_sigs = {}
         self._op_order = []
         
-    def compile_grouped_target_ops(self, device: MCA_DeviceBase, env: 'MCA_OperatorGraphCompiler.Environment', op_ids: set[str]) -> dict[str, MCA_CompiledOperator]:
+    def compile_grouped_target_ops(self, env: 'MCA_OperatorGraphCompiler.Environment', op_ids: set[str]) -> dict[str, MCA_CompiledOperator]:
         op_metas = {target_op_id: env.op_meta[target_op_id] for target_op_id in op_ids}
         
         # compiled op contexts
         compiled_ops   = {op_id: MCA_CompiledOperator(env, op_meta) for op_id, op_meta in op_metas.items()}
-        mem_states     = {op_id: MCA_OperatorGraphCompiler.MemoryState(op_meta, device) for op_id, op_meta in op_metas.items()} 
+        mem_states     = {op_id: MCA_OperatorGraphCompiler.MemoryState(op_meta, env.recipe) for op_id, op_meta in op_metas.items()} 
         
         thread_progress_vars: dict[str, dict[int, VariableHandle]] = {
             op_id: {
@@ -1313,7 +1218,7 @@ class MCA_OperatorGraphCompiler:
                 op_meta = op_metas[op_id]
                 thread_mapping = thread_mappings[op_id]
                 prefetch_cursor = prefetch_cursors[op_id]
-                
+
                 exe_iter_cnt = 0
                 
                 while exe_stat_cursors[op_id] < prefetch_cursor:
@@ -1386,7 +1291,6 @@ class MCA_OperatorGraphCompiler:
                         break   # after ping-ponging the buffer and creating new stages, re-check the executability of the current uop nodes in the next iteration since the scheduling may change after stage creation
                     
                     # 4) create commands
-                    
                     for core_id, thread in thread_mapping.items():
                         if exe_stat_cursors[op_id] >= thread.n_uop_nodes:
                             continue
@@ -1430,11 +1334,10 @@ class MCA_OperatorGraphCompiler:
                                     ))
                                 
                         current_stage.execute_commands.append(MCA_CompiledOperator.Command.EXE_UOP(
-                            uop_idx=uop_node.uop_idx,
-                            n_uops=tiled_op_sig.n_uops, 
-                            i_tiles=[(i_tile, mem_states[op_id].get_cached_ld_tile_ptr(core_id, i_tile)) for i_tile in i_tiles],
-                            o_tile=(o_tile, mem_states[op_id].get_cached_st_tile_ptr(core_id, o_tile)),
-                            uop_kwargs=tiled_op_sig.op_kwargs[uop_node.uop_idx],
+                            op_id, uop_node.tiled_op_idx, uop_node.uop_idx, 
+                            i_tile_ptrs=[mem_states[op_id].get_cached_ld_tile_ptr(core_id, i_tile) for i_tile in i_tiles],
+                            o_tile_ptr=mem_states[op_id].get_cached_st_tile_ptr(core_id, o_tile),
+                            o_tile_sig=o_tile
                         ))
                         
                         if uop_node.output and op_meta.o_tile_store:
@@ -1451,8 +1354,32 @@ class MCA_OperatorGraphCompiler:
                 compiled_ops[op_id].add_stage(core_id, current_stage)
                 
                 
+        # TEST: check if all load tiled within the same stage do not overlap
+        for op_id, compiled_op in compiled_ops.items():
+            for core_id, stages in compiled_op._mappings.items():
+                for stage in stages:
+                    loaded_tiles: list[tuple[Pointer, TileSignature]] = []
+                    for cmd in stage.mem_load_commands:
+                        if isinstance(cmd, MCA_CompiledOperator.Command.MEM_LOAD_TILE):
+                            for ptr in cmd.ptrs:
+                                loaded_tiles.append((ptr, cmd.tile_sig))
+                        elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_CPY_TILE):
+                            for ptr in cmd.ptrs:
+                                loaded_tiles.append((ptr, cmd.tile_sig))
+
+                    for i in range(len(loaded_tiles)):
+                        for j in range(i+1, len(loaded_tiles)):
+                            i_st = loaded_tiles[i][0].addr
+                            i_ed = i_st + loaded_tiles[i][1].tile_size
+                            j_st = loaded_tiles[j][0].addr
+                            j_ed = j_st + loaded_tiles[j][1].tile_size
+
+                            if j_st < i_ed < j_ed or i_st < j_ed < i_ed:
+                                raise Exception(f"Overlapping memory accesses detected in operator {op_id} in core {core_id} within the same stage. This should never happen since the compiler should have already ensured that there is no overlapping memory access within the same stage.")
+        # END TEST
+           
         # STAGE 3: Apply broadcasting optimization
-        if env.broadcast_optimize:
+        if env.recipe.broadcast_optimize:
             for op_id, compiled_op in compiled_ops.items():
                 op_meta = op_metas[op_id]
                 
@@ -1469,18 +1396,9 @@ class MCA_OperatorGraphCompiler:
                 stage_cursor_limit = max(len(stages) for stages in compiled_op._mappings.values())
                 
                 for stage_cursor in range(stage_cursor_limit):
-                    bcast_mem_load_cmds: dict[tuple[TileSignature, tuple[str, ...], int], list[tuple[int, int]]] = {}  # { (tile_sig, guard_key, command_idx): [(core_id, command_idx), ...] }
-                    bcast_mem_copy_cmds: dict[tuple[TileSignature, int, tuple[str, ...], int], list[tuple[int, int]]] = {}  # { (tile_sig, src_ptr_addr, guard_key, command_idx): [(core_id, command_idx), ...] }
-
-                    def _build_guard_key(mem_load_cmds: list[MCA_CompiledOperator.Command.Base], cmd_idx: int) -> tuple[str, ...]:
-                        guard_sigs: list[str] = []
-                        for prev_cmd in mem_load_cmds[:cmd_idx]:
-                            if isinstance(prev_cmd, MCA_CompiledOperator.Command.BARRIER):
-                                guard_sigs.append(prev_cmd.signature())
-                            elif isinstance(prev_cmd, MCA_CompiledOperator.Command.VAR_CONDITIONAL_WAIT):
-                                guard_sigs.append(prev_cmd.signature())
-                        return tuple(guard_sigs)
-
+                    bcast_mem_load_cmds: dict[TileSignature, list[tuple[int, int]]] = {}
+                    bcast_mem_copy_cmds: dict[TileSignature, list[tuple[int, int]]] = {}
+                    
                     for core_id, stages in compiled_op._mappings.items():
                         if stage_cursor >= len(stages):
                             continue
@@ -1489,12 +1407,12 @@ class MCA_OperatorGraphCompiler:
                         
                         for cmd_idx, cmd in enumerate(current_stage.mem_load_commands):
                             if isinstance(cmd, MCA_CompiledOperator.Command.MEM_LOAD_TILE):
-                                key = (cmd.tile_sig, _build_guard_key(current_stage.mem_load_commands, cmd_idx), cmd_idx)
+                                key = cmd.tile_sig
                                 if key not in bcast_mem_load_cmds:
                                     bcast_mem_load_cmds[key] = []
                                 bcast_mem_load_cmds[key].append((core_id, cmd_idx))
                             elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_CPY_TILE):
-                                key = (cmd.tile_sig, cmd.src_ptr.addr, _build_guard_key(current_stage.mem_load_commands, cmd_idx), cmd_idx)
+                                key = cmd.tile_sig
                                 if key not in bcast_mem_copy_cmds:
                                     bcast_mem_copy_cmds[key] = []
                                 bcast_mem_copy_cmds[key].append((core_id, cmd_idx))
@@ -1502,7 +1420,7 @@ class MCA_OperatorGraphCompiler:
                     _tmp_bcast_cnt = 0
                     _tmp_bcast_request_traffic: dict[int, int] = {core_id: 0 for core_id in op_meta.op_sig.core_group.core_ids}
                     
-                    for (tile_sig, _, _), cmd_locs in bcast_mem_load_cmds.items():
+                    for tile_sig, cmd_locs in bcast_mem_load_cmds.items():
                         if len(cmd_locs) <= 1:
                             continue
                         
@@ -1529,7 +1447,7 @@ class MCA_OperatorGraphCompiler:
                             
                             compiled_op._mappings[core_id][stage_cursor].mem_load_commands[cmd_idx] = MCA_CompiledOperator.Command.NOP()
                             
-                    for (tile_sig, _, _, _), cmd_locs in bcast_mem_copy_cmds.items():
+                    for tile_sig, cmd_locs in bcast_mem_copy_cmds.items():
                         if len(cmd_locs) <= 1:
                             continue
                         
@@ -1600,7 +1518,7 @@ class MCA_OperatorGraphCompiler:
         
     def compile(self, recipe: 'MCA_OperatorGraphCompiler.CompileRecipe') -> MCA_CompiledProgram:    
         # Initialize environment
-        env = MCA_OperatorGraphCompiler.Environment(spad_space_size_per_core=recipe.spad_space_size_per_core, broadcast_optimize=recipe.broadcast_optimize)
+        env = MCA_OperatorGraphCompiler.Environment(recipe)
             
         for op_id in self._op_order:
             op_sig = self._op_sigs[op_id]
@@ -1612,6 +1530,6 @@ class MCA_OperatorGraphCompiler:
         compiled_ops: dict[str, MCA_CompiledOperator] = {}
         
         for grouped_op_ids in env.grouped_compile_targets:
-            compiled_ops.update(self.compile_grouped_target_ops(recipe.device, env, grouped_op_ids))
+            compiled_ops.update(self.compile_grouped_target_ops(env, grouped_op_ids))
         
         return MCA_CompiledProgram(recipe.device, compiled_ops)

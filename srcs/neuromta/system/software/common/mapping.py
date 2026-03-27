@@ -13,7 +13,7 @@ __all__ = [
     "MCA_MAPPER_LINEAR",
     "MCA_MAPPER_UNARY",
     "MCA_MAPPER_CONV2D",
-    # "MCA_MAPPER_FLATTEN",
+    "MCA_MAPPER_FLATTEN",
 ]
 
 def MCA_MAPPER_LINEAR(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
@@ -360,107 +360,115 @@ def MCA_MAPPER_CONV2D(
                             pbar.update(1)
     
     logger.debug(f"mapper generated {len(op_sig.tiled_ops)} in total")
+    
+    # o_tile_sig_inclusion_flag = {coords: False for coords, _ in op_sig.tiles["ofm"].items()}
+    # for tiled_op in op_sig.tiled_ops:
+    #     if o_tile_sig_inclusion_flag[tiled_op.o_tile.coords]:
+    #         logger.error(f"Duplicate tiled op for OFM tile idx {tiled_op.o_tile.coords} detected in CONV2D mapping!")
+    #     o_tile_sig_inclusion_flag[tiled_op.o_tile.coords] = True
+        
+    # input()
                             
     return op_sig
 
-# def MCA_MAPPER_FLATTEN(
-#     op_sig: MCA_OperatorSignature,
-# ) -> MCA_OperatorSignature:
-#     ifm = op_sig.buffers["ifm"]
-#     ofm = op_sig.buffers["ofm"]
+def MCA_MAPPER_FLATTEN(
+    op_sig: MCA_OperatorSignature,
+) -> MCA_OperatorSignature:
+    ifm = op_sig.buffers["ifm"]
+    ofm = op_sig.buffers["ofm"]
     
-#     if len(ofm.shape) != 2:
-#         raise Exception(f"OFM tensor must be 2D for TENSOR_FLATTEN operator mapping, but got shape: {ofm.shape}")
-#     if ifm.dtype != ofm.dtype:
-#         raise Exception(f"IFM and OFM dtype mismatch: {ifm.dtype} != {ofm.dtype}")
-#     if ifm.numel != ofm.numel:
-#         raise Exception(f"IFM and OFM number of elements mismatch: {ifm.numel} != {ofm.numel}")
-#     if ifm.tile_shape[-1] != ofm.tile_shape[-1]:
-#         raise Exception(f"IFM and OFM does not have the same row-wise tile size: {ifm.tile_shape[-1]} != {ofm.tile_shape[-1]}")
+    if len(ofm.shape) != 2:
+        raise Exception(f"OFM tensor must be 2D for TENSOR_FLATTEN operator mapping, but got shape: {ofm.shape}")
+    if ifm.dtype != ofm.dtype:
+        raise Exception(f"IFM and OFM dtype mismatch: {ifm.dtype} != {ofm.dtype}")
+    if ifm.numel != ofm.numel:
+        raise Exception(f"IFM and OFM number of elements mismatch: {ifm.numel} != {ofm.numel}")
+    if ifm.tile_shape[-1] != ofm.tile_shape[-1]:
+        raise Exception(f"IFM and OFM does not have the same row-wise tile size: {ifm.tile_shape[-1]} != {ofm.tile_shape[-1]}")
     
-#     # ifm_tiles: dict[tuple[int, ...], TileSignature] = {
-#     #     (y_s, x_s, y_t, x_t): TileSignature("ifm", ifm, y_s, x_s, y_t, x_t)
-#     #     for y_s in range(ifm.shard_grid[0])
-#     #     for x_s in range(ifm.shard_grid[1])
-#     #     for y_t in range(ifm.tile_grid_per_shard[0])
-#     #     for x_t in range(ifm.tile_grid_per_shard[1])
-#     # }
+    # ifm_tiles: dict[tuple[int, ...], TileSignature] = {
+    #     (y_s, x_s, y_t, x_t): TileSignature("ifm", ifm, y_s, x_s, y_t, x_t)
+    #     for y_s in range(ifm.shard_grid[0])
+    #     for x_s in range(ifm.shard_grid[1])
+    #     for y_t in range(ifm.tile_grid_per_shard[0])
+    #     for x_t in range(ifm.tile_grid_per_shard[1])
+    # }
     
-#     # ofm_tiles: dict[tuple[int, ...], TileSignature] = {
-#     #     (y_s, x_s, y_t, x_t): TileSignature("ofm", ofm, y_s, x_s, y_t, x_t)
-#     #     for y_s in range(ofm.shard_grid[0])
-#     #     for x_s in range(ofm.shard_grid[1])
-#     #     for y_t in range(ofm.tile_grid_per_shard[0])
-#     #     for x_t in range(ofm.tile_grid_per_shard[1])
-#     # }
+    # ofm_tiles: dict[tuple[int, ...], TileSignature] = {
+    #     (y_s, x_s, y_t, x_t): TileSignature("ofm", ofm, y_s, x_s, y_t, x_t)
+    #     for y_s in range(ofm.shard_grid[0])
+    #     for x_s in range(ofm.shard_grid[1])
+    #     for y_t in range(ofm.tile_grid_per_shard[0])
+    #     for x_t in range(ofm.tile_grid_per_shard[1])
+    # }
     
-#     IFM_W = ifm.shape[-1]
+    IFM_W = ifm.shape[-1]
     
-#     OFM_H_TILES = ofm.tile_grid[0]
-#     OFM_W_TILES = ofm.tile_grid[1]
+    OFM_H_TILES = ofm.tile_grid[0]
+    OFM_W_TILES = ofm.tile_grid[1]
     
-#     OFM_H_TILES_PER_SHARD = ofm.tile_grid_per_shard[0]
-#     OFM_W_TILES_PER_SHARD = ofm.tile_grid_per_shard[1]
+    OFM_H_TILES_PER_SHARD = ofm.tile_grid_per_shard[0]
+    OFM_W_TILES_PER_SHARD = ofm.tile_grid_per_shard[1]
     
-#     IFM_H_STRIDE = functools.reduce(lambda x, y: x * y, ifm.shape[1:-1], 1)  # stride between two adjacent IFM H sticks in terms of number of elements
+    IFM_H_STRIDE = functools.reduce(lambda x, y: x * y, ifm.shape[1:-1], 1)  # stride between two adjacent IFM H sticks in terms of number of elements
     
-#     tiled_ops = []
+    tiled_ops = []
     
-#     for ofm_h_tile_it in range(OFM_H_TILES):
-#         for ofm_w_tile_it in range(OFM_W_TILES):
-#             ofm_tile_idx = ofm.get_shard_grid_from_tile_grid_idx(ofm_h_tile_it, ofm_w_tile_it)
+    for ofm_h_tile_it in range(OFM_H_TILES):
+        for ofm_w_tile_it in range(OFM_W_TILES):
+            ofm_tile_idx = ofm.get_shard_grid_from_tile_grid_idx(ofm_h_tile_it, ofm_w_tile_it)
             
-#             ofm_h_shard_it         = ofm_h_tile_it // OFM_H_TILES_PER_SHARD
-#             ofm_h_rem_tile_it      = ofm_h_tile_it % OFM_H_TILES_PER_SHARD 
-#             ofm_h_actual_tile_size = min(ofm.tile_shape[0], ofm.shard_shape[0] - ofm_h_rem_tile_it * ofm.tile_shape[0])
+            ofm_h_shard_it         = ofm_h_tile_it // OFM_H_TILES_PER_SHARD
+            ofm_h_rem_tile_it      = ofm_h_tile_it % OFM_H_TILES_PER_SHARD 
+            ofm_h_actual_tile_size = min(ofm.tile_shape[0], ofm.shard_shape[0] - ofm_h_rem_tile_it * ofm.tile_shape[0])
 
-#             ofm_w_shard_it         = ofm_w_tile_it // OFM_W_TILES_PER_SHARD
-#             ofm_w_rem_tile_it      = ofm_w_tile_it % OFM_W_TILES_PER_SHARD
-#             ofm_w_actual_offset    = ofm_w_shard_it * ofm.shard_shape[1] + ofm_w_rem_tile_it * ofm.tile_shape[1]
+            ofm_w_shard_it         = ofm_w_tile_it // OFM_W_TILES_PER_SHARD
+            ofm_w_rem_tile_it      = ofm_w_tile_it % OFM_W_TILES_PER_SHARD
+            ofm_w_actual_offset    = ofm_w_shard_it * ofm.shard_shape[1] + ofm_w_rem_tile_it * ofm.tile_shape[1]
 
-#             ifm_h_actual_offset = (ofm_h_shard_it * ofm.shard_shape[0] * IFM_H_STRIDE) + ((ofm_w_actual_offset % (IFM_H_STRIDE * IFM_W)) // IFM_W)
-#             ifm_w_actual_offset = ofm_w_actual_offset % IFM_W
+            ifm_h_actual_offset = (ofm_h_shard_it * ofm.shard_shape[0] * IFM_H_STRIDE) + ((ofm_w_actual_offset % (IFM_H_STRIDE * IFM_W)) // IFM_W)
+            ifm_w_actual_offset = ofm_w_actual_offset % IFM_W
 
-#             ifm_tile_idx_with_memcpy_pattern: dict[tuple[int, ...], dict[int, int]] = {}
+            ifm_tile_idx_with_memcpy_pattern: dict[tuple[int, ...], dict[int, int]] = {}
             
-#             for ofm_h_stick_it in range(ofm_h_actual_tile_size):
-#                 ifm_h_stick_idx = ifm_h_actual_offset + ofm_h_stick_it * IFM_H_STRIDE
+            for ofm_h_stick_it in range(ofm_h_actual_tile_size):
+                ifm_h_stick_idx = ifm_h_actual_offset + ofm_h_stick_it * IFM_H_STRIDE
                 
-#                 ifm_h_shard_it = ifm_h_stick_idx // ifm.shard_shape[0]
-#                 ifm_h_intra_shard_idx = ifm_h_stick_idx % ifm.shard_shape[0]
-#                 ifm_h_intra_shard_tile_it = ifm_h_intra_shard_idx // ifm.tile_shape[0]
-#                 ifm_h_intra_tile_offset = ifm_h_intra_shard_idx % ifm.tile_shape[0]
+                ifm_h_shard_it = ifm_h_stick_idx // ifm.shard_shape[0]
+                ifm_h_intra_shard_idx = ifm_h_stick_idx % ifm.shard_shape[0]
+                ifm_h_intra_shard_tile_it = ifm_h_intra_shard_idx // ifm.tile_shape[0]
+                ifm_h_intra_tile_offset = ifm_h_intra_shard_idx % ifm.tile_shape[0]
                 
-#                 ifm_w_shard_it = ifm_w_actual_offset // ifm.shard_shape[1]
-#                 ifm_w_intra_shard_idx = ifm_w_actual_offset % ifm.shard_shape[1]
-#                 ifm_w_intra_shard_tile_it = ifm_w_intra_shard_idx // ifm.tile_shape[1]
+                ifm_w_shard_it = ifm_w_actual_offset // ifm.shard_shape[1]
+                ifm_w_intra_shard_idx = ifm_w_actual_offset % ifm.shard_shape[1]
+                ifm_w_intra_shard_tile_it = ifm_w_intra_shard_idx // ifm.tile_shape[1]
                 
-#                 ifm_tile_idx = (ifm_h_shard_it, ifm_w_shard_it, ifm_h_intra_shard_tile_it, ifm_w_intra_shard_tile_it)
+                ifm_tile_idx = (ifm_h_shard_it, ifm_w_shard_it, ifm_h_intra_shard_tile_it, ifm_w_intra_shard_tile_it)
                 
-#                 if ifm_tile_idx not in ifm_tile_idx_with_memcpy_pattern:
-#                     ifm_tile_idx_with_memcpy_pattern[ifm_tile_idx] = {}
+                if ifm_tile_idx not in ifm_tile_idx_with_memcpy_pattern:
+                    ifm_tile_idx_with_memcpy_pattern[ifm_tile_idx] = {}
                     
-#                 ifm_tile_idx_with_memcpy_pattern[ifm_tile_idx][ofm_h_stick_it] = ifm_h_intra_tile_offset
+                ifm_tile_idx_with_memcpy_pattern[ifm_tile_idx][ofm_h_stick_it] = ifm_h_intra_tile_offset
                 
-#             # tiled_op = TiledOperatorSignature(
-#             #     i_tiles=[],
-#             #     o_tile=op_sig.tiles["ofm"][ofm_tile_idx],
-#             # )
-#             tiled_op = op_sig.new_tiled_op()
+            # tiled_op = TiledOperatorSignature(
+            #     i_tiles=[],
+            #     o_tile=op_sig.tiles["ofm"][ofm_tile_idx],
+            # )
+            tiled_op = op_sig.new_tiled_op()
             
-#             ifm_tile = CollectiveTileSignature(
-#                 buf_name="ifm",
-#                 buf=ifm,
-#                 src_tiles=[op_sig.tiles["ifm"][idx] for idx in ifm_tile_idx_with_memcpy_pattern.keys()],
-#                 memcpy_patterns=list(ifm_tile_idx_with_memcpy_pattern.values()),
-#             )
+            ifm_tile = CollectiveTileSignature(
+                buf_name="ifm",
+                buf=ifm,
+                src_tiles=[op_sig.tiles["ifm"][idx] for idx in ifm_tile_idx_with_memcpy_pattern.keys()],
+                memcpy_patterns=list(ifm_tile_idx_with_memcpy_pattern.values()),
+            )
             
-#             tiled_op.add_uop(
-#                 i_tiles=[ifm_tile],
-#                 o_tile=op_sig.tiles["ofm"][ofm_tile_idx],
-#             )
+            tiled_op.add_uop(
+                i_tiles=[ifm_tile],
+                o_tile=op_sig.tiles["ofm"][ofm_tile_idx],
+            )
             
-#             # tiled_op.i_tiles.append((ifm_tile,))
-#             # tiled_ops.append(tiled_op)
+            # tiled_op.i_tiles.append((ifm_tile,))
+            # tiled_ops.append(tiled_op)
     
-#     return op_sig
+    return op_sig

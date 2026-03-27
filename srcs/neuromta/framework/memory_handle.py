@@ -3,7 +3,6 @@ from typing import Any, Sequence
 
 from neuromta.framework.logger import logger
 from neuromta.framework.debug_utils import *
-from neuromta.framework.serializer import *
 
 
 __all__ = [
@@ -14,25 +13,13 @@ __all__ = [
 ]
 
 
-class Pointer(SerializableCoreObject):
+class Pointer:
     def __init__(self, addr: int=None):
         self._addr = addr
         
         if self._addr is not None and not isinstance(self._addr, int):
             raise ValueError(f"Pointer address must be an integer or None, but got {type(self._addr)}.")
     
-    def get_state(self):
-        return {
-            "addr": self._addr
-        }
-    
-    @classmethod
-    def from_state(cls, core, state: dict):
-        return cls(addr=state.get("addr", None))
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        
     @property
     def addr(self) -> int | None:
         return self._addr
@@ -101,16 +88,6 @@ class ReferencePointer(Pointer):
         
         self.ref = ref
         self.offset = offset
-        
-    def get_state(self):
-        return {
-            "ref": self.ref,
-            "offset": self.offset
-        }
-
-    @classmethod
-    def from_state(cls, core, state: dict):
-        return cls(ref=state.get("ref", None), offset=state.get("offset", None))
         
     @property
     def addr(self) -> int | None:
@@ -201,18 +178,6 @@ class MemoryBankHandle:
             raise ValueError(f"Data to set exceeds memory handle size: offset {offset}, size {size}, handle size {self._size}")
 
         self._addr_space[offset:offset+size] = data
-        
-    def dump_handle_state(self) -> dict[str, Any]:
-        return {
-            "base_addr": self._base_addr,
-            "size": self._size,
-            "addr_space": self._addr_space.clone().cpu()
-        }
-    
-    def load_handle_state(self, state: dict[str, Any]):
-        self._base_addr = state["base_addr"]
-        self._size = state["size"]
-        self._addr_space = state["addr_space"].clone()
         
     @property
     def base_addr(self) -> int:
@@ -363,30 +328,6 @@ class MemoryHandle:
         self._bank_handles.clear()
         self._bank_mask.fill_(False)
         
-    def dump_handle_state(self) -> dict[str, Any]:
-        return {
-            "base_addr": self._base_addr,
-            "bank_size": self._bank_size,
-            "n_banks": self._n_banks,
-            "bank_handles": {idx: handle.dump_handle_state() for idx, handle in self._bank_handles.items()},
-            "bank_mask": self._bank_mask.clone()
-        }
-    
-    def load_handle_state(self, state: dict[str, Any]):
-        self._base_addr = state["base_addr"]
-        self._bank_size = state["bank_size"]
-        self._n_banks = state["n_banks"]
-        self._bank_handles = {}
-        for idx_str, handle_state in state["bank_handles"].items():
-            idx = int(idx_str)
-            handle = MemoryBankHandle(
-                base_addr=handle_state["base_addr"],
-                size=handle_state["size"]
-            )
-            handle.load_handle_state(handle_state)
-            self._bank_handles[idx] = handle
-        self._bank_mask = state["bank_mask"].clone()
-
     @property
     def base_addr(self) -> int:
         return self._base_addr
