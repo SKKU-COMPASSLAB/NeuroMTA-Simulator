@@ -248,7 +248,7 @@ class MCA_TensorBuffer:
     def get_shard_ptr(self, y_shard_idx: int, x_shard_idx: int) -> Pointer:
         return self._shard_ptrs[y_shard_idx][x_shard_idx]
     
-    def get_tile_ptr_read_args(self, y_shard_idx: int, x_shard_idx: int, y_tile_in_shard_idx: int, x_tile_in_shard_idx: int) -> tuple[Pointer, int, int, int, int]:
+    def get_tile_ptr_read_args(self, y_shard_idx: int, x_shard_idx: int, y_tile_in_shard_idx: int, x_tile_in_shard_idx: int) -> tuple[Pointer, int, int, int, int, int]:
         y_shard_offset = y_tile_in_shard_idx * self._tile_y
         x_shard_offset = x_tile_in_shard_idx * self._tile_x
         
@@ -262,8 +262,9 @@ class MCA_TensorBuffer:
         row_num = actual_tile_y
         src_row_stride = self._shard_x * self._dtype.itemsize
         dst_row_stride = self._tile_x  * self._dtype.itemsize
+        dst_row_zero_pad = (self._tile_x - actual_tile_x) * self._dtype.itemsize  # if the tile exceeds shard boundary (used for automatic padding)
         
-        return src_ptr, row_size, row_num, src_row_stride, dst_row_stride
+        return src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad
     
     def get_tile_ptr_write_args(self, y_shard_idx: int, x_shard_idx: int, y_tile_in_shard_idx: int, x_tile_in_shard_idx: int) -> tuple[Pointer, int, int, int, int]:
         y_shard_offset = y_tile_in_shard_idx * self._tile_y
@@ -290,6 +291,16 @@ class MCA_TensorBuffer:
         x_tile_in_shard_idx = x_tile_idx % self._n_x_tiles_per_shard
         
         return y_shard_idx, x_shard_idx, y_tile_in_shard_idx, x_tile_in_shard_idx
+    
+    def get_raw_data(self, y_shard_idx: int, x_shard_idx: int, y_tile_in_shard_idx: int, x_tile_in_shard_idx: int) -> torch.Tensor:
+        src_ptr, row_size, row_num, src_row_stride, _, _ = self.get_tile_ptr_read_args(y_shard_idx, x_shard_idx, y_tile_in_shard_idx, x_tile_in_shard_idx)
+        data = self.device.mem_get_data(src_ptr, size=src_row_stride * row_num, dtype=torch.uint8)
+        data = data.reshape(row_num, src_row_stride)[:, :row_size].flatten().view(self._dtype)
+        
+        tile_raw_data = torch.zeros((self._tile_y, self._tile_x), dtype=self._dtype)
+        tile_raw_data[:row_num, :row_size // self._dtype.itemsize] = data.reshape(row_num, row_size // self._dtype.itemsize)
+        
+        return tile_raw_data
     
     @property
     def shape(self) -> Sequence[int]:

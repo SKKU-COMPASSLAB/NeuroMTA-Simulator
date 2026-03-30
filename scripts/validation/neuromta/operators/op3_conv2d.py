@@ -66,7 +66,7 @@ if __name__ == "__main__":
     # bias = torch.randint(low=0, high=64, size=(K,), dtype=acc_dtype)
     ifm  = torch.ones((N, H, W, C), dtype=dtype)
     wgt  = torch.ones((FH, FW, K, C), dtype=dtype)
-    bias = torch.ones((K,), dtype=acc_dtype)
+    bias = torch.ones((K,), dtype=acc_dtype) * 2
     ofm  = torch.zeros((N, OH, OW, K), dtype=acc_dtype)
     
     ifm_size  = ifm.numel() * ifm.dtype.itemsize
@@ -93,7 +93,7 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         spad_space_size_per_core=parse_mem_cap_str("128KB"),
-        broadcast_optimize=broadcast_optimize,
+        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -159,13 +159,14 @@ if __name__ == "__main__":
             mismatch_report = os.path.join(SUMMARY_DIR, "conv_mismatch_report.txt")
             with open(mismatch_report, "w") as f:
                 content = []
-                s = simulated.flatten()
-                r = reference.flatten()
-                for i in range(s.shape[0]):
-                    sim_val = s[i].item()
-                    ref_val = r[i].item()
-                    if sim_val != ref_val:
-                        content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
+                for n in range(N):
+                    for oh in range(OH):
+                        for ow in range(OW):
+                            for k in range(K):
+                                sim_val = simulated[n, oh, ow, k].item()
+                                ref_val = reference[n, oh, ow, k].item()
+                                if sim_val != ref_val:
+                                    content.append(f"Mismatch at position ({n}, {oh}, {ow}, {k}): simulated={sim_val}, reference={ref_val}\n")
                 f.writelines(content)
             logger.error(f"Mismatch report saved to '{mismatch_report}'.")
-            logger.error(f"Total mismatches: {len(content)}/{s.numel()}")
+            logger.error(f"Total mismatches: {len(content)}/{simulated.numel()}")

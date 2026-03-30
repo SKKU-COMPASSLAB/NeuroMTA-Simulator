@@ -5,7 +5,10 @@ from typing import Callable, Sequence, Any
 
 from neuromta.framework.logger import logger
 from neuromta.framework.debug_utils import *
-from neuromta.framework.synchronizer import LockHandle, VariableHandle
+from neuromta.framework.memory_handle import MemoryHandle, Pointer
+from neuromta.framework.data_container import DataContainer
+from neuromta.framework.synchronizer import VariableHandle, FIFOBufferHandle
+import torch
 
 
 __all__ = [
@@ -742,6 +745,7 @@ class CoreCycleModel:
 class Core:
     def __init__(self, core_id: int, cycle_model: CoreCycleModel=None):
         self.core_id = core_id
+        self.mem_handle: MemoryHandle = None
 
         self._cycle_model: CoreCycleModel = cycle_model
 
@@ -767,6 +771,9 @@ class Core:
         self._use_functional_model = True
 
         self._timestamp = 0
+        
+    def set_mem_handle(self, mem_handle):
+        self.mem_handle = mem_handle
 
     ###########################################################################
     # Initialization
@@ -1134,30 +1141,104 @@ class Core:
         self._dispatched_rpc_kernels.pop(slot_id)       # remove the kernel from the dispatched RPC kernels
         self._dispatched_rpc_msg_mappings.pop(slot_id)  # remove the message
         
+    
+    ###########################################################################
+    # Memory Handle Management
+    ###########################################################################
+
+    def check_ptr_belonging(self, ptr: Pointer) -> bool:
+        mem_st = self.mem_handle.base_addr
+        mem_ed = self.mem_handle.base_addr + self.mem_handle.size
+        
+        if isinstance(ptr, Pointer):
+            addr = ptr.addr
+            
+        return mem_st <= addr < mem_ed
+    
+    @core_command_method
+    def local_data_container_init(self, container: DataContainer[torch.Tensor], shape: tuple[int, ...], dtype: torch.dtype):
+        data = torch.zeros(shape, dtype=dtype)
+        container.data = data
+        
+    @core_command_method
+    def local_mem_init(self, ptr: Pointer, size: int, init_data: torch.Tensor=None):
+        if not self.check_ptr_belonging(ptr):
+            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_init' method.")
+        
+        if init_data is None:
+            init_data = torch.zeros((size,), dtype=torch.uint8)
+        
+        self.mem_handle.set_data(ptr, size=size, data=init_data)
+        
+    @core_command_method
+    def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
+        if not self.check_ptr_belonging(ptr):
+            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_read' method.")
+        
+        if mem_row_stride is None:
+            mem_row_stride = row_size
+        if cont_row_stride is None:
+            cont_row_stride = row_size
+        if row_pattern is None:
+            row_pattern = {i: i for i in range(row_num)}
+            
+        if container.is_mem_segment:
+            container.data = container.data.detach().clone().flatten().view(torch.uint8).reshape(-1, cont_row_stride)
+        else:
+            container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
+        
+        for d, s in row_pattern.items():
+            src_data = self.mem_handle.get_data(ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
+            container.data[d, cont_row_offset:cont_row_offset+row_size] = src_data
+        
+    @core_command_method
+    def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
+        if not self.check_ptr_belonging(ptr):
+            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_write' method.")
+
+        if mem_row_stride is None:
+            mem_row_stride = row_size
+        if cont_row_stride is None:
+            cont_row_stride = row_size
+        if row_pattern is None:
+            row_pattern = {i: i for i in range(row_num)}
+
+        if not container.is_mem_segment:
+            raise ValueError("container.data must be a Tensor for local_mem_page_write.")
+
+        cont_data = container.data.detach().clone().flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
+        
+        for d, s in row_pattern.items():
+            dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
+            self.mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
+            
+            if cont_row_zero_pad > 0:
+                zero_data = torch.zeros((cont_row_zero_pad,), dtype=torch.uint8)
+                self.mem_handle.set_data(ptr + (s * mem_row_stride) + row_size, size=cont_row_zero_pad, data=zero_data)
+
+    ###########################################################################
+    # Static Memory Space Management
+    ###########################################################################
+                
+    @core_command_method
+    def allocate_static_mem_space(self, ptr: Pointer, size: int):
+        self.mem_handle.allocate_static_mem_space(ptr=ptr, size=size)
+
+    @core_command_method
+    def deallocate_static_mem_space(self, ptr: Pointer):
+        self.mem_handle.deallocate_static_mem_space(ptr=ptr)
+        
     ###########################################################################
     # Synchronization (Lock and Atomic Variable Update)
     ###########################################################################
-    
-    # @staticmethod
+
     def _SYNCHRONIZER_CALLBACK_PRIM(self, context: Kernel):
-        # logger.info(f"[{self.core_id}] Synchronizer callback invoked to unblock kernel '{context.callstack}'")
         context.set_blocked(self, False)
-    
-    @core_command_method
-    def lock_acquire(self, lock: LockHandle):
-        context = get_global_kernel_context()
-        context.set_blocked(self, True)
-        lock.acquire(owner=self.core_id, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-        
-    @core_command_method
-    def lock_release(self, lock: LockHandle):
-        lock.release(owner=self.core_id)
         
     @core_command_method
     def var_atomic_barrier(self, arrival_cnt: VariableHandle, blocking: VariableHandle, total_cnt: int):
         current_epoch = blocking.value
         arrival_cnt.atomic_update(arrival_cnt.value + 1)
-        # logger.info(f"[{self.core_id}] Barrier arrival count updated: {arrival_cnt.value}/{total_cnt}")
         
         if arrival_cnt.value >= total_cnt:
             arrival_cnt.atomic_update(0)
@@ -1197,6 +1278,44 @@ class Core:
         context.set_blocked(self, True)
         var.atomic_increase(increment, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
     
+    @jit_prototype
+    def fifo_allocate(self, buf: FIFOBufferHandle):
+        self.allocate_static_mem_space(ptr=buf.mem_ptr, size=buf.entry_size * buf.depth)
+        
+    @jit_prototype
+    def fifo_deallocate(self, buf: FIFOBufferHandle):
+        self.deallocate_static_mem_space(ptr=buf.mem_ptr)
+    
+    @core_command_method
+    def fifo_wait_until_vacant(self, buf: FIFOBufferHandle, entry_id: VariableHandle | int):
+        if isinstance(entry_id, int):
+            entry_id = VariableHandle.tmp(initial_value=entry_id)
+            
+        context = get_global_kernel_context()
+        context.set_blocked(self, True)
+        buf.wait_until_vacant(entry_id, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+        
+    @core_command_method
+    def fifo_wait_until_valid(self, buf: FIFOBufferHandle, entry_id: VariableHandle | int):
+        if isinstance(entry_id, int):
+            entry_id = VariableHandle.tmp(initial_value=entry_id)
+            
+        context = get_global_kernel_context()
+        context.set_blocked(self, True)
+        buf.wait_until_valid(entry_id, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+        
+    @core_command_method
+    def fifo_push(self, buf: FIFOBufferHandle, entry_id: VariableHandle | int, ref_count: int=1):
+        if isinstance(entry_id, int):
+            entry_id = VariableHandle.tmp(initial_value=entry_id)
+        buf.write_entry(entry_id, ref_count)
+        
+    @core_command_method
+    def fifo_pop(self, buf: FIFOBufferHandle, entry_id: VariableHandle | int):
+        if isinstance(entry_id, int):
+            entry_id = VariableHandle.tmp(initial_value=entry_id)        
+        buf.read_entry(entry_id)
+        
     ###########################################################################
     # Properties
     ###########################################################################

@@ -57,6 +57,9 @@ def MCA_KERNEL_CORE_LD_THREAD(
         else:
             raise NotImplementedError(f"Preprocessing command {type(cmd)} is not implemented.")
     
+    load_from_fifo_cmds: list[MCA_CompiledOperator.Command.MEM_LOAD_FROM_FIFO] = []
+    store_to_fifo_cmds:  list[MCA_CompiledOperator.Command.MEM_STORE_TO_FIFO]  = []
+    
     for cmd in mem_load_cmds:
         if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
@@ -77,36 +80,38 @@ def MCA_KERNEL_CORE_LD_THREAD(
             tile_sig = cmd.tile_sig
             buf = env.buffers[cmd.tile_sig.buf_name]
             
-            for ptr in cmd.ptrs:
-                core.mem_init(ptr, buf.tile_size)
-            
-            src_ptr, row_size, row_num, src_row_stride, dst_row_stride = buf.get_tile_ptr_read_args(*tile_sig.coords)
+            src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad = buf.get_tile_ptr_read_args(*tile_sig.coords)
             
             if len(cmd.ptrs) > 1:  # BROADCAST: broadcast optimization
-                core.local_mem_broadcast(cmd.ptrs, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
+                core.local_mem_broadcast(cmd.ptrs, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad, nowait=True)
             else:
-                core.local_mem_copy(cmd.ptrs[0], src_ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
-        elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_CPY_TILE):
-            tile_sig = cmd.tile_sig
-            buf = env.buffers[cmd.tile_sig.buf_name]
-            tile_size = buf.tile_size
-            
-            for ptr in cmd.dst_ptrs:
-                core.mem_init(ptr, buf.tile_size)
-            
-            if len(cmd.dst_ptrs) > 1:  # BROADCAST: broadcast optimization
-                core.local_mem_broadcast(cmd.dst_ptrs, cmd.src_ptr, tile_size, 1, nowait=True)
-            else:
-                core.local_mem_copy(cmd.dst_ptrs[0], cmd.src_ptr, tile_size, 1, nowait=True)
+                core.local_mem_copy(cmd.ptrs[0], src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad, nowait=True)
+        elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_LOAD_FROM_FIFO):
+            load_from_fifo_cmds.append(cmd)
+        elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_STORE_TO_FIFO):
+            store_to_fifo_cmds.append(cmd)
         else:
             raise NotImplementedError(f"DMA Load command {type(cmd)} is not implemented.")
         
     core.async_rpc_wait_all()
     
-    # if stage_sync_barrier is not None:
-    #     var_arrived_count = env.variables[stage_sync_barrier[0]]
-    #     var_block_state = env.variables[stage_sync_barrier[1]]
-    #     core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
+    with new_parallel_thread("LD_FROM_FIFO"):
+        for cmd in load_from_fifo_cmds:
+            tile_sig = cmd.tile_sig
+            buf = env.fifo_buffers[cmd.buf]
+            tile_size = tile_sig.tile_size
+            
+            core.local_mem_copy_from_fifo(cmd.ptr, buf, cmd.entry_id, tile_size)
+    
+    with new_parallel_thread("ST_TO_FIFO"):
+        for cmd in store_to_fifo_cmds:
+            tile_sig = cmd.tile_sig
+            buf = env.fifo_buffers[cmd.buf]
+            tile_size = tile_sig.tile_size
+            
+            core.local_mem_copy_to_fifo(cmd.ptr, buf, cmd.entry_id, tile_size, cmd.ref_count)
+            
+    core.parallel_merge()
     
     if post_sync_barrier is not None:
         var_arrived_count = env.variables[post_sync_barrier[0]]
@@ -153,11 +158,6 @@ def MCA_KERNEL_CORE_EX_THREAD(
         else:
             for method in op_compute_methods:
                 method(core, env, cmd)
-                
-    # if stage_sync_barrier is not None:
-    #     var_arrived_count = env.variables[stage_sync_barrier[0]]
-    #     var_block_state = env.variables[stage_sync_barrier[1]]
-    #     core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
     
     if post_sync_barrier is not None:
         var_arrived_count = env.variables[post_sync_barrier[0]]
@@ -184,7 +184,10 @@ def MCA_KERNEL_CORE_ST_THREAD(
         var_arrived_count = env.variables[stage_sync_barrier[0]]
         var_block_state = env.variables[stage_sync_barrier[1]]
         core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
-            
+    
+    load_from_fifo_cmds: list[MCA_CompiledOperator.Command.MEM_LOAD_FROM_FIFO] = []
+    store_to_fifo_cmds:  list[MCA_CompiledOperator.Command.MEM_STORE_TO_FIFO]  = []
+    
     for cmd in mem_store_cmds:
         if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
             continue
@@ -201,19 +204,30 @@ def MCA_KERNEL_CORE_ST_THREAD(
             dst_ptr, row_size, row_num, src_row_stride, dst_row_stride = buf.get_tile_ptr_write_args(*tile_sig.coords)
             
             core.local_mem_copy(dst_ptr, cmd.ptr, row_size, row_num, src_row_stride, dst_row_stride, nowait=True)
-        elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_CPY_TILE):
-            tile_sig = cmd.tile_sig
-            buf = env.buffers[cmd.tile_sig.buf_name]
-            tile_size = buf.tile_size
-            
-            if len(cmd.dst_ptrs) > 1:  # BROADCAST: broadcast optimization
-                raise Exception(f"Broadcasting is not supported for MEM_CPY_TILE command in the store thread. Command: {cmd}")
-            
-            core.local_mem_copy(cmd.dst_ptrs[0], cmd.src_ptr, tile_size, 1, nowait=True)
+        elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_LOAD_FROM_FIFO):
+            load_from_fifo_cmds.append(cmd)
+        elif isinstance(cmd, MCA_CompiledOperator.Command.MEM_STORE_TO_FIFO):
+            store_to_fifo_cmds.append(cmd)
         else:
             raise NotImplementedError(f"DMA Store command {type(cmd)} is not implemented.")
     
     core.async_rpc_wait_all()
+    
+    with new_parallel_thread("LD_FROM_FIFO"):
+        for cmd in load_from_fifo_cmds:
+            tile_sig = cmd.tile_sig
+            buf = env.fifo_buffers[cmd.buf]
+            tile_size = tile_sig.tile_size
+            
+            core.local_mem_copy_from_fifo(cmd.ptr, buf, cmd.entry_id, tile_size)
+    
+    with new_parallel_thread("ST_TO_FIFO"):
+        for cmd in store_to_fifo_cmds:
+            tile_sig = cmd.tile_sig
+            buf = env.fifo_buffers[cmd.buf]
+            tile_size = tile_sig.tile_size
+            
+            core.local_mem_copy_to_fifo(cmd.ptr, buf, cmd.entry_id, tile_size, cmd.ref_count)
     
     for cmd in postprocessing_cmds:
         if isinstance(cmd, MCA_CompiledOperator.Command.NOP):
@@ -233,11 +247,6 @@ def MCA_KERNEL_CORE_ST_THREAD(
             core.var_conditional_wait(vars, cmd.condition)
         else:
             raise NotImplementedError(f"Postprocessing command {type(cmd)} is not implemented.")
-    
-    # if stage_sync_barrier is not None:
-    #     var_arrived_count = env.variables[stage_sync_barrier[0]]
-    #     var_block_state = env.variables[stage_sync_barrier[1]]
-    #     core.var_atomic_barrier(var_arrived_count, var_block_state, stage_sync_barrier[2])
         
     if post_sync_barrier is not None:
         var_arrived_count = env.variables[post_sync_barrier[0]]

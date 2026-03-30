@@ -21,7 +21,7 @@ class NPUCore(Core):
         icnt_context: IcntContext = None,  # optional: None if no NoC is used
         vpu_config: VPUConfig = VPUConfig(),
         mxu_config: MXUConfig = MXUConfig(),
-    ):
+    ):  
         super().__init__(
             core_id=core_id,
             cycle_model=NPUCoreCycleModel(core=self),
@@ -35,7 +35,7 @@ class NPUCore(Core):
         
         self.core_info  = self.global_context.get_core_info(GlobalContextCoreType.NPU, core_id)
         self.mem_info   = self.core_info.owned_mem_info  # Assume that each NPU core owns only one memory
-        self.mem_handle = self.mem_info.mem_handle
+        self.set_mem_handle(mem_handle=self.mem_info.mem_handle)
         
         self._dma_engine_idx = self.core_id % self.global_context.n_dma_engine_per_channel  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
     
@@ -58,21 +58,6 @@ class NPUCore(Core):
     # Memory Copy Commands
     #############################################################
     
-    @core_command_method
-    def local_data_container_init(self, container: DataContainer[torch.Tensor], shape: tuple[int, ...], dtype: torch.dtype):
-        data = torch.zeros(shape, dtype=dtype)
-        container.data = data
-        
-    @core_command_method
-    def local_mem_init(self, ptr: Pointer, size: int, init_data: torch.Tensor=None):
-        if not self.check_ptr_belonging(ptr):
-            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_init' method.")
-        
-        if init_data is None:
-            init_data = torch.zeros((size,), dtype=torch.uint8)
-        
-        self.mem_handle.set_data(ptr, size=size, data=init_data)
-    
     @jit_prototype
     def mem_init(self, ptr: Pointer, size: int, init_data: torch.Tensor=None):
         if self.check_ptr_belonging(ptr):
@@ -93,50 +78,8 @@ class NPUCore(Core):
             self.async_rpc_send_req_msg(msg)
             self.async_rpc_wait_rsp_msg(msg)
     
-    @core_command_method
-    def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
-        if not self.check_ptr_belonging(ptr):
-            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_read' method.")
-        
-        if mem_row_stride is None:
-            mem_row_stride = row_size
-        if cont_row_stride is None:
-            cont_row_stride = row_size
-        if row_pattern is None:
-            row_pattern = {i: i for i in range(row_num)}
-            
-        if container.is_mem_segment:
-            container.data = container.data.detach().clone().flatten().view(torch.uint8).reshape(-1, cont_row_stride)
-        else:
-            container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
-        
-        for d, s in row_pattern.items():
-            src_data = self.mem_handle.get_data(ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
-            container.data[d, cont_row_offset:cont_row_offset+row_size] = src_data
-        
-    @core_command_method
-    def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
-        if not self.check_ptr_belonging(ptr):
-            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_write' method.")
-
-        if mem_row_stride is None:
-            mem_row_stride = row_size
-        if cont_row_stride is None:
-            cont_row_stride = row_size
-        if row_pattern is None:
-            row_pattern = {i: i for i in range(row_num)}
-
-        if not container.is_mem_segment:
-            raise ValueError("container.data must be a Tensor for local_mem_page_write.")
-
-        cont_data = container.data.detach().clone().flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
-        
-        for d, s in row_pattern.items():
-            dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
-            self.mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
-    
     @jit_prototype
-    def local_mem_copy(self, dst_ptr: Pointer, src_ptr: Pointer, row_size: int, row_num: int=1, src_row_stride: int=None, dst_row_stride: int=None, nowait: bool=False):
+    def local_mem_copy(self, dst_ptr: Pointer, src_ptr: Pointer, row_size: int, row_num: int=1, src_row_stride: int=None, dst_row_stride: int=None, dst_row_zero_pad: int=0, nowait: bool=False):
         if not isinstance(dst_ptr, Pointer) or not isinstance(src_ptr, Pointer):
             raise ValueError("dst_ptr and src_ptr must be Pointer instances.")
         if dst_ptr.addr is None or src_ptr.addr is None:
@@ -187,7 +130,7 @@ class NPUCore(Core):
                 self.async_rpc_wait_rsp_msg(data_rd_request)
             
             if dst_owner_core_id == self.core_id:
-                self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size)
+                self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size, cont_row_zero_pad=dst_row_zero_pad)
             else:
                 data_wr_request = RPCMessage(
                     src_core_id=self.core_id,
@@ -200,6 +143,7 @@ class NPUCore(Core):
                     row_num=row_num,
                     mem_row_stride=dst_row_stride,
                     cont_row_stride=row_size,
+                    cont_row_zero_pad=dst_row_zero_pad
                 )
                 
                 self.async_rpc_send_req_msg(data_wr_request)
@@ -282,7 +226,7 @@ class NPUCore(Core):
         self.parallel_merge()
 
     @jit_prototype
-    def local_mem_broadcast(self, dst_ptrs: list[Pointer], src_ptr: Pointer,  row_size: int, row_num: int, src_row_stride: int=None, dst_row_stride: int=None, nowait: bool=False):
+    def local_mem_broadcast(self, dst_ptrs: list[Pointer], src_ptr: Pointer,  row_size: int, row_num: int, src_row_stride: int=None, dst_row_stride: int=None, dst_row_zero_pad: int=0, nowait: bool=False):
         if not isinstance(src_ptr, Pointer):
             raise ValueError("dst_ptr and src_ptr must be Pointer instances.")
         if src_ptr.addr is None:
@@ -339,7 +283,7 @@ class NPUCore(Core):
                     dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
 
                 if dst_owner_core_id == self.core_id:
-                    self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size)
+                    self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size, cont_row_zero_pad=dst_row_zero_pad)
                 else:
                     data_wr_request = RPCMessage(
                         src_core_id=self.core_id,
@@ -352,6 +296,7 @@ class NPUCore(Core):
                         row_num=row_num,
                         mem_row_stride=dst_row_stride,
                         cont_row_stride=row_size,
+                        cont_row_zero_pad=dst_row_zero_pad
                     )
 
                     self.async_rpc_send_req_msg(data_wr_request)
@@ -448,6 +393,24 @@ class NPUCore(Core):
                         self.async_rpc_wait_rsp_msg(msg)
                 
         self.parallel_merge()
+        
+    @jit_prototype
+    def local_mem_copy_to_fifo(self, ptr: Pointer, fifo_handle: FIFOBufferHandle, entry_id: VariableHandle | int, size: int=None, ref_count: int=1):
+        dst_ptr = fifo_handle.get_ptr(entry_id)
+        size = size if (size is not None) else fifo_handle.entry_size
+        
+        self.fifo_wait_until_vacant(fifo_handle, entry_id)
+        self.local_mem_copy(dst_ptr, ptr, row_size=size)
+        self.fifo_push(fifo_handle, entry_id, ref_count)
+        
+    @jit_prototype
+    def local_mem_copy_from_fifo(self, ptr: Pointer, fifo_handle: FIFOBufferHandle, entry_id: VariableHandle | int, size: int=None):
+        src_ptr = fifo_handle.get_ptr(entry_id)
+        size = size if (size is not None) else fifo_handle.entry_size
+        
+        self.fifo_wait_until_valid(fifo_handle, entry_id)
+        self.local_mem_copy(ptr, src_ptr, row_size=size)
+        self.fifo_pop(fifo_handle, entry_id)
 
     #############################################################
     # MXU Commands
@@ -665,7 +628,7 @@ class NPUCoreCycleModel(CoreCycleModel):
         
         self.core = core
     
-    def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
+    def local_mem_page_write(self, *args, **kwargs):
         return 1  # TODO: this should be 1
     
     def mxu_load_context(self, psum_cont: DataContainer[torch.Tensor]):

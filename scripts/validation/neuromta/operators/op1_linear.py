@@ -38,7 +38,7 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (2, 2))
     
-    M, N, K = 500, 500, 500
+    M, N, K = 128, 128, 128
     dtype = torch.int16
     acc_dtype = torch.int16
     blocked_mapping = True  # Enable blocked mapping for better data locality
@@ -57,10 +57,10 @@ if __name__ == "__main__":
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=device.get_npu_core_group()).override(core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(50, 50)).tiling((32, 32)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(50, 50)).tiling((32, 32)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  50)).tiling((1,  32)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(50, 50)).tiling((32, 32)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
     
     operator = MCA_OP_LINEAR(
         ifm_b, wgt_b, bias_b, ofm_b, 
@@ -71,8 +71,8 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        spad_space_size_per_core=parse_mem_cap_str("512KB"),
-        broadcast_optimize=broadcast_optimize,
+        spad_space_size_per_core=parse_mem_cap_str("128KB"),
+        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0,
     )
     
     compiled_ops = compiler.compile(global_recipe)
@@ -98,7 +98,7 @@ if __name__ == "__main__":
     
     profiler_saver = ProfilerFileSaverHub(output_dir=os.path.join(SUMMARY_DIR, "profiles"))
     profiler_saver.add_profilers(*profilers)
-
+    
     if args.monitor:
         with MonitoringWindow(device, core_group, profilers) as monitor:
             st = time.time()

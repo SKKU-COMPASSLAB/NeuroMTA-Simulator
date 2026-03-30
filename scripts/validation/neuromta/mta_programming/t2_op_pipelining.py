@@ -54,7 +54,7 @@ if __name__ == "__main__":
     operator1 = MCA_OP_LINEAR(
         device, core_group1, spad_ld_pp_space1, spad_st_pp_space1, 
         ifm_b1, wgt_b1, bias_b1, ofm_b1, 
-        broadcast_optimize=broadcast_optimize, 
+        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0, 
         auto_dispatch=False, 
         mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY
     )
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     operator2 = MCA_OP_LINEAR(
         device, core_group2, spad_ld_pp_space2, spad_st_pp_space2, 
         ofm_b1, wgt_b2, bias_b2, ofm_b2, 
-        broadcast_optimize=broadcast_optimize, 
+        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0, 
         auto_dispatch=False, 
         mapping_strategy=MCA_OperatorMapper.OUTPUT_STATIONARY
     )

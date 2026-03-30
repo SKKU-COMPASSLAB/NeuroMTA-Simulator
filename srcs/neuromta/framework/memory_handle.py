@@ -192,7 +192,7 @@ class MemoryHandle:
     MAX_BANK_SIZE = 32 * (2 ** 20)  # 32 MB
     MAX_BANK_WARNING_PRINTED = False
     
-    def __init__(self, base_addr: int, bank_size: int, n_banks: int):
+    def __init__(self, base_addr: int, bank_size: int, n_banks: int, dynamic_space_size: int, static_space_size: int=None):
         
         self._base_addr  = base_addr
         self._bank_size  = bank_size
@@ -200,6 +200,16 @@ class MemoryHandle:
         
         self._bank_handles: dict[int, MemoryBankHandle] = {}
         self._bank_mask = torch.zeros(self._n_banks, dtype=torch.bool)
+        
+        # DLM: Dynamic Local Memory (for dynamic allocation via Core)
+        self._dlm_space_size   = dynamic_space_size
+        self._dlm_space_addr   = self._base_addr
+        self._dlm_space_offset = 0
+        self._dlm_space_allocation_map: dict[int, int] = {}  # Maps allocated pointer addresses to their sizes
+        
+        # SLM: Scheduled Local Memory (for static allocation via manual set/get data method or Compiler)
+        self._slm_space_size   = static_space_size if static_space_size is not None else (self._bank_size * self._n_banks - dynamic_space_size)
+        self._slm_space_addr   = self._base_addr + self._dlm_space_size
         
         if self._bank_size > MemoryHandle.MAX_BANK_SIZE and not MemoryHandle.MAX_BANK_WARNING_PRINTED:
             logger.warning(f"Bank size {self._bank_size} exceeds maximum bank size {MemoryHandle.MAX_BANK_SIZE}. This may lead to high memory usage.")
@@ -328,6 +338,30 @@ class MemoryHandle:
         self._bank_handles.clear()
         self._bank_mask.fill_(False)
         
+    def allocate_static_mem_space(self, ptr: Pointer, size: int) -> Pointer:
+        if ptr.addr is not None:
+            raise ValueError(f"Pointer already has an address {ptr.addr}, cannot allocate static memory space.")
+        
+        if size + self._dlm_space_offset > self._dlm_space_size:
+            raise ValueError(f"Requested static memory size {size} exceeds static space size {self._dlm_space_size}.")
+        
+        ptr.addr = self._dlm_space_addr + self._dlm_space_offset
+        self._dlm_space_offset += size
+        self._dlm_space_allocation_map[ptr.addr] = size
+        return ptr
+    
+    def deallocate_static_mem_space(self, ptr: Pointer):
+        if ptr.addr is None:
+            raise ValueError("Pointer address is None, cannot deallocate.")
+        
+        if ptr.addr in self._dlm_space_allocation_map:
+            self._dlm_space_allocation_map.pop(ptr.addr)
+        
+        self._dlm_space_offset = 0
+        for addr, size in self._dlm_space_allocation_map.items():
+            self._dlm_space_offset = max(self._dlm_space_offset, addr + size - self._dlm_space_addr)
+        ptr.addr = None
+
     @property
     def base_addr(self) -> int:
         return self._base_addr
@@ -343,6 +377,26 @@ class MemoryHandle:
     @property
     def n_pages(self) -> int:
         return self._n_banks
+    
+    @property
+    def dynamic_space_size(self) -> int:
+        return self._dlm_space_size
+    
+    @property
+    def scheduled_space_size(self) -> int:
+        return self._slm_space_size
+    
+    @property
+    def dynamic_space_addr(self) -> int:
+        return self._dlm_space_addr
+    
+    @property
+    def scheduled_space_addr(self) -> int:
+        return self._slm_space_addr
+    
+    @property
+    def vacant_dynamic_space_size(self) -> int:
+        return self._dlm_space_size - self._dlm_space_offset
 
             
 if __name__ == "__main__":

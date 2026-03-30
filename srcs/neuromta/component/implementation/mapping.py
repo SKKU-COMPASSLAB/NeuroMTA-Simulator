@@ -37,6 +37,9 @@ class TileSignature:
             return NotImplemented
         return self.buf_name == other.buf_name and self.coords == other.coords
     
+    def __repr__(self):
+        return self.signature
+    
 class TiledOperatorSignature:
     def __init__(self):
         self.i_tiles:   list[list[TileSignature]]   = []

@@ -85,7 +85,7 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         spad_space_size_per_core=parse_mem_cap_str("512KB"),
-        broadcast_optimize=broadcast_optimize,
+        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
