@@ -217,5 +217,5 @@ __marimo__/
 scripts/*/.logs/
 scripts/*experiments/*/.archive/
 scripts/*experiment/*/.logs*
-
+.data/
 build/
