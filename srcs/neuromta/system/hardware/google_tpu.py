@@ -47,7 +47,7 @@ class GoogleTPUConfig(dict):
         processor_clock_freq: int = parse_freq_str("1GHz"),
         main_mem_channel_size: int = parse_mem_cap_str("2GB"),
         l1_mem_bank_size: int = parse_mem_cap_str("48MB"),
-        l1_mem_static_space_size_per_bank: int = parse_mem_cap_str("256KB"),
+        l1_mem_dynamic_space_size_per_bank: int = 0,
     ) -> 'GoogleTPUConfig':
         config_name = "v4"
         
@@ -92,7 +92,7 @@ class GoogleTPUConfig(dict):
             n_dma_core=n_dma_core,
             
             l1_mem_bank_size=l1_mem_bank_size,
-            l1_mem_static_space_size_per_bank=l1_mem_static_space_size_per_bank,
+            l1_mem_dynamic_space_size_per_bank=l1_mem_dynamic_space_size_per_bank,
             main_mem_config=main_mem_config,
         )
         

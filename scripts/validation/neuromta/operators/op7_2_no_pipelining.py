@@ -38,8 +38,7 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = MCA_CoreGroup.merge_core_groups(device.get_npu_core_group((0, 0), (8, 8)).split(shape=(4, 4))[0:3])
-    sub_core_groups = core_group.split(shape=16)
+    core_groups = device.get_npu_core_group((0, 0), (8, 8)).split(shape=(1, 1))
     
     M, N, K = 512, 512, 512
     dtype = torch.int16
@@ -70,9 +69,9 @@ if __name__ == "__main__":
     bias3_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
     ofm3_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
     
-    operator1 = MCA_OP_LINEAR(ifm1_b, wgt1_b, bias1_b, ofm1_b).initialize_core_group(core_group)
-    operator2 = MCA_OP_LINEAR(ofm1_b, wgt2_b, bias2_b, ofm2_b).initialize_core_group(core_group)
-    operator3 = MCA_OP_LINEAR(ofm2_b, wgt3_b, bias3_b, ofm3_b).initialize_core_group(core_group)
+    operator1 = MCA_OP_LINEAR(ifm1_b, wgt1_b, bias1_b, ofm1_b)
+    operator2 = MCA_OP_LINEAR(ofm1_b, wgt2_b, bias2_b, ofm2_b)
+    operator3 = MCA_OP_LINEAR(ofm2_b, wgt3_b, bias3_b, ofm3_b)
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator1)
@@ -81,9 +80,11 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
+        core_groups=core_groups,
         spad_space_size_per_core=parse_mem_cap_str("512KB"),
         pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,
+        operator_pipelining=False,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -100,7 +101,7 @@ if __name__ == "__main__":
     }
         
     if args.monitor:
-        with MonitoringWindow(device, sub_core_groups[:2]) as monitor:
+        with MonitoringWindow(device, core_groups) as monitor:
             st = time.time()
             device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()

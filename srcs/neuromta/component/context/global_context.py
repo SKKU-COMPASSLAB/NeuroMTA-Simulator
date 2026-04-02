@@ -61,16 +61,16 @@ class GlobalContextMemType(enum.Enum):
 
 
 class GlobalContextMemInfo:
-    def __init__(self, mem_type: GlobalContextMemType, mem_id: int, base_addr: int, size: int, static_space_size: int, dynamic_space_size: int=None):
+    def __init__(self, mem_type: GlobalContextMemType, mem_id: int, base_addr: int, size: int, dynamic_space_size: int, scheduled_space_size: int=None):
         self.mem_type   = mem_type
         self.mem_id     = mem_id
         
         self._total_space_size   = size
-        self._dynamic_space_size  = static_space_size
-        self._scheduled_space_size = dynamic_space_size if dynamic_space_size is not None else (self._total_space_size - static_space_size)
+        self._dynamic_space_size  = dynamic_space_size
+        self._scheduled_space_size = scheduled_space_size if scheduled_space_size is not None else (self._total_space_size - dynamic_space_size)
 
         if self._total_space_size < self._dynamic_space_size + self._scheduled_space_size:
-            raise ValueError(f"Total memory size {self._total_space_size} is smaller than the sum of static space size {self._dynamic_space_size} and dynamic space size {self._scheduled_space_size}.")
+            raise ValueError(f"Total memory size {self._total_space_size} is smaller than the sum of dynamic space size {self._dynamic_space_size} and scheduled space size {self._scheduled_space_size}.")
         
         self.owner_core_ids: list[int]  = []
         
@@ -309,7 +309,7 @@ class GlobalContextConfig:
         n_dma_core: int,
         
         l1_mem_bank_size: int,
-        l1_mem_static_space_size_per_bank: int,
+        l1_mem_dynamic_space_size_per_bank: int,
         
         main_mem_config: MainMemoryConfig,
         main_mem_min_alloc_size: int = parse_mem_cap_str("32B"),
@@ -318,7 +318,7 @@ class GlobalContextConfig:
         self._n_dma_core = n_dma_core
         
         self._l1_mem_bank_size   = l1_mem_bank_size
-        self._l1_mem_static_space_size_per_bank = l1_mem_static_space_size_per_bank
+        self._l1_mem_dynamic_space_size_per_bank = l1_mem_dynamic_space_size_per_bank
         
         self._main_mem_config = main_mem_config    
         self._main_mem_min_alloc_size = main_mem_min_alloc_size
@@ -378,7 +378,7 @@ class GlobalContext:
                 base_addr = inst_base_addr + (ch_id * self.main_mem_channel_size)
                 size = self.main_mem_channel_size
                 
-                mem_info = GlobalContextMemInfo(GlobalContextMemType.MAIN, mem_id, base_addr, size, static_space_size=0)
+                mem_info = GlobalContextMemInfo(GlobalContextMemType.MAIN, mem_id, base_addr, size, dynamic_space_size=0)
                 self._mem_info[(GlobalContextMemType.MAIN, mem_id)] = mem_info
             
             for cmd_q_id in range(self._config.main_mem_config.n_cmd_q_per_instance):
@@ -395,7 +395,7 @@ class GlobalContext:
             base_addr = self._config._l1_mem_base_addr + (l1_mem_bank_id * self._config._l1_mem_bank_size)
             size = self._config._l1_mem_bank_size
             
-            mem_info = GlobalContextMemInfo(GlobalContextMemType.L1, l1_mem_bank_id, base_addr, size, static_space_size=self._config._l1_mem_static_space_size_per_bank)
+            mem_info = GlobalContextMemInfo(GlobalContextMemType.L1, l1_mem_bank_id, base_addr, size, dynamic_space_size=self._config._l1_mem_dynamic_space_size_per_bank)
             self._mem_info[(GlobalContextMemType.L1, l1_mem_bank_id)] = mem_info
             
             n = self._config._npu_core_ids[l1_mem_bank_id]

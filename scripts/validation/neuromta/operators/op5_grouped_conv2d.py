@@ -79,13 +79,14 @@ if __name__ == "__main__":
     operator = MCA_OP_CONV2D(
         ifm_b, wgt_b, bias_b, ofm_b, 
         stride=STRIDE, padding=PADDING, dilation=DILATION, groups=groups,
-    ).initialize_core_group(core_group)
+    )
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
+        core_groups=[core_group],
         spad_space_size_per_core=parse_mem_cap_str("512KB"),
         pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,

@@ -28,28 +28,31 @@ def _find_smallest_divisor_above(num: int, threshold: int) -> int:
 CONTEXT = NetworkGraphEntryCompileTarget.BufferSignature.CONTEXT
 
 
-class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
+class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
     DEFAULT = "__DEFAULT"
     
     def __init__(
         self, 
         device: MCA_DeviceBase, 
-        global_core_group: MCA_CoreGroup,
-        core_group_shape: Iterable[int],
+        core_groups: list[MCA_CoreGroup],
         
         main_data_mem_space_size_per_channel: int,
         l1_data_mem_space_size_per_core: int,
         spad_mem_space_size_per_core: int,
-    
-        dtype: torch.dtype,
-        acc_dtype: torch.dtype,
+        
+        pipeline_granularity: int=8,
+        broadcast_optimize_queue_depth: int=32,
+        operator_pipelining: bool=False,
+        
+        dtype: torch.dtype=torch.float16,
+        acc_dtype: torch.dtype=torch.float16,
     ):
-        super().__init__(device, global_core_group, core_group_shape, main_data_mem_space_size_per_channel, l1_data_mem_space_size_per_core, spad_mem_space_size_per_core)
+        super().__init__(device, core_groups, main_data_mem_space_size_per_channel, l1_data_mem_space_size_per_core, spad_mem_space_size_per_core, pipeline_granularity, broadcast_optimize_queue_depth, operator_pipelining)
         
         self.dtype = dtype
         self.acc_dtype = acc_dtype
         
-    @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
+    @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
     def Linear(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.Linear) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
         wgt: torch.Tensor = submodule.weight.data
@@ -90,7 +93,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
         )
         
     
-    @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
+    @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
     def Conv2d(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.Conv2d) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
         wgt: torch.Tensor = submodule.weight.data
@@ -149,7 +152,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             max_n_cores=buf_sigs[-1].n_tiles
         )
     
-    @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
+    @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
     def ReLU(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.ReLU) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
         
@@ -204,7 +207,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             max_n_cores=buf_sigs[-1].n_tiles
         )
         
-    @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
+    @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
     def MaxPool2d(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.MaxPool2d) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
         
@@ -252,7 +255,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             max_n_cores=buf_sigs[-1].n_tiles
         )
         
-    @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
+    @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
     def AvgPool2d(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.AvgPool2d) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
         
@@ -301,7 +304,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             max_n_cores=buf_sigs[-1].n_tiles
         )
         
-    @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
+    @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
     def AdaptiveMaxPool2d(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.AdaptiveMaxPool2d) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
         
@@ -348,7 +351,7 @@ class MCA_NetworkRecipe(MCA_NetworkGraphCompiler.NetworkRecipe):
             max_n_cores=buf_sigs[-1].n_tiles
         )
         
-    @MCA_NetworkGraphCompiler.NetworkRecipe.recipe
+    @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
     def AdaptiveAvgPool2d(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.AdaptiveAvgPool2d) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
         

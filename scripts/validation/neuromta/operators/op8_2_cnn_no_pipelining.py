@@ -38,7 +38,7 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = device.get_npu_core_group((0, 0), (8, 8))
+    core_groups = device.get_npu_core_group((0, 0), (8, 8)).split(shape=(1, 1))
     
     dtype = torch.int16
     acc_dtype = torch.int16
@@ -68,22 +68,17 @@ if __name__ == "__main__":
     nmta_maxpool_ofm_shape = maxpool_ofm.permute(0, 2, 3, 1).shape  # NCHW -> NHWC
     
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
-    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group)
     
     x_b           = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_x_shape,           dtype=x.dtype,           shard_shape=(56, 3 )).tiling((32, 32)).allocate().update(x.permute(0, 2, 3, 1))  # NCHW -> NHWC
     conv_wgt_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_wgt_shape,    dtype=conv_wgt.dtype,    shard_shape=(32, 3 )).tiling((32, 32)).allocate().update(conv_wgt.permute(2, 3, 0, 1))  # OIHW -> OHWI
     conv_bias_b   = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_bias_shape,   dtype=conv_bias.dtype,   shard_shape=(1,  32)).tiling((1,  32)).allocate().update(conv_bias.unsqueeze(0))
-    conv_ofm_b    = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=nmta_conv_ofm_shape,    dtype=conv_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
-    relu_ofm_b    = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=nmta_relu_ofm_shape,    dtype=relu_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
+    conv_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space,   shape=nmta_conv_ofm_shape,    dtype=conv_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
+    relu_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space,   shape=nmta_relu_ofm_shape,    dtype=relu_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
     maxpool_ofm_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_maxpool_ofm_shape, dtype=maxpool_ofm.dtype, shard_shape=(27, 32)).tiling((32, 32)).allocate()
     
-    conv_core_group = core_group
-    relu_core_group = core_group
-    maxpool_core_group = core_group
-    
-    operator1 = MCA_OP_CONV2D(x_b, conv_wgt_b, conv_bias_b, conv_ofm_b, stride=(4, 4), padding=(2, 2)).initialize_core_group(conv_core_group)
-    operator2 = MCA_OP_RELU(conv_ofm_b, relu_ofm_b).initialize_core_group(relu_core_group)
-    operator3 = MCA_OP_MAXPOOL2D(relu_ofm_b, maxpool_ofm_b, window=(3, 3), stride=(2, 2)).initialize_core_group(maxpool_core_group)
+    operator1 = MCA_OP_CONV2D(x_b, conv_wgt_b, conv_bias_b, conv_ofm_b, stride=(4, 4), padding=(2, 2))
+    operator2 = MCA_OP_RELU(conv_ofm_b, relu_ofm_b)
+    operator3 = MCA_OP_MAXPOOL2D(relu_ofm_b, maxpool_ofm_b, window=(3, 3), stride=(2, 2))
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator1)
@@ -92,9 +87,11 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
+        core_groups=core_groups,
         spad_space_size_per_core=parse_mem_cap_str("512KB"),
         pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,
+        operator_pipelining=False,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -111,7 +108,7 @@ if __name__ == "__main__":
     }
     
     if args.monitor:
-        with MonitoringWindow(device, core_group) as monitor:
+        with MonitoringWindow(device, core_groups) as monitor:
             st = time.time()
             device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()

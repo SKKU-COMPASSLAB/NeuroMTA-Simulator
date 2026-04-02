@@ -25,27 +25,28 @@ if __name__ == "__main__":
     module = torchvision.models.alexnet(weights=torchvision.models.AlexNet_Weights.DEFAULT).eval()
     dummy_input = torch.randn(1, 3, 224, 224)
     
-    global_core_group = device.get_npu_core_group()
-    core_group_shape = (2, 2)  # each core group has 4 cores
-    core_groups = global_core_group.split(core_group_shape)
+    core_groups = device.get_npu_core_group().split((2, 2))
     
     graph_recipe  = MCA_NetworkRecipe(
         device=device,
-        global_core_group=global_core_group,
-        core_group_shape=core_group_shape, 
+        core_groups=core_groups,
         
         main_data_mem_space_size_per_channel=parse_mem_cap_str("30GB"),
         l1_data_mem_space_size_per_core=parse_mem_cap_str("256KB"),
-        spad_mem_space_size_per_core=parse_mem_cap_str("1.2MB"),
+        spad_mem_space_size_per_core=parse_mem_cap_str("1MB"),
         
-        dtype=torch.float32, 
-        acc_dtype=torch.float32,
+        pipeline_granularity=16,
+        broadcast_optimize_queue_depth=32,
+        operator_pipelining=True,
+        
+        dtype=torch.float16, 
+        acc_dtype=torch.float16,
     )
     
-    graph = MCA_NetworkGraphCompiler.from_trace(module, graph_recipe, dummy_input)
+    graph = MCA_CompiledNetworkGraph.from_trace(module, graph_recipe, dummy_input)
     graph.print_graph()
     
-    def save_compiled_entry_summary(graph: MCA_NetworkGraphCompiler, dirname: str, filename: str):
+    def save_compiled_entry_summary(graph: MCA_CompiledNetworkGraph, dirname: str, filename: str):
         for entry_idx, entry in enumerate(graph.graph_entries):
             if entry.is_subgraph_available:
                 save_compiled_entry_summary(entry.subgraph, dirname, f"{filename}_{entry.node.debugName()}")
@@ -74,12 +75,6 @@ if __name__ == "__main__":
                     
     save_compiled_entry_summary(graph, os.path.join(LOGDIR, FILENAME), "summary")
     
-    # with MonitoringWindow() as monitor:
-    #     for core_group_idx, core_group in enumerate(core_groups):
-    #         for core_id in core_group.core_ids:
-    #             core = device.get_npu_core(core_id=core_id)
-    #             pbar_idx = monitor.add_core_pbar(desc=f"G{core_group_idx+1:<2d} {core_id:<3d}", ncols=40)
-    #             monitor.pbar_handles[pbar_idx].bind_core(core)
     with MonitoringWindow(device, core_groups) as monitor:
         reference = module(dummy_input)
         

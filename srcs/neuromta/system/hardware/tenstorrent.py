@@ -47,7 +47,7 @@ class TenstorrentConfig(dict):
         processor_clock_freq: int = parse_freq_str("1.5GHz"),
         main_mem_channel_size: int = parse_mem_cap_str("4GB"),
         l1_mem_bank_size: int = parse_mem_cap_str("1.5MB"),
-        l1_mem_static_space_size_per_bank: int = parse_mem_cap_str("256KB"),
+        l1_mem_dynamic_space_size_per_bank: int = 0,
     ) -> 'TenstorrentConfig':
         config_name = "blackhole"
 
@@ -91,7 +91,7 @@ class TenstorrentConfig(dict):
             n_npu_core=n_npu_core,
             n_dma_core=n_dma_core,
             l1_mem_bank_size=l1_mem_bank_size,
-            l1_mem_static_space_size_per_bank=l1_mem_static_space_size_per_bank,
+            l1_mem_dynamic_space_size_per_bank=l1_mem_dynamic_space_size_per_bank,
             main_mem_config=main_mem_config,
         )
 

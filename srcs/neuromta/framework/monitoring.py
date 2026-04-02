@@ -74,7 +74,7 @@ class MonitoringWindow(MonitorClient):
             _cursor = _kernel._execution_cursor
             _totals = len(_kernel._execution_steps)
             _n_kernels = tracker.totals
-            _amt += 0 if _totals == 0 else (_cursor / _totals / _n_kernels)
+            _amt += 0 if (_totals == 0 or _n_kernels == 0) else (_cursor / _totals / _n_kernels)
 
         tracker.update(1, acc=True)
         tracker.update(_amt, temporary=True)
@@ -93,7 +93,7 @@ class MonitoringWindow(MonitorClient):
             _cursor = _kernel._execution_cursor
             _totals = len(_kernel._execution_steps)
             _n_kernels = tracker.totals
-            _amt += 0 if _totals == 0 else (_cursor / _totals / _n_kernels)
+            _amt += 0 if (_totals == 0 or _n_kernels == 0) else (_cursor / _totals / _n_kernels)
         
         tracker.update(_amt, temporary=True)
         self.update(cycle=self._device.timestamp)

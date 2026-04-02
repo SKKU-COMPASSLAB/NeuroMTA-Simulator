@@ -72,13 +72,14 @@ if __name__ == "__main__":
         ifm_b, ofm_b, 
         window=WINDOW, stride=STRIDE, padding=PADDING, dilation=DILATION,
         use_collective_tile_load=False,
-    ).initialize_core_group(core_group)
+    )
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
+        core_groups=[core_group],
         spad_space_size_per_core=parse_mem_cap_str("512KB"),
         pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,

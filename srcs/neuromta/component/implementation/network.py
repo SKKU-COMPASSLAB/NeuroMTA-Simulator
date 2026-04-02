@@ -26,7 +26,7 @@ __all__ = [
     "NetworkGraphCompiledEntry",
     "NetworkGraphEntryCompileTarget",
     "NetworkGraphContext",
-    "MCA_NetworkGraphCompiler",
+    "MCA_CompiledNetworkGraph",
 ]
 
 
@@ -153,7 +153,7 @@ class NetworkGraphEntry:
         self.node_type = node_type
         self.node = node
         
-        self.subgraph: MCA_NetworkGraphCompiler = kwargs.get("subgraph", None)
+        self.subgraph: MCA_CompiledNetworkGraph = kwargs.get("subgraph", None)
         self.submodule: torch.nn.Module = kwargs.get("submodule", None)
         
         self.is_compilation_target: bool = False
@@ -196,7 +196,7 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
         self, 
         entries: 'list[NetworkGraphEntry]', 
         targets: 'list[NetworkGraphEntryCompileTarget]', 
-        core_groups: 'list[MCA_CoreGroup]',
+        # core_groups: 'list[MCA_CoreGroup]',
         compiler_recipe: MCA_OperatorGraphCompiler.CompileRecipe, 
     ):
         super().__init__(NetworkGraphEntry.Type.COMPILED, None)
@@ -209,12 +209,12 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
         self.targets = targets
         self.compiler_recipe = compiler_recipe
 
-        if len(core_groups) != len(targets):
-            raise ValueError("the number of core groups must match the number of compile targets")
+        # if len(core_groups) != len(targets):
+        #     raise ValueError("the number of core groups must match the number of compile targets")
         
         compiler = MCA_OperatorGraphCompiler()
             
-        for entry, target, core_group in zip(entries, targets, core_groups):
+        for entry, target, in zip(entries, targets):
             logger.debug(f"compiling entry: {entry} with target method: {len(target.buf_sigs)} buffer signatures")
 
             _op_method = target.op_method
@@ -222,7 +222,7 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
             _op_kwargs = target.op_kwargs
             
             op = _op_method(*_op_bufs, **_op_kwargs)
-            op.initialize_core_group(core_group)
+            # op.initialize_core_group(core_group)
             
             compiler.add_op(op)
 
@@ -230,8 +230,8 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
             recipe=compiler_recipe,
         )
         
-    def execute(self, graph_context: 'NetworkGraphContext', pcc_check: bool=False):
-        logger.debug(f"executing entry {self.__str__()}")
+    def dispatch(self, graph_context: 'NetworkGraphContext'):
+        logger.debug(f"dispatching entry {self.__str__()}")
         
         # STEP 1: load inputs to buffers
         for target in self.targets:
@@ -242,6 +242,9 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
         
         # STEP 2: execute compiled operators
         self.compiled_ops.dispatch()
+        
+    def execute(self, graph_context: 'NetworkGraphContext', pcc_check: bool=False):
+        self.dispatch(graph_context)
         
         logger.debug(f"waiting for compiled operators to finish on device 0x{id(self.compiler_recipe.device):X}...")
         self.compiler_recipe.device.run_kernels()
@@ -660,29 +663,32 @@ class NetworkGraphContext(dict):
             self.run_compiled_entry(entry, trace_mode=False, pcc_check=pcc_check)
 
 
-class MCA_NetworkGraphCompiler:
+class MCA_CompiledNetworkGraph:
     class NetworkRecipe:
         def __init__(
             self, 
             device: MCA_DeviceBase, 
-            global_core_group: MCA_CoreGroup,
-            core_group_shape: Iterable[int],
+            core_groups: list[MCA_CoreGroup],
             
             main_data_mem_space_size_per_channel: int,
             l1_data_mem_space_size_per_core: int,
             spad_mem_space_size_per_core: int,
-        ):
-            self.global_core_group = global_core_group
-            self.core_group_shape = core_group_shape
             
+            pipeline_granularity: int=8,
+            broadcast_optimize_queue_depth: int=32,
+            operator_pipelining: bool=False,
+        ):
             self.main_data_mem_space_size_per_channel = main_data_mem_space_size_per_channel
             self.l1_data_mem_space_size_per_core = l1_data_mem_space_size_per_core
             self.spad_mem_space_size_per_core = spad_mem_space_size_per_core
             
             self.compiler_recipe = MCA_OperatorGraphCompiler.CompileRecipe(
                 device=device,
+                core_groups=core_groups,
                 spad_space_size_per_core=spad_mem_space_size_per_core,
-                broadcast_optimize=True,
+                pipeline_granularity=pipeline_granularity,
+                broadcast_optimize_queue_depth=broadcast_optimize_queue_depth,
+                operator_pipelining=operator_pipelining,
             )
             
         def supports(self, module_type: type | str) -> bool:
@@ -724,7 +730,7 @@ class MCA_NetworkGraphCompiler:
         graph_nodes: list[torch.Node], 
         graph_context: NetworkGraphContext, 
         graph_entries: list[NetworkGraphEntry],
-        graph_recipe: 'MCA_NetworkGraphCompiler.NetworkRecipe',
+        graph_recipe: 'MCA_CompiledNetworkGraph.NetworkRecipe',
     ):
         self.module = module
         self.graph_ivars = graph_ivars
@@ -740,7 +746,7 @@ class MCA_NetworkGraphCompiler:
     def from_trace(
         cls, 
         module: torch.nn.Module,
-        graph_recipe: 'MCA_NetworkGraphCompiler.NetworkRecipe', 
+        graph_recipe: 'MCA_CompiledNetworkGraph.NetworkRecipe', 
         *dummy_inputs: torch.Tensor,
         disable_lowering: bool=False, disable_toposort: bool=False, disable_compile: bool=False,
     ):
@@ -790,7 +796,7 @@ class MCA_NetworkGraphCompiler:
                             entry = NetworkGraphEntry(NetworkGraphEntry.Type.PRIM, node, submodule=submodule)
                             entry.is_compilation_target = True
                         else:
-                            subgraph = MCA_NetworkGraphCompiler.from_trace(submodule, graph_recipe, *args, disable_lowering=True, disable_toposort=True, disable_compile=True)
+                            subgraph = MCA_CompiledNetworkGraph.from_trace(submodule, graph_recipe, *args, disable_lowering=True, disable_toposort=True, disable_compile=True)
                             entry = NetworkGraphEntry(NetworkGraphEntry.Type.GRAPH, node, subgraph=subgraph)
                     
                     # otherwise, the entry remains as prim::CallMethod (not compiled as runtime kernel or operator)
@@ -929,7 +935,7 @@ class MCA_NetworkGraphCompiler:
         return usage_list
     
     def _compile_targets(self, cp_targets: list[NetworkGraphEntryCompileTarget], main_mem_space: MCA_MainMemorySpace, l1_mem_space: MCA_L1MemorySpace) -> list[NetworkGraphCompiledEntry]:
-        core_groups = self.graph_recipe.global_core_group.split(self.graph_recipe.core_group_shape)
+        core_groups = self.graph_recipe.compiler_recipe.core_groups
         n_core_groups = len(core_groups)
         n_cores_per_group = core_groups[0].n_cores
 
@@ -1013,46 +1019,46 @@ class MCA_NetworkGraphCompiler:
         def _flush_chunk(
             chunk_entries: list[NetworkGraphEntry],
             chunk_targets: list[NetworkGraphEntryCompileTarget],
-            chunk_group_counts: list[int],
+            # chunk_group_counts: list[int],
         ):
             if len(chunk_targets) == 0:
                 return
 
-            assigned_groups: list[MCA_CoreGroup] = []
-            offset = 0
+            # # assigned_groups: list[MCA_CoreGroup] = []
+            # offset = 0
 
-            for req_groups in chunk_group_counts:
-                selected_subgroups = core_groups[offset: offset + req_groups]
-                merged_group = MCA_CoreGroup.merge_core_groups(selected_subgroups)
-                assigned_groups.append(merged_group)
-                offset += req_groups
+            # for req_groups in chunk_group_counts:
+            #     # selected_subgroups = core_groups[offset: offset + req_groups]
+            #     # merged_group = MCA_CoreGroup.merge_core_groups(selected_subgroups)
+            #     # assigned_groups.append(merged_group)
+            #     offset += req_groups
 
             compiled_entries.append(NetworkGraphCompiledEntry(
                 entries=chunk_entries,
                 targets=chunk_targets,
-                core_groups=assigned_groups,
+                # core_groups=assigned_groups,
                 compiler_recipe=self.graph_recipe.compiler_recipe,
             ))
 
         chunk_entries: list[NetworkGraphEntry] = []
         chunk_targets: list[NetworkGraphEntryCompileTarget] = []
-        chunk_group_counts: list[int] = []
+        # chunk_group_counts: list[int] = []
         used_groups = 0
 
         for (entry, target), req_groups in zip(normalized_targets, required_group_counts):
             if used_groups + req_groups > n_core_groups and len(chunk_targets) > 0:
-                _flush_chunk(chunk_entries, chunk_targets, chunk_group_counts)
+                _flush_chunk(chunk_entries, chunk_targets)
                 chunk_entries = []
                 chunk_targets = []
-                chunk_group_counts = []
+                # chunk_group_counts = []
                 used_groups = 0
 
             chunk_entries.append(entry)
             chunk_targets.append(target)
-            chunk_group_counts.append(req_groups)
+            # chunk_group_counts.append(req_groups)
             used_groups += req_groups
 
-        _flush_chunk(chunk_entries, chunk_targets, chunk_group_counts)
+        _flush_chunk(chunk_entries, chunk_targets)
 
         return compiled_entries
 
@@ -1063,7 +1069,7 @@ class MCA_NetworkGraphCompiler:
         
         if _allocate_mem_space:
             main_mem_space = device.create_main_mem_space(self.graph_recipe.main_data_mem_space_size_per_channel)
-            l1_mem_space = device.create_l1_mem_space(self.graph_recipe.l1_data_mem_space_size_per_core, self.graph_recipe.global_core_group)
+            l1_mem_space = device.create_l1_mem_space(self.graph_recipe.l1_data_mem_space_size_per_core, self.graph_recipe.compiler_recipe.global_core_group)
         else:
             main_mem_space = _cached_mem_spaces.get("MAIN", None)
             l1_mem_space = _cached_mem_spaces.get("L1", None)
@@ -1120,7 +1126,7 @@ class MCA_NetworkGraphCompiler:
                 raise Exception(f"exception occurred while running the entry: {entry}\n{e}") from e
         
         return self.get_outputs()
-    
+
     def print_graph(self, indent: int=0):
         print(" " * indent + f"OPEN_GRAPH[type={type(self.module).__name__}]({', '.join(list('%'+i.debugName() for i in self.graph_ivars))}):")
         for entry in self.graph_entries:

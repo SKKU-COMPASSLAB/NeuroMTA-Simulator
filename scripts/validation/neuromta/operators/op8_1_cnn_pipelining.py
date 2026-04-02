@@ -38,9 +38,7 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = device.get_npu_core_group((0, 0), (8, 8))
-    core_group_shape = (2, 2)
-    sub_core_groups = core_group.split(shape=core_group_shape)
+    core_groups = device.get_npu_core_group((0, 0), (8, 8)).split(shape=(1, 1))
     
     dtype = torch.int16
     acc_dtype = torch.int16
@@ -78,13 +76,9 @@ if __name__ == "__main__":
     relu_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_relu_ofm_shape,    dtype=relu_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32))
     maxpool_ofm_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_maxpool_ofm_shape, dtype=maxpool_ofm.dtype, shard_shape=(27, 32)).tiling((32, 32)).allocate()
     
-    conv_core_group = MCA_CoreGroup.merge_core_groups(sub_core_groups[0:14])
-    relu_core_group = sub_core_groups[14]
-    maxpool_core_group = sub_core_groups[15]
-    
-    operator1 = MCA_OP_CONV2D(x_b, conv_wgt_b, conv_bias_b, conv_ofm_b, stride=(4, 4), padding=(2, 2)).initialize_core_group(conv_core_group)
-    operator2 = MCA_OP_RELU(conv_ofm_b, relu_ofm_b).initialize_core_group(relu_core_group)
-    operator3 = MCA_OP_MAXPOOL2D(relu_ofm_b, maxpool_ofm_b, window=(3, 3), stride=(2, 2)).initialize_core_group(maxpool_core_group)
+    operator1 = MCA_OP_CONV2D(x_b, conv_wgt_b, conv_bias_b, conv_ofm_b, stride=(4, 4), padding=(2, 2))
+    operator2 = MCA_OP_RELU(conv_ofm_b, relu_ofm_b)
+    operator3 = MCA_OP_MAXPOOL2D(relu_ofm_b, maxpool_ofm_b, window=(3, 3), stride=(2, 2))
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator1)
@@ -93,9 +87,11 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
+        core_groups=core_groups,
         spad_space_size_per_core=parse_mem_cap_str("512KB"),
         pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,
+        operator_pipelining=True,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -106,25 +102,8 @@ if __name__ == "__main__":
             json.dump(summary, f, indent=4)
             logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
             
-    # profilers = {
-    #     op.op_id: ExecutionTimeProfiler(device, op.core_group, ["MEM", "EXE"])
-    #     for op in [operator1, operator2, operator3]
-    # }
-        
-    # with MonitoringWindow() as monitor:
-    #     core_group_with_names = {
-    #         "CV": conv_core_group,
-    #         "RE": relu_core_group,
-    #         "MP": maxpool_core_group,
-    #     }
-        
-    #     for core_group_name, core_group in core_group_with_names.items():
-    #         for core_id in core_group.core_ids:
-    #             core = device.get_npu_core(core_id=core_id)
-    #             pbar_idx = monitor.add_core_pbar(desc=f"{core_group_name} {core_id:<3d}", ncols=40)
-    #             monitor.pbar_handles[pbar_idx].bind_core(core)
     if args.monitor:
-        with MonitoringWindow(device, [conv_core_group, relu_core_group, maxpool_core_group]) as monitor:
+        with MonitoringWindow(device, core_groups) as monitor:
             st = time.time()
             device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()
@@ -133,11 +112,6 @@ if __name__ == "__main__":
         device.run_kernels(max_timestamp=args.max_timestamp)
         ed = time.time()
     
-    # for op_id, profiler in profilers.items():
-    #     profiler_report_path = os.path.join(SUMMARY_DIR, f"execution_time_profile_{op_id}.json")
-    #     with open(profiler_report_path, "w") as f:
-    #         json.dump(profiler.summary(), f, indent=4)
-    #         logger.info(f"Execution time profile saved to '{profiler_report_path}'.")
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
@@ -145,36 +119,6 @@ if __name__ == "__main__":
     maxpool_simulated = maxpool_ofm_b.restore().permute(0, 3, 1, 2)  # NHWC -> NCHW
     
     print(f"simulation3 {'PASSED' if torch.equal(maxpool_simulated, maxpool_ofm) else 'FAILED'}")
-    
-    # if not torch.equal(conv_simulated, conv_ofm):
-    #     mismatch_report = os.path.join(SUMMARY_DIR, "conv_mismatch_report.txt")
-    #     with open(mismatch_report, "w") as f:
-    #         content = []
-    #         s = conv_simulated.flatten()
-    #         r = conv_ofm.flatten()
-    #         for i in range(s.shape[0]):
-    #             sim_val = s[i].item()
-    #             ref_val = r[i].item()
-    #             if sim_val != ref_val:
-    #                 content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
-    #         f.writelines(content)
-    #     logger.error(f"Mismatch report saved to '{mismatch_report}'.")
-    #     logger.error(f"Total mismatches: {len(content)}/{s.numel()}")
-        
-    # if not torch.equal(relu_simulated, relu_ofm):
-    #     mismatch_report = os.path.join(SUMMARY_DIR, "relu_mismatch_report.txt")
-    #     with open(mismatch_report, "w") as f:
-    #         content = []
-    #         s = relu_simulated.flatten()
-    #         r = relu_ofm.flatten()
-    #         for i in range(s.shape[0]):
-    #             sim_val = s[i].item()
-    #             ref_val = r[i].item()
-    #             if sim_val != ref_val:
-    #                 content.append(f"Mismatch at position ({i}): simulated={sim_val}, reference={ref_val}\n")
-    #         f.writelines(content)
-    #     logger.error(f"Mismatch report saved to '{mismatch_report}'.")
-    #     logger.error(f"Total mismatches: {len(content)}/{s.numel()}")
         
     if not torch.equal(maxpool_simulated, maxpool_ofm):
         mismatch_report = os.path.join(SUMMARY_DIR, "maxpool_mismatch_report.txt")

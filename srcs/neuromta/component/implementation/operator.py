@@ -159,6 +159,17 @@ class MCA_OperatorSignature:
     def tiles(self):        return self._tiles
     @property
     def tiled_ops(self):    return self._tiled_ops
+    @property
+    def total_buffer_size(self) -> int:
+        return sum(b.total_size for b in self.buffers.values())
+    @property
+    def total_n_uops(self) -> int:
+        return sum(tiled_op.n_uops for tiled_op in self.tiled_ops)
+    @property
+    def total_arithmetic_intensity(self) -> float:
+        if self.total_buffer_size == 0:
+            return float('inf')
+        return self.total_n_uops / self.total_buffer_size
 
     
 class MCA_CompiledOperator:
@@ -384,12 +395,19 @@ class MCA_CompiledOperator:
                 if not stage.is_bubble:
                     _stages.append(stage)
                     
-            _mappings[core_id] = _stages
+            if len(_stages) > 0:    
+                _mappings[core_id] = _stages
         
         self._mappings = _mappings
         
     def dispatch(self, device: MCA_DeviceBase):
         self.freeze()
+        
+        barrier = (
+            self._env.add_variable(f"op_{self._op_id}_barrier_arrival_cnt", initial_value=0),
+            self._env.add_variable(f"op_{self._op_id}_barrier_blocking_state", initial_value=0),
+            len(self.mappings.keys()) * 3
+        )
         
         for core_id in self.mappings.keys():
             core = device.get_npu_core(core_id)
@@ -399,10 +417,12 @@ class MCA_CompiledOperator:
             st_pp_cnt_var = self._env.add_variable(f"op_{self._op_id}_core_{core_id}_st_pp_cnt", initial_value=0)
             st_pr_cnt_var = self._env.add_variable(f"op_{self._op_id}_core_{core_id}_st_pr_cnt", initial_value=0)
             
-            for stage in self.mappings[core_id]:
-                ld_thread = self._ld_thread_template(core, self._env, stage, ex_pp_cnt_var.handle_name, ex_pr_cnt_var.handle_name)
-                ex_thread = self._ex_thread_template(core, self._env, stage, self._op_ex_kernels, ex_pp_cnt_var.handle_name, ex_pr_cnt_var.handle_name, st_pp_cnt_var.handle_name, st_pr_cnt_var.handle_name)
-                st_thread = self._st_thread_template(core, self._env, stage, st_pp_cnt_var.handle_name, st_pr_cnt_var.handle_name)
+            for i, stage in enumerate(self.mappings[core_id]):
+                is_last = (i == len(self.mappings[core_id]) - 1)
+                
+                ld_thread = self._ld_thread_template(core, self._env, stage, ex_pp_cnt_var.handle_name, ex_pr_cnt_var.handle_name, barrier if is_last else None)
+                ex_thread = self._ex_thread_template(core, self._env, stage, self._op_ex_kernels, ex_pp_cnt_var.handle_name, ex_pr_cnt_var.handle_name, st_pp_cnt_var.handle_name, st_pr_cnt_var.handle_name, barrier if is_last else None)
+                st_thread = self._st_thread_template(core, self._env, stage, st_pp_cnt_var.handle_name, st_pr_cnt_var.handle_name, barrier if is_last else None)
                 
                 ld_thread.dispatch("LD")
                 ex_thread.dispatch("EX")
@@ -441,15 +461,28 @@ class MCA_OperatorGraphCompiler:
         def __init__(
             self, 
             device: MCA_DeviceBase,
+            core_groups: list[MCA_CoreGroup],
             spad_space_size_per_core: int,
             pipeline_granularity: int=8,
-            broadcast_optimize_queue_depth: int=8
+            broadcast_optimize_queue_depth: int=16,
+            operator_pipelining: bool=False,
         ):
+            if len(core_groups) == 0:
+                raise ValueError("At least one core group must be provided.")
+            if not isinstance(core_groups[0], (MCA_CoreGroup, list)):
+                core_groups = [core_groups]
+
             self.device                         = device
+            self.core_groups = core_groups
             self.spad_space_size_per_core       = spad_space_size_per_core
             self.pipeline_granularity           = pipeline_granularity
             self.broadcast_optimize_queue_depth = broadcast_optimize_queue_depth
-                
+            self.operator_pipelining            = operator_pipelining
+        
+        @property
+        def global_core_group(self) -> MCA_CoreGroup:
+            return MCA_CoreGroup.merge_core_groups(self.core_groups)
+        
         @property
         def broadcast_optimize(self) -> bool:
             return self.broadcast_optimize_queue_depth > 0
@@ -540,9 +573,6 @@ class MCA_OperatorGraphCompiler:
                     return f"SrcType(TILE_SHARED from {self.k})"
         
         def __init__(self, op_sig: 'MCA_OperatorSignature', recipe: 'MCA_OperatorGraphCompiler.CompileRecipe'):
-            if not op_sig.is_core_group_initialized:
-                raise ValueError(f"Core group must be initialized for operator {op_sig.op_id} before creating metadata.")
-            
             self.op_sig = op_sig
             # self.spad_space_size_per_pp = recipe.spad_space_size_per_core // 2
             self.spad_space_size_per_core = recipe.spad_space_size_per_core
@@ -777,8 +807,55 @@ class MCA_OperatorGraphCompiler:
                 fifo_handle.mem_ptr.addr = ptr.addr
             self.fifo_buffers[name] = fifo_handle
             return fifo_handle
+        
+        def allocate_core_groups(self):
+            core_groups = self.recipe.core_groups
+            n_core_groups = len(core_groups)
+            
+            if (n_core_groups < len(self.op_meta)) or (not self.recipe.operator_pipelining):
+                for i, op_id in enumerate(self.op_meta.keys()):
+                    op_sig = self.op_meta[op_id].op_sig
+                    op_sig.initialize_core_group(self.recipe.global_core_group)
+                return
+            
+            remaining_core_groups = n_core_groups - len(self.op_meta)
+            core_group_allocation_map = {i: 1 for i in self.op_meta.keys()}  # {op_id: n_core_groups_allocated}  
+            total_arithmetic_intensity = sum(op_meta.op_sig.total_arithmetic_intensity for op_meta in self.op_meta.values())
+            
+            if remaining_core_groups > 0 and total_arithmetic_intensity > 0:
+                allocation_data = []
+                for op_id, op_meta in self.op_meta.items():
+                    exact_allocation = (op_meta.op_sig.total_arithmetic_intensity / total_arithmetic_intensity) * remaining_core_groups
+                    floor_allocation = math.floor(exact_allocation)
+                    remainder = exact_allocation - floor_allocation
+                    
+                    core_group_allocation_map[op_id] += floor_allocation
+                    allocation_data.append((op_id, remainder))
+                    
+                current_allocated = sum(core_group_allocation_map.values())
+                leftover_core_groups = n_core_groups - current_allocated
+                
+                allocation_data.sort(key=lambda x: x[1], reverse=True)
+                
+                for i in range(leftover_core_groups):
+                    op_id, _ = allocation_data[i]
+                    core_group_allocation_map[op_id] += 1
+                
+            for op_id in self.target_op_order:
+                op_sig = self.op_meta[op_id].op_sig
+                n_allocated_core_groups = core_group_allocation_map[op_id]
+                allocated_core_groups = core_groups[:n_allocated_core_groups]
+                core_groups = core_groups[n_allocated_core_groups:]
+                
+                merged_core_group = MCA_CoreGroup.merge_core_groups(allocated_core_groups)
+                op_sig.initialize_core_group(merged_core_group)
+                
+                logger.debug(f"allocated core group {merged_core_group} for operator {op_id} (allocated {n_allocated_core_groups} core groups).")
             
         def freeze(self):
+            if any(not op_meta.op_sig.is_core_group_initialized for op_meta in self.op_meta.values()):
+                self.allocate_core_groups()
+                
             pipeline_targets: list[set[str]] = [set()]
             merge_targets: list[set[str]] = []  # set of operator IDs that have been merged into the current pipeline target (to avoid merging the same operator multiple times)
             

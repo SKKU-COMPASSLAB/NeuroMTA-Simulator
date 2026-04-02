@@ -26,6 +26,7 @@ def MCA_KERNEL_CORE_LD_THREAD(
     stage: MCA_CompiledOperator.Stage,
     ex_pp_cnt_var_name: str,
     ex_pr_cnt_var_name: str,
+    gb_barrier: tuple[VariableHandle, VariableHandle, int] = None,
 ):
     
     core.var_atomic_compare_and_swap(env.variables[ex_pp_cnt_var_name], 0, 1)
@@ -78,6 +79,9 @@ def MCA_KERNEL_CORE_LD_THREAD(
                 
     core.parallel_merge()
     
+    if gb_barrier is not None:
+        core.var_atomic_barrier(*gb_barrier)
+    
 @jit_prototype
 def MCA_KERNEL_CORE_EX_THREAD(
     core: NPUCore, 
@@ -88,6 +92,7 @@ def MCA_KERNEL_CORE_EX_THREAD(
     ex_pr_cnt_var_name: str,
     st_pp_cnt_var_name: str,
     st_pr_cnt_var_name: str,
+    gb_barrier: tuple[VariableHandle, VariableHandle, int] = None,
 ):
     core.var_atomic_compare_and_swap(env.variables[ex_pp_cnt_var_name], 1, 0)
     core.var_atomic_compare_and_swap(env.variables[st_pp_cnt_var_name], 0, 1)
@@ -106,6 +111,9 @@ def MCA_KERNEL_CORE_EX_THREAD(
         
         core.var_atomic_increase(env.variables[ex_pr_cnt_var_name], -1)
         core.var_atomic_increase(env.variables[st_pr_cnt_var_name], 1)
+        
+    if gb_barrier is not None:
+        core.var_atomic_barrier(*gb_barrier)
 
 @jit_prototype
 def MCA_KERNEL_CORE_ST_THREAD(
@@ -114,6 +122,7 @@ def MCA_KERNEL_CORE_ST_THREAD(
     stage: MCA_CompiledOperator.Stage,
     st_pp_cnt_var_name: str,
     st_pr_cnt_var_name: str,
+    gb_barrier: tuple[VariableHandle, VariableHandle, int] = None,
 ):  
     core.var_atomic_compare_and_swap(env.variables[st_pp_cnt_var_name], 1, 0)
     
@@ -139,3 +148,6 @@ def MCA_KERNEL_CORE_ST_THREAD(
                 raise Exception(f"Unsupported IR type '{type(ir).__name__}' in store thread kernel.")
         
         core.var_atomic_increase(env.variables[st_pr_cnt_var_name], -1)
+        
+    if gb_barrier is not None:
+        core.var_atomic_barrier(*gb_barrier)
