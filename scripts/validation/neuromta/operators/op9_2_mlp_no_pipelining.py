@@ -2,6 +2,7 @@ import os
 import json
 import time
 import torch
+import argparse
 
 from neuromta.framework import *
 from neuromta.component import *
@@ -19,6 +20,15 @@ os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Validate OP6 AvgPool2D operator on Tenstorrent hardware.")
+    parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
+    parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
+    parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
+    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
+    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
+    args = parser.parse_args()
+
     torch.set_printoptions(linewidth=1024)
     logger.set_print_options(log_level=LogLevel.DEBUG)
     
@@ -26,7 +36,7 @@ if __name__ == "__main__":
     device = TenstorrentDevice(**config)
     
     device.initialize()
-    device.set_command_debug_verbosity(verbose=True)
+    device.set_command_debug_verbosity(verbose=args.debug_command)
     
     core_group = device.get_npu_core_group((0, 0), (12, 14))
     core_group_shape = (2, 2)
@@ -34,7 +44,7 @@ if __name__ == "__main__":
     
     dtype = torch.int16
     acc_dtype = torch.int16
-    broadcast_optimize = False  # Enable broadcast optimization to reduce memory and NoC traffic
+    # # broadcast_optimize = not args.no_bcast  # Enable broadcast optimization to reduce memory and NoC traffic
     sim_mode = "partial_l1"
     
     BS = 32
@@ -102,7 +112,9 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        spad_space_size_per_core=parse_mem_cap_str("128KB")
+        spad_space_size_per_core=parse_mem_cap_str("64KB"),
+        pipeline_granularity=args.pipeline_gran,
+        broadcast_optimize_queue_depth=args.bcast_queue_depth,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -112,15 +124,28 @@ if __name__ == "__main__":
         with open(tmp_output_path, "w") as f:
             json.dump(summary, f, indent=4)
             logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
-        
-    with MonitoringWindow(device, sub_core_groups[0:5]) as monitor:
+    
+    if args.monitor:
+        with MonitoringWindow(device, sub_core_groups[0:5]) as monitor:
+            st = time.time()
+            device.run_kernels(max_timestamp=args.max_timestamp)
+            ed = time.time()
+    else:
         st = time.time()
-        device.run_kernels()
+        device.run_kernels(max_timestamp=args.max_timestamp)
         ed = time.time()
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
     
+    linear1_simulated = linear1_ofm_b.restore()
+    relu1_simulated   = relu1_ofm_b.restore()
+    linear2_simulated = linear2_ofm_b.restore()
+    relu2_simulated   = relu2_ofm_b.restore()
     linear3_simulated = linear3_ofm_b.restore()
     
-    print(f"simulation3 {'PASSED' if torch.equal(linear3_simulated, linear3_ofm) else 'FAILED'}")
+    print(f"simulation1 {'PASSED' if torch.equal(linear1_simulated, linear1_ofm) else 'FAILED'}")
+    print(f"simulation2 {'PASSED' if torch.equal(relu1_simulated,   relu1_ofm  ) else 'FAILED'}")
+    print(f"simulation3 {'PASSED' if torch.equal(linear2_simulated, linear2_ofm) else 'FAILED'}")
+    print(f"simulation4 {'PASSED' if torch.equal(relu2_simulated,   relu2_ofm  ) else 'FAILED'}")
+    print(f"simulation5 {'PASSED' if torch.equal(linear3_simulated, linear3_ofm) else 'FAILED'}")

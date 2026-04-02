@@ -359,6 +359,7 @@ class Command:
 
     def run_behavioral_model(self, core: 'Core', kernel: 'Kernel'):
         with new_global_context(GlobalContextMode.EXECUTE, core, kernel):
+            # with print_log_execution_time(f"COMMAND {self.cmd_id}", disable=kernel.slot_id!="LD"):
             model = core.get_behavioral_model(self.cmd_id)
             try:
                 self._is_behavioral_model_called = True
@@ -367,7 +368,7 @@ class Command:
                 logger.error(f"Exception occurred while executing behavioral model for command '{self.cmd_id}': {e}")
                 logger.error(f"  - Core: {type(core).__name__}(id={core.core_id}) | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
                 raise e
-        
+            
     def run_cycle_model(self, core: 'Core', kernel: 'Kernel') -> int:
         with new_global_context(GlobalContextMode.EXECUTE, core, kernel):
             model = core.get_cycle_model(self.cmd_id)
@@ -614,7 +615,7 @@ class Kernel:
             step.update_cycle_time(core, cycle_time)
             if step.is_finished(core):
                 self._execution_cursor += 1
-        
+    
         if self._commit_time is None and self.is_finished(core):
             self._commit_time = core.timestamp + cycle_time
             core.run_kernel_debug_hook(self)
@@ -725,10 +726,6 @@ class Kernel:
                 for k in step:
                     k.slot_level = value + 1
     
-    # @property
-    # def activated_cycles(self) -> int:
-    #     return self._activated_cnt
-    
     @property
     def issue_time(self) -> int | None:
         return self._issue_time
@@ -736,7 +733,21 @@ class Kernel:
     @property
     def commit_time(self) -> int | None:
         return self._commit_time
-
+    
+    def check_all_blocked(self, core: 'Core') -> bool:
+        if self.is_blocked:
+            return True
+        
+        step = self.current_step(core)
+        
+        if isinstance(step, Command):
+            return False
+        elif isinstance(step, Kernel):
+            return step.check_all_blocked(core)
+        elif isinstance(step, ThreadGroup):
+            return all(k.check_all_blocked(core) for k in step)
+        else:
+            return False
 
 class CoreCycleModel:
     def __init__(self):
@@ -755,7 +766,6 @@ class Core:
 
         self._suspended_main_kernels: dict[str, list[Kernel | KernelPrototype]] = {}
         self._suspended_rpc_req_msg: dict[str, RPCMessage] = {}
-        # self._suspended_rpc_rsp_msg: dict[str, RPCMessage] = {}
         self._suspended_rpc_to_main_kernels_mapping: dict[str, str] = {}  # RPC request message ID -> main kernel slot ID (to resume the main kernel when the RPC response is received)
         self._suspended_rpc_kernel_blocking_condition: dict[str, list[Kernel]] = {}  # RPC kernel ID -> blocking condition (RPC request message)
 
@@ -864,12 +874,15 @@ class Core:
         self._rpc_rsp_msg_receive_routine()      # receive RPC response message and register them as suspended
         
     def update_cycle_time(self, cycle_time: int):
+        ############## SLOW POINT ##############
         main_kernel_slot_ids = list(self._dispatched_main_kernels.keys())
         
         for slot_id in main_kernel_slot_ids:
+            # with print_log_execution_time(f"UPDATE CYCLE TIME FOR MAIN KERNEL '{self.core_id}::{slot_id}'", disable=slot_id!="LD"):
+            #     with print_log_execution_time(f"BREAKDOWN 1", disable=slot_id!="LD"):
             kernel = self._dispatched_main_kernels[slot_id]
             kernel.update_cycle_time(self, cycle_time)
-            
+
             if kernel.is_finished(self):
                 self._dispatched_main_kernels.pop(slot_id) # if the kernel is main kernel, simply remove the kernel from the "dispatched_kernels" dictionary
                 
@@ -880,6 +893,7 @@ class Core:
                             suspended_kernel = suspended_kernel.compile()
                         suspended_kernel.root_kernel_id = f"MAIN<{slot_id}>"
                         self._dispatched_main_kernels[slot_id] = suspended_kernel  # TODO: directly dispatch the suspended kernel without going through the dispatch_main_kernel() method
+        ########################################
         
         rpc_kernel_slot_ids  = list(self._dispatched_rpc_kernels.keys())
         
@@ -891,7 +905,22 @@ class Core:
                 self._rpc_req_kernel_remove_and_rsp_send_routine(slot_id)  # generate RPC response if the current ongoing RPC message is properly handled
 
         self._timestamp += cycle_time
-    
+        
+    def check_all_blocked(self) -> bool:
+        for kernel in self._dispatched_main_kernels.values():
+            if kernel.is_finished(self):
+                continue
+            if not kernel.check_all_blocked(self):
+                return False
+        
+        for kernel in self._dispatched_rpc_kernels.values():
+            if kernel.is_finished(self):
+                continue
+            if not kernel.check_all_blocked(self):
+                return False
+        
+        return True
+        
     ###########################################################################
     # Debugging Methods
     ###########################################################################
@@ -1017,7 +1046,7 @@ class Core:
         
         self._rpc_req_send_inbox[req_msg.dst_core_id].append(req_msg)
         self._suspended_rpc_req_msg[msg_id] = req_msg
-        self._suspended_rpc_to_main_kernels_mapping[msg_id] = get_global_kernel_context().root_kernel_id
+        self._suspended_rpc_to_main_kernels_mapping[msg_id] = context.root_kernel_id
         
     @core_command_method
     def async_rpc_wait_rsp_msg(self, req_msg: RPCMessage, _debug: bool=False):
@@ -1183,7 +1212,7 @@ class Core:
             row_pattern = {i: i for i in range(row_num)}
             
         if container.is_mem_segment:
-            container.data = container.data.detach().clone().flatten().view(torch.uint8).reshape(-1, cont_row_stride)
+            container.data = container.data.flatten().view(torch.uint8).reshape(-1, cont_row_stride)
         else:
             container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
         
@@ -1206,7 +1235,7 @@ class Core:
         if not container.is_mem_segment:
             raise ValueError("container.data must be a Tensor for local_mem_page_write.")
 
-        cont_data = container.data.detach().clone().flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
+        cont_data = container.data.flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
         
         for d, s in row_pattern.items():
             dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
@@ -1259,12 +1288,10 @@ class Core:
         var.atomic_compare_and_swap(cmp_value, new_value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
         
     @core_command_method
-    def var_conditional_wait(self, vars: list[VariableHandle], condition: Callable[[int], bool]):
-        for v in vars:
-            if not condition(v.value):
-                context = get_global_kernel_context()
-                context.set_blocked(self, True)
-                v.atimic_wait_conditional(condition, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context)) 
+    def var_conditional_wait(self, var: VariableHandle, condition: 'VariableHandle.ActionCondition'):
+        context = get_global_kernel_context()
+        context.set_blocked(self, True)
+        var.atomic_wait_conditional(condition, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context)) 
         
     @core_command_method
     def var_atomic_wait(self, var: VariableHandle, expected_value: int):
@@ -1278,42 +1305,24 @@ class Core:
         context.set_blocked(self, True)
         var.atomic_increase(increment, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
     
-    @jit_prototype
-    def fifo_allocate(self, buf: FIFOBufferHandle):
-        self.allocate_static_mem_space(ptr=buf.mem_ptr, size=buf.entry_size * buf.depth)
-        
-    @jit_prototype
-    def fifo_deallocate(self, buf: FIFOBufferHandle):
-        self.deallocate_static_mem_space(ptr=buf.mem_ptr)
-    
     @core_command_method
-    def fifo_wait_until_vacant(self, buf: FIFOBufferHandle, entry_id: VariableHandle | int):
-        if isinstance(entry_id, int):
-            entry_id = VariableHandle.tmp(initial_value=entry_id)
-            
+    def fifo_wait_until_vacant(self, buf: FIFOBufferHandle, entry_id: int):
         context = get_global_kernel_context()
         context.set_blocked(self, True)
         buf.wait_until_vacant(entry_id, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
         
     @core_command_method
-    def fifo_wait_until_valid(self, buf: FIFOBufferHandle, entry_id: VariableHandle | int):
-        if isinstance(entry_id, int):
-            entry_id = VariableHandle.tmp(initial_value=entry_id)
-            
+    def fifo_wait_until_valid(self, buf: FIFOBufferHandle, entry_id: int):
         context = get_global_kernel_context()
         context.set_blocked(self, True)
         buf.wait_until_valid(entry_id, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
         
     @core_command_method
-    def fifo_push(self, buf: FIFOBufferHandle, entry_id: VariableHandle | int, ref_count: int=1):
-        if isinstance(entry_id, int):
-            entry_id = VariableHandle.tmp(initial_value=entry_id)
+    def fifo_push(self, buf: FIFOBufferHandle, entry_id: int, ref_count: int=1):
         buf.write_entry(entry_id, ref_count)
         
     @core_command_method
-    def fifo_pop(self, buf: FIFOBufferHandle, entry_id: VariableHandle | int):
-        if isinstance(entry_id, int):
-            entry_id = VariableHandle.tmp(initial_value=entry_id)        
+    def fifo_pop(self, buf: FIFOBufferHandle, entry_id: int):     
         buf.read_entry(entry_id)
         
     ###########################################################################

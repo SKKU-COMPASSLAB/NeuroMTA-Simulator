@@ -21,15 +21,15 @@ os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate OP3 Conv2D operator on Tenstorrent hardware.")
-    parser.add_argument('--no-bcast', action="store_true", help="Whether not to use broadcast", dest="no_bcast")
     parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
     parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
+    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
+    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
     args = parser.parse_args()
 
     torch.set_printoptions(profile="full", linewidth=2048)
-    # torch.set_printoptions(linewidth=1024)
-    # logger.set_print_options(log_level=LogLevel.DEBUG if args.debug_command else LogLevel.INFO)
     logger.set_print_options(log_level=LogLevel.DEBUG)
     torch.manual_seed(0)
     
@@ -59,11 +59,7 @@ if __name__ == "__main__":
     
     dtype = torch.int16
     acc_dtype = torch.int16
-    broadcast_optimize = not args.no_bcast  # Enable broadcast optimization to reduce memory and NoC traffic
     
-    # ifm  = torch.randint(low=0, high=64, size=(N, H, W, C), dtype=dtype)
-    # wgt  = torch.randint(low=0, high=64, size=(FH, FW, K, C), dtype=dtype)
-    # bias = torch.randint(low=0, high=64, size=(K,), dtype=acc_dtype)
     ifm  = torch.ones((N, H, W, C), dtype=dtype)
     wgt  = torch.ones((FH, FW, K, C), dtype=dtype)
     bias = torch.ones((K,), dtype=acc_dtype) * 2
@@ -93,7 +89,8 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         spad_space_size_per_core=parse_mem_cap_str("128KB"),
-        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0,
+        pipeline_granularity=args.pipeline_gran,
+        broadcast_optimize_queue_depth=args.bcast_queue_depth,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -118,11 +115,11 @@ if __name__ == "__main__":
     if args.monitor:
         with MonitoringWindow(device, core_group, profilers) as monitor:
             st = time.time()
-            device.run_kernels()
+            device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()
     else:
         st = time.time()
-        device.run_kernels()
+        device.run_kernels(max_timestamp=args.max_timestamp)
         ed = time.time()
         
     profiler_saver.close()

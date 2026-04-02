@@ -203,10 +203,13 @@ class MainMemoryConfig:
         n_cmd_q_per_instance: int   = 8,
         
         # DRAMSim3 Configuation (if needed)
-        dramsim3_enable: bool           = False,
+        dramsim3_enable: bool           = None,
         dramsim3_src_config_path: str   = "GDDR6_8Gb_x16.ini",
         dramsim3_dst_config_path: str   = "dramsim3_config.ini",
     ):
+        if dramsim3_enable is None:
+            dramsim3_enable = PYDRAMSIM3_AVAILABLE
+        
         self.transfer_speed         = transfer_speed    # transfer speed per pin (MT/s)
         self.ch_io_width            = ch_io_width       # io channel width (bits)
         self.burst_len              = burst_len         # burst length
@@ -231,7 +234,14 @@ class MainMemoryConfig:
                 n_cmd_q_per_instance=n_cmd_q_per_instance,
             )
         else:
-            self.dramsim3_config = None
+            self.dramsim3_config = DRAMSim3Config(
+                processor_clock_freq=processor_clock_freq,
+                n_instance=n_instance,
+                channel_size=channel_size,
+                n_channel_per_instance=n_channel_per_instance,
+                n_cmd_q_per_instance=n_cmd_q_per_instance,
+                bandwidth_per_instance= (transfer_speed * ch_io_width * n_channel_per_instance) / 8 / processor_clock_freq,  # Byte/cycle
+            )
         
     @property
     def n_instance(self) -> int:
@@ -414,7 +424,7 @@ class GlobalContext:
         return None
     
     def get_main_mem_access_args(self, ptr: Pointer, size: int, is_write: bool) -> dict[str, int] | None:
-        if not self.config.main_mem_config.dramsim3_enable:
+        if self.config.main_mem_config.dramsim3_config is None:
             return None
         
         addr = ptr.addr - self.main_mem_base_addr

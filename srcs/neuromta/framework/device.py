@@ -23,6 +23,8 @@ class Device:
         
         self._companion_core = CompanionCore()
         
+        self._timestamp = 0
+        
     def get_core_from_id(self, core_id: int) -> Core:
         return self._cores[core_id]
         
@@ -92,12 +94,6 @@ class Device:
         if len(callstack) > 100:
             callstack = callstack[:47] + " ... " + callstack[-47:]
         logger.debug(f"{issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {callstack:<100s} | command: {cmd.cmd_id}")
-        
-        # if cmd.cmd_id == "dispatch_command_with_module":
-        #     print(f"    >> Companion Command Dispatched: {cmd.args[0] if len(cmd.args) > 0 else cmd.kwargs.get('cmd', 'N/A')}")
-        #     print(f"       module_id: {cmd.kwargs.get('module_id', 'N/A')}")
-        #     print(f"       issue_time: {issue_time}, commit_time: {commit_time}")
-        #     input("        Press Enter to continue...")
 
     def run_single_step(self, cycle_resolution: int = 1):
         if not self.is_initialized:
@@ -109,15 +105,14 @@ class Device:
             core.rpc_update_routine()
         
         for core_id, core in self.initialized_cores.items():
+            if core.is_idle:
+                continue
             c = core.get_remaining_cycles()
             
             if remaining_cycles is None:
                 remaining_cycles = c
             elif c is not None:
                 remaining_cycles = min(remaining_cycles, c)
-                
-        # if remaining_cycles == 0 or remaining_cycles is None:
-        #     remaining_cycles = cycle_resolution
 
         if remaining_cycles == 0 or remaining_cycles is None:
             remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
@@ -128,21 +123,24 @@ class Device:
             self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
 
         for core_id, core in self.initialized_cores.items():
-            core.update_cycle_time(cycle_time=remaining_cycles)
+            if core.is_idle:
+                core._timestamp += remaining_cycles
+            else:
+                core.update_cycle_time(cycle_time=remaining_cycles)
+                
+        self._timestamp += remaining_cycles
 
     def run_kernels(
         self, 
         cycle_resolution:   int  = 1,   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
         max_steps:          int  = -1,  # the maximum number of steps to run
         max_timestamp:      int  = -1,  # the maximum timestamp to run
-        # sync_target_cores:  Sequence[int] = None,  # the target cores to synchronize after each step; if None, all cores are synchronized
         
         sync_target_core_groups: Sequence[Sequence[int]] = None,  # the target core groups to synchronize after each step; if None, all cores are synchronized
     ):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
         
-        # core_ids = list(self._cores.keys()) if sync_target_cores is None else sync_target_cores
         if sync_target_core_groups is None:
             core_ids = list(self._cores.keys())
             sync_target_core_groups = [core_ids]
@@ -152,6 +150,7 @@ class Device:
                 core_ids.extend(group)
                 
         step_cnt = 0
+        deadlock_cnt = 0
 
         # while not all(self.initialized_cores[core_id].is_idle for core_id in core_ids):
         while True:
@@ -161,46 +160,34 @@ class Device:
             step_cnt += 1
             if step_cnt >= max_steps > 0:
                 logger.debug(f"Reached maximum steps: {max_steps}. Stopping simulation.")
+                self.debug_current_execution_state(*core_ids)
                 break
             
             # break condition: timestamp
             if self.timestamp >= max_timestamp > 0:
                 logger.debug(f"Reached maximum timestamp: {max_timestamp}. Stopping simulation.")
-                for core_id in core_ids:
-                    core = self.initialized_cores[core_id]
-                    if len(core._dispatched_main_kernels) == 0:
-                        continue
-                    logger.debug(f"Core '{core_id}'")
-                    for slot_id, kernel in core._dispatched_main_kernels.items():
-                        logger.debug(f"  KERNEL {kernel.callstack}")
-                        step = kernel.current_step(core)
-                        
-                        def print_step_info(step):
-                            if isinstance(step, Kernel):
-                                if step.is_finished(core):
-                                    return
-                                logger.debug(f"    calls KERNEL {step.callstack}")
-                                print_step_info(step.current_step(core))
-                            elif isinstance(step, ThreadGroup):
-                                for sub_step in step:
-                                    if not sub_step.is_finished(core):
-                                        logger.debug(f"    calls THREAD {sub_step.callstack}" + (" (blocked)" if sub_step.is_blocked else ""))
-                                        print_step_info(sub_step.current_step(core))
-                            else:
-                                logger.debug(f"     -> COMMAND {step}")
-                        
-                        print_step_info(step)
+                self.debug_current_execution_state(*core_ids)
                 break
             
-            # break condition: IDLE synchronization targets
+            # break condition: idle synchronization targets
             is_idle = False
             for sync_group in sync_target_core_groups:
                 is_idle = all(self.initialized_cores[core_id].is_idle for core_id in sync_group)
                 if not is_idle:
                     break
             if is_idle:
-                logger.debug(f"All synchronization target cores are idle. Stopping simulation.")
+                logger.debug(f"Synchronization target cores are idle. Stopping simulation.")
                 break
+            
+            # break condition: deadlock
+            if self.check_deadlock(*core_ids):
+                deadlock_cnt += 1
+                if deadlock_cnt >= 10:  # threshold for deadlock detection
+                    logger.error(f"Deadlock detected among cores {core_ids}. Stopping simulation.")
+                    self.debug_current_execution_state(*core_ids)
+                    break
+            else:
+                deadlock_cnt = 0
 
     def register_command_debug_hook(self, hook: Callable):
         if not self.is_initialized:
@@ -222,11 +209,58 @@ class Device:
         for core_id in core_ids:
             core = self._cores[core_id]
             core.register_kernel_debug_hook(hook, slot_id)
-
+            
+    def check_deadlock(self, *core_ids: int | str) -> bool:
+        if not self.is_initialized:
+            raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
+        
+        is_not_deadlock = False
+        
+        for core_id in core_ids:
+            core = self._cores[core_id]
+            if not core.check_all_blocked():
+                is_not_deadlock = True
+                break
+            if core.core_id == self.companion_core.core_id and not self.companion_core.check_idle():
+                is_not_deadlock = True
+                break
+            
+        return not is_not_deadlock
+    
+    def debug_current_execution_state(self, *core_ids: int | str):
+        for core_id in core_ids:
+            core = self.initialized_cores[core_id]
+            if len(core._dispatched_main_kernels) == 0:
+                continue
+            logger.debug(f"Core '{core_id}'")
+            for slot_id, kernel in core._dispatched_main_kernels.items():
+                if kernel.is_finished(core):
+                    continue
+                
+                logger.debug(f"  KERNEL {kernel.callstack}")
+                step = kernel.current_step(core)
+                
+                def print_step_info(step):
+                    if isinstance(step, Kernel):
+                        if step.is_finished(core):
+                            return
+                        logger.debug(f"    calls KERNEL {step.callstack}")
+                        print_step_info(step.current_step(core))
+                    elif isinstance(step, ThreadGroup):
+                        for sub_step in step:
+                            if not sub_step.is_finished(core):
+                                logger.debug(f"    calls THREAD {sub_step.callstack}" + (" (blocked)" if sub_step.is_blocked else ""))
+                                print_step_info(sub_step.current_step(core))
+                    else:
+                        logger.debug(f"     -> COMMAND {step}")
+                
+                print_step_info(step)
+        
     @property
     def timestamp(self) -> int:
-        t = [core.timestamp for core in self._cores.values()]
-        return max(t) if t else 0
+        # t = [core.timestamp for core in self._cores.values()]
+        # return max(t) if t else 0
+        return self._timestamp
 
     @property
     def is_initialized(self) -> bool:

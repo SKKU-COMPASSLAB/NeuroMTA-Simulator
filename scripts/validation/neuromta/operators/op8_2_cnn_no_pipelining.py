@@ -2,6 +2,7 @@ import os
 import json
 import time
 import torch
+import argparse
 
 from neuromta.framework import *
 from neuromta.component import *
@@ -19,6 +20,15 @@ os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Validate OP6 AvgPool2D operator on Tenstorrent hardware.")
+    parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
+    parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
+    parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
+    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
+    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
+    args = parser.parse_args()
+
     torch.set_printoptions(linewidth=1024)
     logger.set_print_options(log_level=LogLevel.DEBUG)
     
@@ -26,15 +36,13 @@ if __name__ == "__main__":
     device = TenstorrentDevice(**config)
     
     device.initialize()
-    device.set_command_debug_verbosity(verbose=True)
+    device.set_command_debug_verbosity(verbose=args.debug_command)
     
     core_group = device.get_npu_core_group((0, 0), (8, 8))
-    # core_group_shape = (4, 4)
-    # sub_core_groups = core_group.split(shape=core_group_shape)
     
     dtype = torch.int16
     acc_dtype = torch.int16
-    broadcast_optimize = False  # Enable broadcast optimization to reduce memory and NoC traffic
+    # # broadcast_optimize = not args.no_bcast  # Enable broadcast optimization to reduce memory and NoC traffic
     sim_mode = "partial_l1"
     
     x = torch.randint(low=-64, high=64, size=(1, 3, 224, 224), dtype=dtype)
@@ -84,7 +92,9 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        spad_space_size_per_core=parse_mem_cap_str("512KB")
+        spad_space_size_per_core=parse_mem_cap_str("512KB"),
+        pipeline_granularity=args.pipeline_gran,
+        broadcast_optimize_queue_depth=args.bcast_queue_depth,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -100,9 +110,14 @@ if __name__ == "__main__":
         for op in [operator1, operator2, operator3]
     }
     
-    with MonitoringWindow(device, core_group) as monitor:
+    if args.monitor:
+        with MonitoringWindow(device, core_group) as monitor:
+            st = time.time()
+            device.run_kernels(max_timestamp=args.max_timestamp)
+            ed = time.time()
+    else:
         st = time.time()
-        device.run_kernels()
+        device.run_kernels(max_timestamp=args.max_timestamp)
         ed = time.time()
         
     for op_id, profiler in profilers.items():

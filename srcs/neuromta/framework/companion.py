@@ -170,3 +170,8 @@ class CompanionCore(Core):
         cmd = cmod.create_command(*args, **kwargs)
         self.dispatch_command_with_module(module_id, cmd)
         
+    def check_idle(self):
+        return len(self._command_execution_context) == 0
+    
+    def check_all_blocked(self):
+        return super().check_all_blocked()

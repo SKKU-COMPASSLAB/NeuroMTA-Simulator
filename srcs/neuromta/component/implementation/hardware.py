@@ -227,11 +227,10 @@ class MCA_DeviceBase(Device):
         if icnt_config is not None:
             self.icnt_context = IcntContext(config=icnt_config)
             
-            if self.icnt_context.booksim2_enable:
-                self.companion_core.register_companion_module(
-                    self.global_context.config.booksim_module_id,
-                    module=BookSim2(config=self.icnt_context.config.booksim2_config)
-                )
+            self.companion_core.register_companion_module(
+                self.global_context.config.booksim_module_id,
+                module=BookSim2(config=self.icnt_context.config.booksim2_config)
+            )
         else:
             self.icnt_context = None
         
@@ -254,7 +253,7 @@ class MCA_DeviceBase(Device):
             for core_id in self.dma_core_ids
         ]
         
-        if self.global_context.config.main_mem_config.dramsim3_enable:
+        if self.global_context.config.main_mem_config.dramsim3_config is not None:
             self.companion_core.register_companion_module(
                 self.global_context.config.dramsim_module_id,
                 module=DRAMSim3(config=self.global_context.config.main_mem_config.dramsim3_config)
@@ -335,10 +334,6 @@ class MCA_DeviceBase(Device):
             "global_config": self.global_context.config.summary(),
             "mxu_config": self.mxu_config,
             "vpu_config": self.vpu_config,
-            # "mem_config": {
-            #     "l1_config": self.mem_context.l1_config.summary(),
-            #     "main_config": self.mem_context.main_config.summary(),
-            # }
         }
         
     def print_summary(self):

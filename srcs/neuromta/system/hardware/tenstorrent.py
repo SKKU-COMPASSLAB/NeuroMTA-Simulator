@@ -80,10 +80,10 @@ class TenstorrentConfig(dict):
             max_payload_size=4,                     # - 4 in flits in maximum as a payload = 256B
             booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 64B * 5 * 1GHz = 320GB/s
             booksim2_kwargs={
-                "in_ports": 32,
-                "out_ports": 32,
-                "input_speedup": 32,
-                "output_speedup": 32,
+                "in_ports": 1,
+                "out_ports": 1,
+                "input_speedup": 1,
+                "output_speedup": 1,
             }
         )
         

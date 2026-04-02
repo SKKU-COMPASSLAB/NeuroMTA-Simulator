@@ -62,7 +62,7 @@ if __name__ == "__main__":
         device, core_group1, spad_ld_pp_space1, spad_st_pp_space1, 
         ifm_b1, wgt_b1, bias_b1, ofm_b1, 
         stride=STRIDE, padding=PADDING, dilation=DILATION,
-        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0, 
+        broadcast_optimize_queue_depth=8 if broadcast_optimize else 0, 
         auto_dispatch=True, 
         mapping_strategy=MCA_OperatorMapper.CONTIGUOUS
     )
@@ -80,7 +80,7 @@ if __name__ == "__main__":
         device, core_group2, spad_ld_pp_space2, spad_st_pp_space2, 
         ifm_b2, wgt_b2, bias_b2, ofm_b2, 
         stride=STRIDE, padding=PADDING, dilation=DILATION,
-        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0, 
+        broadcast_optimize_queue_depth=8 if broadcast_optimize else 0, 
         auto_dispatch=True, 
         mapping_strategy=MCA_OperatorMapper.CONTIGUOUS
     )

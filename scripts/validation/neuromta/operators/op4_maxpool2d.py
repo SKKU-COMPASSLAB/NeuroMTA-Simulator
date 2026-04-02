@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
     # torch.set_printoptions(linewidth=1024, threshold=10000)
     torch.set_printoptions(linewidth=1024)
-    logger.set_print_options(log_level=LogLevel.DEBUG if args.debug_command else LogLevel.INFO)
+    logger.set_print_options(log_level=LogLevel.DEBUG)
     
     config = TenstorrentConfig.BLACKHOLE()
     device = TenstorrentDevice(**config)
@@ -51,7 +51,7 @@ if __name__ == "__main__":
     dtype = torch.int16
     acc_dtype = torch.int16
     blocked_mapping = True  # Enable blocked mapping for better data locality
-    broadcast_optimize = not args.no_bcast  # Enable broadcast optimization to reduce memory and NoC traffic
+    # # broadcast_optimize = not args.no_bcast  # Enable broadcast optimization to reduce memory and NoC traffic
     
     ifm  = torch.randint(low=0, high=64, size=(N, H, W, C), dtype=dtype)
     ofm  = torch.zeros((N, OH, OW, C), dtype=acc_dtype)
@@ -76,7 +76,8 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         spad_space_size_per_core=parse_mem_cap_str("512KB"),
-        broadcast_optimize_queue_entry_size=8 if broadcast_optimize else 0,
+        pipeline_granularity=args.pipeline_gran,
+        broadcast_optimize_queue_depth=args.bcast_queue_depth,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -101,11 +102,11 @@ if __name__ == "__main__":
     if args.monitor:
         with MonitoringWindow(device, core_group, profilers) as monitor:
             st = time.time()
-            device.run_kernels()
+            device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()
     else:
         st = time.time()
-        device.run_kernels()
+        device.run_kernels(max_timestamp=args.max_timestamp)
         ed = time.time()
         
     profiler_saver.close()

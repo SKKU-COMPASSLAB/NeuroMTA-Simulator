@@ -3,7 +3,7 @@ import random
 from typing import Any
 
 from neuromta.framework import *
-from neuromta.component.companions.booksim import BookSim2Config, pybooksim2
+from neuromta.component.companions.booksim import BookSim2Config, pybooksim2, PYBOOKSIM2_AVAILABLE
 
 
 __all__ = [
@@ -20,27 +20,28 @@ class IcntConfig:
         flit_size: int          = parse_mem_cap_str("32B"),
         max_payload_size: int   = 256,
         subnets: int            = 1,
-        booksim2_enable: bool   = False,
+        booksim2_enable: bool   = None,
         booksim2_kwargs: dict[str, Any] = None,
     ):  
+        if booksim2_enable is None:
+            booksim2_enable = PYBOOKSIM2_AVAILABLE
+        
+        x_dim = shape[0]
+        y_dim = shape[1]
+        
+        booksim2_config = BookSim2Config(
+            flit_size=flit_size,
+            subnets=subnets,
+            x=x_dim,
+            y=y_dim,
+            xr=1,   # no concentration by default
+            yr=1,   # no concentration by default
+        )
+        
         if booksim2_enable:
-            x_dim = shape[0]
-            y_dim = shape[1]
-            
-            booksim2_config = BookSim2Config(
-                flit_size=flit_size,
-                subnets=subnets,
-                x=x_dim,
-                y=y_dim,
-                xr=1,   # no concentration by default
-                yr=1,   # no concentration by default
-            )
-            
             if booksim2_kwargs is not None:
                 for field, value in booksim2_kwargs.items():
                     booksim2_config.update_field(field, value)
-        else:
-            booksim2_config = None
             
         self.shape = shape
         self.flit_size = flit_size

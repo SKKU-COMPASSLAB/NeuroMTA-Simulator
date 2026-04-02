@@ -7,13 +7,22 @@ __all__ = [
 ]
 
 class print_log_execution_time:
-    def __init__(self, desc=""):
+    def __init__(self, desc="", disable=False):
         self.desc = desc
-        self.st_time = time.time()
+        self.disable = disable
+        self.st_time_ns = time.perf_counter_ns()
 
+    def open(self):
+        self.st_time_ns = time.perf_counter_ns()
+        
+    def close(self):
+        if self.disable:
+            return
+        elapsed_time_ns = time.perf_counter_ns() - self.st_time_ns
+        logger.debug(f"{self.desc} \tExecution time: {elapsed_time_ns} ns")
+    
     def __enter__(self):
-        self.st_time = time.time()
+        self.open()
 
     def __exit__(self, exc_type, exc_value, traceback):
-        elapsed_time = time.time() - self.st_time
-        logger.debug(f"{self.desc} Execution time: {elapsed_time:.6f} seconds")
+        self.close()

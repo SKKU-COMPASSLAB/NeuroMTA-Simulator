@@ -2,6 +2,7 @@ import os
 import json
 import time
 import torch
+import argparse
 
 from neuromta.framework import *
 from neuromta.component import *
@@ -19,6 +20,15 @@ os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Validate OP6 AvgPool2D operator on Tenstorrent hardware.")
+    parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
+    parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
+    parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
+    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
+    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
+    args = parser.parse_args()
+    
     torch.set_printoptions(linewidth=1024)
     logger.set_print_options(log_level=LogLevel.DEBUG)
     
@@ -26,7 +36,7 @@ if __name__ == "__main__":
     device = TenstorrentDevice(**config)
     
     device.initialize()
-    device.set_command_debug_verbosity(verbose=True)
+    device.set_command_debug_verbosity(verbose=args.debug_command)
     
     core_group = MCA_CoreGroup.merge_core_groups(device.get_npu_core_group((0, 0), (8, 8)).split(shape=(4, 4))[0:3])
     sub_core_groups = core_group.split(shape=16)
@@ -34,7 +44,7 @@ if __name__ == "__main__":
     M, N, K = 512, 512, 512
     dtype = torch.int16
     acc_dtype = torch.int16
-    broadcast_optimize = False  # Enable broadcast optimization to reduce memory and NoC traffic
+    # # broadcast_optimize = not args.no_bcast  # Enable broadcast optimization to reduce memory and NoC traffic
     sim_mode = "partial_l1"
     
     ifm  = torch.randint(low=0, high=128, size=(M, K), dtype=dtype)
@@ -71,7 +81,9 @@ if __name__ == "__main__":
     
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
-        spad_space_size_per_core=parse_mem_cap_str("512KB")
+        spad_space_size_per_core=parse_mem_cap_str("512KB"),
+        pipeline_granularity=args.pipeline_gran,
+        broadcast_optimize_queue_depth=args.bcast_queue_depth,
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -87,9 +99,14 @@ if __name__ == "__main__":
         for op in [operator1, operator2, operator3]
     }
         
-    with MonitoringWindow(device, sub_core_groups[:2]) as monitor:
+    if args.monitor:
+        with MonitoringWindow(device, sub_core_groups[:2]) as monitor:
+            st = time.time()
+            device.run_kernels(max_timestamp=args.max_timestamp)
+            ed = time.time()
+    else:
         st = time.time()
-        device.run_kernels()
+        device.run_kernels(max_timestamp=args.max_timestamp)
         ed = time.time()
         
     for op_id, profiler in profilers.items():
