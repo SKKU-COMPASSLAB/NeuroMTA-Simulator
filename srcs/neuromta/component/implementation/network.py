@@ -176,9 +176,6 @@ class NetworkGraphEntry:
         
     def __str__(self):
         if self.is_compiled:
-            # node_kind = "nmta::compiled"
-            # ivars = "COMPILED_INPUTS"
-            # ovars = "COMPILED_OUTPUTS"
             return "COMPILED"
         else:
             node_kind = self.node.kind()
@@ -195,8 +192,7 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
     def __init__(
         self, 
         entries: 'list[NetworkGraphEntry]', 
-        targets: 'list[NetworkGraphEntryCompileTarget]', 
-        # core_groups: 'list[MCA_CoreGroup]',
+        targets: 'list[NetworkGraphEntryCompileTarget]',
         compiler_recipe: MCA_OperatorGraphCompiler.CompileRecipe, 
     ):
         super().__init__(NetworkGraphEntry.Type.COMPILED, None)
@@ -208,9 +204,6 @@ class NetworkGraphCompiledEntry(NetworkGraphEntry):
         self.entries = entries
         self.targets = targets
         self.compiler_recipe = compiler_recipe
-
-        # if len(core_groups) != len(targets):
-        #     raise ValueError("the number of core groups must match the number of compile targets")
         
         compiler = MCA_OperatorGraphCompiler()
             

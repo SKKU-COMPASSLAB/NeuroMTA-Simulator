@@ -96,6 +96,9 @@ else:
         @property
         def max_in_flight_per_subnet(self) -> int:
             return self._x * self._y * self._xr * self._yr * 2 * 16
+        
+        def peak_bandwidth_per_router(self) -> float:
+            return self._flit_size * self._subnets
 
     class BookSim2(CompanionModule):
         def __init__(self, config: BookSim2Config):

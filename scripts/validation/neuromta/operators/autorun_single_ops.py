@@ -68,12 +68,9 @@ def parse_args() -> argparse.Namespace:
         help="Whether to show real-time monitoring window during simulation.",
         dest="monitor",
     )
-    parser.add_argument(
-        "--no-bcast",
-        action="store_true",
-        help="Whether to disable broadcasting optimization in the test scripts (if supported).",
-        dest="no_bcast",
-    )
+    parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
+    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
+    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
     return parser.parse_args()
 
 
@@ -81,7 +78,6 @@ if __name__ == "__main__":
     args = parse_args()
     if args.max_procs < 1:
         raise ValueError(f"--max-procs must be >= 1, got {args.max_procs}")
-    use_bcast = not args.no_bcast
 
     root = os.path.abspath(os.path.dirname(__file__))
     logdir = os.path.join(root, ".logs", "autorun_single_ops")
@@ -106,10 +102,12 @@ if __name__ == "__main__":
         cmd = [sys.executable, os.path.join(root, filename)]
         env = os.environ.copy()
         env["NEUROMTA_MONITOR_SIM_NAME"] = test_name
-        if not use_bcast:
-            cmd.append("--no-bcast")
         if args.monitor:
             cmd.append("--monitor")
+        if args.report_mismatch:
+            cmd.append("--report-mismatch")
+        cmd.extend(["--bcast-queue-depth", str(args.bcast_queue_depth)])
+        cmd.extend(["--pipeline-gran", str(args.pipeline_gran)])
 
         tasks.append(
             {
@@ -122,55 +120,55 @@ if __name__ == "__main__":
         )
         task_id += 1
 
-    # logger.info(f"Running {len(tasks)} tests with max {args.max_procs} processes")
+    logger.info(f"Running {len(tasks)} tests with max {args.max_procs} processes")
 
-    # with mp.Pool(processes=args.max_procs) as pool:
-    #     results = list(pool.imap_unordered(run_single_test, tasks))
+    with mp.Pool(processes=args.max_procs) as pool:
+        results = list(pool.imap_unordered(run_single_test, tasks))
 
-    # results.sort(key=lambda x: x["id"])
+    results.sort(key=lambda x: x["id"])
 
-    # passed = [r for r in results if r["passed"]]
-    # failed = [r for r in results if not r["passed"]]
+    passed = [r for r in results if r["passed"]]
+    failed = [r for r in results if not r["passed"]]
 
-    # logger.info("=" * 80)
-    # logger.info("Single OP Validation Summary")
-    # logger.info("=" * 80)
+    logger.info("=" * 80)
+    logger.info("Single OP Validation Summary")
+    logger.info("=" * 80)
 
-    # for result in results:
-    #     verdict = "PASS" if result["passed"] else "FAIL"
-    #     logger.info(
-    #         f"[{verdict}] {result['name']:<30s} | status={result['simulation_status']} | "
-    #         f"returncode={result['returncode']} | log='{result['log_path']}'"
-    #     )
+    for result in results:
+        verdict = "PASS" if result["passed"] else "FAIL"
+        logger.info(
+            f"[{verdict}] {result['name']:<30s} | status={result['simulation_status']} | "
+            f"returncode={result['returncode']} | log='{result['log_path']}'"
+        )
 
-    # logger.info("-" * 80)
-    # logger.info(f"Total: {len(results)} | Passed: {len(passed)} | Failed: {len(failed)}")
+    logger.info("-" * 80)
+    logger.info(f"Total: {len(results)} | Passed: {len(passed)} | Failed: {len(failed)}")
 
-    # if len(passed) > 0:
-    #     logger.info("Passed Tests:")
-    #     for result in passed:
-    #         logger.info(f"  - {result['name']}")
+    if len(passed) > 0:
+        logger.info("Passed Tests:")
+        for result in passed:
+            logger.info(f"  - {result['name']}")
 
-    # if len(failed) > 0:
-    #     logger.info("Failed Tests:")
-    #     for result in failed:
-    #         reason = result["simulation_line"] if result["simulation_line"] else "simulation line not found"
-    #         logger.info(f"  - {result['name']} ({reason})")
+    if len(failed) > 0:
+        logger.info("Failed Tests:")
+        for result in failed:
+            reason = result["simulation_line"] if result["simulation_line"] else "simulation line not found"
+            logger.info(f"  - {result['name']} ({reason})")
 
-    # summary_path = os.path.join(logdir, "summary.json")
-    # with open(summary_path, "w", encoding="utf-8") as f:
-    #     json.dump(
-    #         {
-    #             "total": len(results),
-    #             "passed": len(passed),
-    #             "failed": len(failed),
-    #             "results": results,
-    #         },
-    #         f,
-    #         indent=2,
-    #     )
+    summary_path = os.path.join(logdir, "summary.json")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "total": len(results),
+                "passed": len(passed),
+                "failed": len(failed),
+                "results": results,
+            },
+            f,
+            indent=2,
+        )
 
-    # logger.info(f"Summary saved to '{summary_path}'")
+    logger.info(f"Summary saved to '{summary_path}'")
 
     # Visualize monitoring data for passed tests
     if VISUALIZE_AVAILABLE:

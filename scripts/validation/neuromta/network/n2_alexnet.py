@@ -39,8 +39,8 @@ if __name__ == "__main__":
         broadcast_optimize_queue_depth=32,
         operator_pipelining=True,
         
-        dtype=torch.float16, 
-        acc_dtype=torch.float16,
+        dtype=torch.float32, 
+        acc_dtype=torch.float32,
     )
     
     graph = MCA_CompiledNetworkGraph.from_trace(module, graph_recipe, dummy_input)

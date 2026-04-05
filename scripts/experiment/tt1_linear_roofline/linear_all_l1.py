@@ -1,8 +1,9 @@
 import os
 import argparse
-import json
 import multiprocessing as mp
+from neuromta.component.implementation import operator
 import torch
+import math
 
 from neuromta.framework import *
 from neuromta.component import *
@@ -13,6 +14,16 @@ from neuromta.system.software.tenstorrent import *
 compilation_summary_dir = None  # Set to a valid directory path to enable compilation summaries
 
 
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+FILE_NAME = os.path.splitext(os.path.basename(__file__))[0]
+
+parser = argparse.ArgumentParser(description="Tenstorrent Device Benchmark Suite")
+parser.add_argument("-o", "--output", type=str, default=f"{FILE_NAME}.csv", help="Output file to save benchmark results")
+parser.add_argument("-n", "--n-workers", type=int, default=mp.cpu_count(), help="Number of parallel worker processes")
+parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
+args = parser.parse_args()
+
+
 class Benchmark:
     def __init__(
         self, 
@@ -20,7 +31,6 @@ class Benchmark:
         Ms: int, Ns: int, Ks: int,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
-        mapping_strategy: str = TiledOperatorGraph.OUTPUT_STATIONARY
     ):
         self.M: int = M
         self.N: int = N
@@ -32,8 +42,6 @@ class Benchmark:
         
         self.dtype:     torch.dtype = dtype
         self.acc_dtype: torch.dtype = acc_dtype
-        
-        self.mapping_strategy: str = mapping_strategy
         
         self._timestamp:    int = 0
         self._l1_traffic:   int = 0
@@ -64,19 +72,19 @@ class Benchmark:
         _l1_total_per_core     = parse_mem_cap_str("1.2MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
         _l1_data_size_per_core = math.ceil((_ifm_size_per_core + _wgt_size_per_core + _bias_size_per_core + _ofm_size_per_core))
         _spad_size_per_core    = _l1_total_per_core - _l1_data_size_per_core  # remaining L1 SPAD size per core
-        _spad_st_size_per_core = max(2*32*32*self.acc_dtype.itemsize, math.floor(_spad_size_per_core * 0.15))
-        _spad_ld_size_per_core = _spad_size_per_core - _spad_st_size_per_core
         
-        logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD Load: {_spad_ld_size_per_core / 1024:.2f} KB, SPAD Store: {_spad_st_size_per_core / 1024:.2f} KB")
+        logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
+        
+        if _spad_size_per_core < 0:
+            logger.error(f"Not enough L1 memory for benchmark {self.signature}. Required: {_l1_data_size_per_core / 1024:.2f} KB, Available: {_l1_total_per_core / 1024:.2f} KB")
+            return
         
         l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
-        spad_ld_pp_space = device.create_l1_mem_space(_spad_ld_size_per_core, core_group=core_group)
-        spad_st_pp_space = device.create_l1_mem_space(_spad_st_size_per_core, core_group=core_group)
         
-        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(Mt, Kt)).allocate().update(ifm)
-        wgt_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(Nt, Kt)).allocate().update(wgt)
-        bias_b = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,  Nt)).allocate().update(bias)
-        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(Mt, Nt)).allocate()
+        ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(Mt, Kt)).tiling((32, 32)).allocate().update(ifm)
+        wgt_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(Nt, Kt)).tiling((32, 32)).allocate().update(wgt)
+        bias_b = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,  Nt)).tiling((1,  32)).allocate().update(bias)
+        ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(Mt, Nt)).tiling((32, 32)).allocate()
         
         self._l1_traffic:   int = 0
         self._main_traffic: int = 0
@@ -87,29 +95,48 @@ class Benchmark:
             else:
                 self._main_traffic += b.total_size
                 
-        op = MCA_OP_LINEAR(
-            device, core_group, 
-            spad_ld_pp_space, spad_st_pp_space, 
+        op = MCA_OP_LINEAR( 
             ifm_b, wgt_b, bias_b, ofm_b, 
-            broadcast_optimize=True, 
-            auto_dispatch=True,
-            mapping_strategy=self.mapping_strategy
         )
         
-        if compilation_summary_dir is not None:
-            summary_path = os.path.join(compilation_summary_dir, f"{self.signature}.json")
-            with open(summary_path, "wt") as f:
-                f.write(json.dumps(op.summary(), indent=4))
+        compiler = MCA_OperatorGraphCompiler()
+        compiler.add_op(op)
         
-        device.run_kernels()
+        global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
+            device=device,
+            core_groups=[core_group],
+            spad_space_size_per_core=_spad_size_per_core,
+        )
+        
+        compiled_ops = compiler.compile(global_recipe)
+    
+        device.remove_all_l1_mem_space()
+        device.remove_all_main_mem_space()
+        
+        compiled_ops.dispatch()
+            
+        profilers = [
+            DRAMBandwidthProfiler(device, record_type="BOTH"),
+            InterconnectBandwidthProfiler(device),
+            ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
+            ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
+            ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
+        ]
+        
+        profiler_saver = ProfilerFileSaverHub(output_dir=os.path.join(compilation_summary_dir, "profiles"))
+        profiler_saver.add_profilers(*profilers)
+        
+        if args.monitor:
+            with MonitoringWindow(device, core_group, profilers) as monitor:
+                device.run_kernels()
+        else:
+            device.run_kernels()
+            
+        profiler_saver.close()
 
         self._timestamp = device.timestamp
         
         device.reset_simulation()
-        
-        l1_data_mem_space.remove()
-        spad_ld_pp_space.remove()
-        spad_st_pp_space.remove()
         
     @property
     def timestamp(self) -> int:
@@ -129,13 +156,6 @@ class Benchmark:
     
     @property
     def signature(self) -> str:
-        ms = self.mapping_strategy.lower()
-        if ms == TiledOperatorGraph.OUTPUT_STATIONARY:
-            ms_str = "os"
-        elif ms == TiledOperatorGraph.ROUND_ROBIN:
-            ms_str = "rr"
-        else:
-            ms_str = "unk"
         return f"{self.M}x{self.N}x{self.K}_{self.Ms}x{self.Ns}x{self.Ks}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
     
     
@@ -186,11 +206,11 @@ benchmarks = [
     Benchmark(M=256,  N=1024, K=1024, Ms=8, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     Benchmark(M=128,  N=1024, K=1024, Ms=4, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     Benchmark(M=64,   N=1024, K=1024, Ms=2, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
-    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
-    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
-    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
-    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16, mapping_strategy=TiledOperatorGraph.ROUND_ROBIN),
+    Benchmark(M=32,   N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=8,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=4,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=2,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=1,    N=1024, K=1024, Ms=1, Ns=8, Ks=8, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
 ]
 
 if __name__ == "__main__":
@@ -204,14 +224,6 @@ if __name__ == "__main__":
     except ImportError as e:
         logger.error("Error importing visualize module:", e)
         visualize = None
-        
-    ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-    FILE_NAME = os.path.splitext(os.path.basename(__file__))[0]
-    
-    parser = argparse.ArgumentParser(description="Tenstorrent Device Benchmark Suite")
-    parser.add_argument("-o", "--output", type=str, default=f"{FILE_NAME}.csv", help="Output file to save benchmark results")
-    parser.add_argument("-n", "--n-workers", type=int, default=1, help="Number of parallel worker processes")
-    args = parser.parse_args()
 
     output_dir = os.path.join(ROOT_DIR, ".logs")
     compilation_summary_dir = os.path.join(output_dir, "compilation_summaries", FILE_NAME)
