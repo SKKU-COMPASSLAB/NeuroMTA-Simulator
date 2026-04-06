@@ -136,6 +136,9 @@ class FIFOBufferHandle:
         
         self._ref_counts: list[VariableHandle] = [VariableHandle(f"{handle_name}_ref_counter_{i}", initial_value=0) for i in range(depth)]
         self._global_counter: VariableHandle = VariableHandle(f"{handle_name}_global_counter", initial_value=0)
+        # Track which absolute entry_id currently occupies each ring-buffer slot.
+        # This prevents aliasing bugs when different generations map to the same slot.
+        self._slot_entry_tags: list[int] = [-1 for _ in range(depth)]
         
         self._entry_vacant_action_methods: dict[int, list[Callable]] = {}
         self._entry_valid_action_methods: dict[int, list[Callable]] = {}
@@ -163,6 +166,8 @@ class FIFOBufferHandle:
         if entry_id >= buf._global_counter.value:
             return False
         entry_idx = entry_id % buf.depth
+        if buf._slot_entry_tags[entry_idx] != entry_id:
+            return False
         return buf._ref_counts[entry_idx].value > 0
     
     def wait_until_vacant(self, entry_id: int, callback: Callable):
@@ -190,6 +195,7 @@ class FIFOBufferHandle:
             raise Exception(f"Attempting to write to a non-vacant entry (entry_id={entry_id}) in FIFO buffer '{self.handle_name}'.")
         
         entry_idx = entry_id % self.depth
+        self._slot_entry_tags[entry_idx] = entry_id
         self._ref_counts[entry_idx].value = ref_count
         self._global_counter.atomic_update(max(entry_id + 1, self._global_counter.value))
         

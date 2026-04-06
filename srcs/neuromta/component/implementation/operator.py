@@ -2,7 +2,7 @@ import abc
 import enum
 import functools
 import math
-import time
+import pprint
 import tqdm
 from typing import Any, Sequence, Dict, List, Callable
 from collections import deque, defaultdict
@@ -141,16 +141,81 @@ class MCA_OperatorSignature:
                 self.buffer_names[idx] = new_name
     
     def reorder_tiled_ops(self):
-        def tile_sort_key(tiled_op: TiledOperatorSignature):
-            tile = tiled_op.o_tile
-            y_s, x_s, y_t, x_t = tile.coords
-            if self.reorder_type == MCA_OperatorSignature.ReorderType.ROW_MAJOR:
-                return (y_s, y_t, x_s, x_t)
-            else:
-                return (x_s, x_t, y_s, y_t)
+        # def tile_sort_key(tiled_op: TiledOperatorSignature):
+        #     tile = tiled_op.o_tile
+        #     y_s, x_s, y_t, x_t = tile.coords
+        #     if self.reorder_type == MCA_OperatorSignature.ReorderType.ROW_MAJOR:
+        #         return (y_s, y_t, x_s, x_t)
+        #     else:
+        #         return (x_s, x_t, y_s, y_t)
             
-        self._tiled_ops.sort(key=tile_sort_key)
+        # self._tiled_ops.sort(key=tile_sort_key)
+        
+        _reorder_map: list[int] = []
+        _dist: dict[str, int] = {}
+        _cur_candidate = None
+        _cur_dist = None
+        _cur_score = None
+        
+        def _compute_cur_dist_score(tiled_op: TiledOperatorSignature) -> tuple[dict[str, int], int]:
+            _new_dist = _dist.copy()
+            _new_i_tiles = set()
             
+            for uop_idx in range(tiled_op.n_uops):
+                for tile in tiled_op.i_tiles[uop_idx]:
+                    _new_i_tiles.add(tile.signature)
+                    
+            for tile_sig in _new_dist.keys():
+                if tile_sig not in _new_i_tiles:
+                    _new_dist[tile_sig] += 1
+            
+            for new_tile_sig in _new_i_tiles:
+                _new_dist[new_tile_sig] = 0
+                        
+            _score = sum(_new_dist.values())
+            
+            return _new_dist, _score
+        
+        while len(_reorder_map) < len(self.tiled_ops):
+            for tiled_op_idx, tiled_op in enumerate(self.tiled_ops):
+                if tiled_op_idx in _reorder_map:
+                    continue
+                
+                if _cur_candidate is None:
+                    _cur_candidate = tiled_op_idx
+                    _cur_dist, _cur_score = _compute_cur_dist_score(tiled_op)
+                else:
+                    _new_dist, _new_score = _compute_cur_dist_score(tiled_op)
+                    
+                    if _new_score < _cur_score:
+                        _cur_candidate = tiled_op_idx
+                        _cur_dist = _new_dist
+                        _cur_score = _new_score
+                    else:
+                        continue
+
+            # print(f"Selected tiled_op_idx: {_cur_candidate} with score {_cur_score}")
+            # print(f"Previous distance map:")
+            # pprint.pprint(_dist, indent=4)
+            # print(f"Current distance map:")
+            # pprint.pprint(_cur_dist, indent=4)
+            # input("Press Enter to continue ...")
+
+            _reorder_map.append(_cur_candidate)
+            _dist = _cur_dist
+            
+            _cur_candidate = None
+            _cur_dist = None
+            _cur_score = None
+            
+        self._tiled_ops = [self._tiled_ops[tiled_op_idx] for tiled_op_idx in _reorder_map]
+                
+        # print(_reorder_map)
+        # input("Press Enter to continue ...")
+        
+        if set(_reorder_map) != set(range(len(self.tiled_ops))):
+            raise ValueError("Invalid reorder map generated.")
+                
     @property
     def op_type(self):      return self._op_type
     @property
@@ -520,7 +585,7 @@ class MCA_OperatorGraphCompiler:
             return len(self.uop_nodes)
         
         @staticmethod
-        def _mapping(op_sig: 'MCA_OperatorSignature', tiled_op_idx: int) -> int:
+        def _round_robin_mapping(op_sig: 'MCA_OperatorSignature', tiled_op_idx: int) -> int:
             n_cores = len(op_sig.core_group.core_ids)
             core_id = op_sig.core_group.core_ids[tiled_op_idx % n_cores]
             return core_id
@@ -530,7 +595,7 @@ class MCA_OperatorGraphCompiler:
             mappings: dict[int, MCA_OperatorGraphCompiler.Thread] = {core_id: MCA_OperatorGraphCompiler.Thread(core_id) for core_id in op_sig.core_group.core_ids}
             
             for tiled_op_idx, tiled_op_sig in enumerate(op_sig.tiled_ops):
-                core_id = cls._mapping(op_sig, tiled_op_idx)
+                core_id = cls._round_robin_mapping(op_sig, tiled_op_idx)
                 
                 for uop_idx in range(tiled_op_sig.n_uops):
                     output = (uop_idx == (tiled_op_sig.n_uops - 1))  # mark the last uop of each tiled op as output uop (for store scheduling)

@@ -97,7 +97,7 @@ class Benchmark:
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
                 pipeline_granularity=16,
-                broadcast_optimize_queue_depth=64,
+                broadcast_optimize_queue_depth=0,
             )
             
             compiled_ops = compiler.compile(global_recipe)

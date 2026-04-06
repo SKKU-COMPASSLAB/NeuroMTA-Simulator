@@ -35,6 +35,7 @@ def MCA_KERNEL_CORE_LD_THREAD(
         mem_loads:   list[MCA_CompiledOperator.IR.MEM_LOAD_TILE]      = []
         fifo_loads:  list[MCA_CompiledOperator.IR.MEM_LOAD_FROM_FIFO] = []
         fifo_stores: list[MCA_CompiledOperator.IR.MEM_STORE_TO_FIFO]  = []
+        # fifo_load_stores: list[MCA_CompiledOperator.IR.MEM_LOAD_FROM_FIFO | MCA_CompiledOperator.IR.MEM_STORE_TO_FIFO] = []
         
         for ir in group.loads:
             if isinstance(ir, MCA_CompiledOperator.IR.NOP):
@@ -48,14 +49,13 @@ def MCA_KERNEL_CORE_LD_THREAD(
             else:
                 raise Exception(f"Unsupported IR type '{type(ir).__name__}' in load thread kernel.")
         
-        with new_parallel_thread("MEM_LOADS"):
-            for i, ir in enumerate(mem_loads):
-                with new_parallel_thread(f"{i}"):
-                    tile_sig = ir.tile_sig
-                    buf = env.buffers[ir.tile_sig.buf_name]
-                    src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad = buf.get_tile_ptr_read_args(*tile_sig.coords)
-                    
-                    core.mem_copy(ir.ptr, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad)
+        for i, ir in enumerate(mem_loads):
+            with new_parallel_thread(f"MEM_LOAD{i}"):
+                tile_sig = ir.tile_sig
+                buf = env.buffers[ir.tile_sig.buf_name]
+                src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad = buf.get_tile_ptr_read_args(*tile_sig.coords)
+                
+                core.mem_copy(ir.ptr, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad)
             
         core.parallel_merge()
         

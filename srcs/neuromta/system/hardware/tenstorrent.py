@@ -131,7 +131,7 @@ class TenstorrentConfig(dict):
             seq_len=32,
             dtype=torch.float32,
             acc_dtype=torch.float32,
-            op_latency_per_byte=1,  # the peak performance assumes bfloat16 (2 bytes per operation)
+            op_latency_per_byte=0.5,  # the peak performance assumes bfloat16 (2 bytes per operation)
         )
         
         vpu_config = VPUConfig(

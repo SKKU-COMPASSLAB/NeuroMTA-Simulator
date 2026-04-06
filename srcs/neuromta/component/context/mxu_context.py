@@ -126,7 +126,7 @@ class MXUContext:
         return self._config.seq_len
     
     def get_execute_cycles(self) -> int:
-        cycles = self.config.seq_len
+        cycles = 0
         if self.config.peak_op_per_cycle is not None:
             total_ops = 2 * self.config.m_tile * self.config.n_tile * self.config.k_tile
             cycles += int((total_ops + self.config.peak_op_per_cycle - 1) // self.config.peak_op_per_cycle)
