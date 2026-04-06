@@ -66,8 +66,8 @@ if __name__ == "__main__":
         core_groups=core_groups,
         
         main_data_mem_space_size_per_channel=parse_mem_cap_str("30GB"),
-        l1_data_mem_space_size_per_core=parse_mem_cap_str("256KB"),
-        spad_mem_space_size_per_core=parse_mem_cap_str("1MB"),
+        l1_data_mem_space_size_per_core=parse_mem_cap_str("1.2MB"),
+        spad_mem_space_size_per_core=parse_mem_cap_str("128KB"),
         
         pipeline_granularity=16,
         broadcast_optimize_queue_depth=32,

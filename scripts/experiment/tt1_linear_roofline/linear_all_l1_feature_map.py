@@ -68,15 +68,14 @@ class Benchmark:
         _spad_size_per_core    = parse_mem_cap_str("128KB")
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
-        logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
-        
         try:
             l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
+            main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("30GB"))
             
-            ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(self.Ms, self.Ks)).tiling((32, 32)).allocate().update(ifm)
-            wgt_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(self.Ns, self.Ks)).tiling((32, 32)).allocate().update(wgt)
-            bias_b = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,       self.Ns)).tiling((1,  32)).allocate().update(bias)
-            ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(self.Ms, self.Ns)).tiling((32, 32)).allocate()
+            ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(self.Ms, self.Ks)).tiling((32, 32)).allocate().update(ifm)
+            wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(self.Ns, self.Ks)).tiling((32, 32)).allocate().update(wgt)
+            bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,       self.Ns)).tiling((1,  32)).allocate().update(bias)
+            ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(self.Ms, self.Ns)).tiling((32, 32)).allocate()
             
             self._l1_traffic:   int = 0
             self._main_traffic: int = 0
@@ -138,8 +137,8 @@ class Benchmark:
                 device.run_kernels()
                 
             self._timestamp = device.timestamp
-            self._l1_traffic = ifm.numel() * ifm.element_size() + wgt.numel() * wgt.element_size() + bias.numel() * bias.element_size() + ofm_b.shape[0] * ofm_b.shape[1] * ofm_b.dtype.itemsize
-            self._main_traffic = 0
+            self._l1_traffic = ifm.numel() * ifm.element_size() + ofm_b.shape[0] * ofm_b.shape[1] * ofm_b.dtype.itemsize
+            self._main_traffic = wgt.numel() * wgt.element_size() + bias.numel() * bias.element_size()
                 
             profiler_saver.close()
             device.reset_simulation()
@@ -206,7 +205,7 @@ class BenchmarkProcess(mp.Process):
 
 
 benchmarks = [
-    # Benchmarks: Square Matrices with Varying Sizes
+    ## Benchmarks: Square Matrices with Varying Sizes
     Benchmark(M=1024, N=1024, K=1024, Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     Benchmark(M=512 , N=512,  K=512,  Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     Benchmark(M=256 , N=256,  K=256,  Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),

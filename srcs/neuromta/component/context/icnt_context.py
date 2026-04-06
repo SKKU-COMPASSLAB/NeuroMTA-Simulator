@@ -87,8 +87,6 @@ class IcntContext:
         return hop_cnt + (data_size // self.config.flit_size) + 1
     
     def get_icnt_data_transfer_args(self, src_id: int, dst_id: int, data_size: int, is_write: bool) -> list[dict[str, int]]:
-        # subnet = (src_id + dst_id) % self.config.booksim2_config._subnets
-        # subnet = random.randint(0, self.config.booksim2_config._subnets - 1) if self.config.booksim2_enable else 0
         n_flits = math.ceil(data_size / self.config.flit_size)
         n_payloads = math.ceil(n_flits / self.config.max_payload_size)
         payload_size = min(n_flits, self.config.max_payload_size)
@@ -96,10 +94,10 @@ class IcntContext:
         return [{
             "src_id": src_id,
             "dst_id": dst_id,
-            "subnet": (src_id + dst_id + i) % self.config.booksim2_config._subnets if self.config.booksim2_enable else 0, #subnet,
+            "subnet": (src_id + dst_id) % self.config.booksim2_config._subnets if self.config.booksim2_enable else 0, #subnet,
             "n_flits": min(payload_size, n_flits - i * payload_size),
             "is_write": is_write,
-            "is_response": not is_write,  # TODO: remove this feature! (data packets are response to the read and request to the write)
+            "is_response": not is_write,
         } for i in range(n_payloads)]
         
     @property

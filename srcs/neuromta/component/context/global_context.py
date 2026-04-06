@@ -424,8 +424,8 @@ class GlobalContext:
         return None
     
     def get_main_mem_access_args(self, ptr: Pointer, size: int, is_write: bool) -> dict[str, int] | None:
-        if self.config.main_mem_config.dramsim3_config is None:
-            return None
+        # if self.config.main_mem_config.dramsim3_config is None:
+        #     return None
         
         addr = ptr.addr - self.main_mem_base_addr
         ch_id = addr // self.main_mem_channel_size
@@ -440,6 +440,15 @@ class GlobalContext:
             "size": size,
             "is_write": is_write,
         }
+        
+    def get_main_mem_strided_access_args(self, ptr: Pointer, row_size: int, row_num: int, stride: int, is_write: bool) -> list[dict[str, int]] | None:
+        # if self.config.main_mem_config.dramsim3_config is None:
+        #     return None
+        
+        return [
+            self.get_main_mem_access_args(Pointer(ptr.addr + i * stride), row_size, is_write)
+            for i in range(row_num)
+        ]
         
     @property
     def n_dma_engine_per_channel(self) -> int:

@@ -77,57 +77,9 @@ class NPUCore(Core):
             
             self.async_rpc_send_req_msg(msg)
             self.async_rpc_wait_rsp_msg(msg)
-            
-    @jit_prototype
-    def remote_mem_page_read(self, dst_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
-        src_core_id = self.core_id
-        
-        self.local_mem_page_read(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset)
-        
-        # if dst_core_id != src_core_id:
-        #     noc_msgs = [
-        #         RPCMessage(
-        #             src_core_id=self.core_id,
-        #             dst_core_id=COMPANION_CORE_ID,
-        #             cmd_id="send_companion_command",
-        #         ).with_args(
-        #             self.global_context.config.booksim_module_id,
-        #             **arg
-        #         )
-        #         for arg in self.icnt_context.get_icnt_data_transfer_args(src_core_id, dst_core_id, row_size * row_num, is_write=True)
-        #     ]
-            
-        #     for msg in noc_msgs:
-        #         self.async_rpc_send_req_msg(msg)
-        #     for msg in noc_msgs:
-        #         self.async_rpc_wait_rsp_msg(msg)
-                
-    @jit_prototype
-    def remote_mem_page_write(self, src_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
-        dst_core_id = self.core_id
-        
-        # if src_core_id != dst_core_id:
-        #     noc_msgs = [
-        #         RPCMessage(
-        #             src_core_id=self.core_id,
-        #             dst_core_id=COMPANION_CORE_ID,
-        #             cmd_id="send_companion_command",
-        #         ).with_args(
-        #             self.global_context.config.booksim_module_id,
-        #             **arg
-        #         )
-        #         for arg in self.icnt_context.get_icnt_data_transfer_args(src_core_id, dst_core_id, row_size * row_num, is_write=False)
-        #     ]
-            
-        #     for msg in noc_msgs:
-        #         self.async_rpc_send_req_msg(msg)
-        #     for msg in noc_msgs:
-        #         self.async_rpc_wait_rsp_msg(msg)
-        
-        self.local_mem_page_write(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset, cont_row_zero_pad)
     
     @jit_prototype
-    def mem_copy(self, dst_ptr: Pointer, src_ptr: Pointer, row_size: int, row_num: int=1, src_row_stride: int=None, dst_row_stride: int=None, dst_row_zero_pad: int=0):
+    def local_mem_copy(self, dst_ptr: Pointer, src_ptr: Pointer, row_size: int, row_num: int=1, src_row_stride: int=None, dst_row_stride: int=None, dst_row_zero_pad: int=0, nowait: bool=False):
         if not isinstance(dst_ptr, Pointer) or not isinstance(src_ptr, Pointer):
             raise ValueError("dst_ptr and src_ptr must be Pointer instances.")
         if dst_ptr.addr is None or src_ptr.addr is None:
@@ -154,65 +106,310 @@ class NPUCore(Core):
         if dst_row_stride is None:
             dst_row_stride = row_size
             
-        container = DataContainer()
+        # THREAD: Data Read & Write
+        with new_parallel_thread("DATA_RD_WR"):
+            container = DataContainer()
 
-        if src_owner_core_id == self.core_id:
-            self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
-        else:
-            data_rd_request = RPCMessage(
-                src_core_id=self.core_id,
-                dst_core_id=src_owner_core_id,
-                cmd_id="remote_mem_page_read"
-            ).with_args(
-                dst_core_id=self.core_id,
-                ptr=src_ptr,
-                container=container,
-                row_size=row_size,
-                row_num=row_num,
-                mem_row_stride=src_row_stride,
-                cont_row_stride=row_size,
-            )
+            if src_owner_core_id == self.core_id:
+                self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
+            else:
+                data_rd_request = RPCMessage(
+                    src_core_id=self.core_id,
+                    dst_core_id=src_owner_core_id,
+                    cmd_id="local_mem_page_read"
+                ).with_args(
+                    ptr=src_ptr,
+                    container=container,
+                    row_size=row_size,
+                    row_num=row_num,
+                    mem_row_stride=src_row_stride,
+                    cont_row_stride=row_size,
+                )
+                
+                self.async_rpc_send_req_msg(data_rd_request)
+                self.async_rpc_wait_rsp_msg(data_rd_request)
             
-            self.async_rpc_send_req_msg(data_rd_request)
-            self.async_rpc_wait_rsp_msg(data_rd_request)
+            if dst_owner_core_id == self.core_id:
+                self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size, cont_row_zero_pad=dst_row_zero_pad)
+            else:
+                data_wr_request = RPCMessage(
+                    src_core_id=self.core_id,
+                    dst_core_id=dst_owner_core_id,
+                    cmd_id="local_mem_page_write"
+                ).with_args(
+                    ptr=dst_ptr,
+                    container=container,
+                    row_size=row_size,
+                    row_num=row_num,
+                    mem_row_stride=dst_row_stride,
+                    cont_row_stride=row_size,
+                    cont_row_zero_pad=dst_row_zero_pad
+                )
+                
+                self.async_rpc_send_req_msg(data_wr_request)
+                self.async_rpc_wait_rsp_msg(data_wr_request)
+                
+        # THREAD: DRAM Transactions
+        with new_parallel_thread("DRAM_TX"):
+            dram_msgs = []
+            
+            if src_mem_info.mem_type == GlobalContextMemType.MAIN:
+                dram_rd_transaction = RPCMessage(
+                    src_core_id=self.core_id,
+                    dst_core_id=COMPANION_CORE_ID,
+                    cmd_id="send_companion_command",
+                ).with_args(
+                    self.global_context.dramsim_module_id,
+                    **self.global_context.get_main_mem_access_args(src_ptr, row_size * row_num, is_write=False)
+                )
+                
+                dram_msgs.append(dram_rd_transaction)
+                
+            if dst_mem_info.mem_type == GlobalContextMemType.MAIN:
+                dram_wr_transaction = RPCMessage(
+                    src_core_id=self.core_id,
+                    dst_core_id=COMPANION_CORE_ID,
+                    cmd_id="send_companion_command",
+                ).with_args(
+                    self.global_context.dramsim_module_id,
+                    **self.global_context.get_main_mem_access_args(dst_ptr, row_size * row_num, is_write=True)
+                )
+                
+                dram_msgs.append(dram_wr_transaction)
+            
+            for msg in dram_msgs:
+                self.async_rpc_send_req_msg(msg)
+            
+            if not nowait:
+                for msg in dram_msgs:
+                    self.async_rpc_wait_rsp_msg(msg)
+                    
+        # THREAD: NOC Transactions
+        if self.icnt_context is not None:
+            with new_parallel_thread("NOC_TX"):
+                noc_msgs = []
+                
+                if src_owner_core_id != self.core_id:
+                    noc_msgs += [
+                        RPCMessage(
+                            src_core_id=self.core_id,
+                            dst_core_id=COMPANION_CORE_ID,
+                            cmd_id="send_companion_command",
+                        ).with_args(
+                            self.global_context.config.booksim_module_id,
+                            **arg
+                        )
+                        for arg in self.icnt_context.get_icnt_data_transfer_args(src_owner_core_id, self.core_id, row_size * row_num, is_write=False)
+                    ]
+                    
+                if dst_owner_core_id != self.core_id:
+                    noc_msgs += [
+                        RPCMessage(
+                            src_core_id=self.core_id,
+                            dst_core_id=COMPANION_CORE_ID,
+                            cmd_id="send_companion_command",
+                        ).with_args(
+                            self.global_context.config.booksim_module_id,
+                            **arg
+                        )
+                        
+                        for arg in self.icnt_context.get_icnt_data_transfer_args(self.core_id, dst_owner_core_id, row_size * row_num, is_write=True)
+                    ]
+                    
+                for msg in noc_msgs:
+                    self.async_rpc_send_req_msg(msg)
+                
+                if not nowait:
+                    for msg in noc_msgs:
+                        self.async_rpc_wait_rsp_msg(msg)
         
-        if dst_owner_core_id == self.core_id:
-            self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size, cont_row_zero_pad=dst_row_zero_pad)
+        self.parallel_merge()
+
+    @jit_prototype
+    def local_mem_broadcast(self, dst_ptrs: list[Pointer], src_ptr: Pointer,  row_size: int, row_num: int, src_row_stride: int=None, dst_row_stride: int=None, dst_row_zero_pad: int=0, nowait: bool=False):
+        if not isinstance(src_ptr, Pointer):
+            raise ValueError("dst_ptr and src_ptr must be Pointer instances.")
+        if src_ptr.addr is None:
+            if isinstance(src_ptr, ReferencePointer):
+                print(src_ptr.ref.addr, src_ptr.addr)
+            else:
+                print(src_ptr.addr)
+            raise ValueError("src_ptr must have valid addresses before 'mem_copy' method is compiled.")
+        
+        src_mem_info = self.global_context.get_mem_info_by_address(src_ptr.addr)
+        
+        if src_mem_info.mem_type == GlobalContextMemType.L1:
+            src_owner_core_id = src_mem_info.owner_core_ids[0]
         else:
-            data_wr_request = RPCMessage(
-                src_core_id=self.core_id,
-                dst_core_id=dst_owner_core_id,
-                cmd_id="remote_mem_page_write"
-            ).with_args(
-                src_core_id=self.core_id,
-                ptr=dst_ptr,
-                container=container,
-                row_size=row_size,
-                row_num=row_num,
-                mem_row_stride=dst_row_stride,
-                cont_row_stride=row_size,
-                cont_row_zero_pad=dst_row_zero_pad
-            )
+            src_owner_core_id = src_mem_info.owner_core_ids[self._dma_engine_idx]
             
-            self.async_rpc_send_req_msg(data_wr_request)
-            self.async_rpc_wait_rsp_msg(data_wr_request)
+        if src_row_stride is None:
+            src_row_stride = row_size
+        if dst_row_stride is None:
+            dst_row_stride = row_size
+            
+        # THREAD: Data Read & Write
+        with new_parallel_thread("DATA_RD_WR"):
+            container = DataContainer()
+            
+            if src_owner_core_id == self.core_id:
+                self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
+            else:
+                data_rd_request = RPCMessage(
+                    src_core_id=self.core_id,
+                    dst_core_id=src_owner_core_id,
+                    cmd_id="local_mem_page_read"
+                ).with_args(
+                    ptr=src_ptr,
+                    container=container,
+                    row_size=row_size,
+                    row_num=row_num,
+                    mem_row_stride=src_row_stride,
+                    cont_row_stride=row_size,
+                )
+                
+                self.async_rpc_send_req_msg(data_rd_request)
+                self.async_rpc_wait_rsp_msg(data_rd_request)
+                
+            # Use deterministic sequential fan-out for destination writes.
+            # Nested per-destination parallel threads can race in simulator RPC
+            # scheduling for shared broadcast payloads.
+            for dst_ptr in dst_ptrs:
+                dst_mem_info = self.global_context.get_mem_info_by_address(dst_ptr.addr)
+
+                if dst_mem_info.mem_type == GlobalContextMemType.L1:
+                    dst_owner_core_id = dst_mem_info.owner_core_ids[0]
+                else:
+                    dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
+
+                if dst_owner_core_id == self.core_id:
+                    self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size, cont_row_zero_pad=dst_row_zero_pad)
+                else:
+                    data_wr_request = RPCMessage(
+                        src_core_id=self.core_id,
+                        dst_core_id=dst_owner_core_id,
+                        cmd_id="local_mem_page_write"
+                    ).with_args(
+                        ptr=dst_ptr,
+                        container=container,
+                        row_size=row_size,
+                        row_num=row_num,
+                        mem_row_stride=dst_row_stride,
+                        cont_row_stride=row_size,
+                        cont_row_zero_pad=dst_row_zero_pad
+                    )
+
+                    self.async_rpc_send_req_msg(data_wr_request)
+                    self.async_rpc_wait_rsp_msg(data_wr_request)
+                        
+        # THREAD: DRAM Transactions
+        with new_parallel_thread("DRAM_TX"):
+            dram_msgs = []
+            
+            if src_mem_info.mem_type == GlobalContextMemType.MAIN:
+                dram_rd_transaction = RPCMessage(
+                    src_core_id=self.core_id,
+                    dst_core_id=COMPANION_CORE_ID,
+                    cmd_id="send_companion_command",
+                ).with_args(
+                    self.global_context.dramsim_module_id,
+                    **self.global_context.get_main_mem_access_args(src_ptr, row_size * row_num, is_write=False)
+                )
+                
+                dram_msgs.append(dram_rd_transaction)
+            
+            for dst_ptr in dst_ptrs: 
+                dst_mem_info = self.global_context.get_mem_info_by_address(dst_ptr.addr)
+                    
+                if dst_mem_info.mem_type == GlobalContextMemType.L1:
+                    dst_owner_core_id = dst_mem_info.owner_core_ids[0]
+                else:
+                    dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
+                        
+                if dst_mem_info.mem_type == GlobalContextMemType.MAIN:
+                    dram_wr_transaction = RPCMessage(
+                        src_core_id=self.core_id,
+                        dst_core_id=COMPANION_CORE_ID,
+                        cmd_id="send_companion_command",
+                    ).with_args(
+                        self.global_context.dramsim_module_id,
+                        **self.global_context.get_main_mem_access_args(dst_ptr, row_size * row_num, is_write=True)
+                    )
+                    
+                    dram_msgs.append(dram_wr_transaction)
+            
+            for msg in dram_msgs:
+                self.async_rpc_send_req_msg(msg)
+            
+            if not nowait:
+                for msg in dram_msgs:
+                    self.async_rpc_wait_rsp_msg(msg)
+                    
+        # THREAD: NOC Transactions
+        if self.icnt_context is not None:
+            with new_parallel_thread("NOC_TX"):
+                noc_msgs = []
+                
+                if src_owner_core_id != self.core_id:
+                    noc_msgs += [
+                        RPCMessage(
+                            src_core_id=self.core_id,
+                            dst_core_id=COMPANION_CORE_ID,
+                            cmd_id="send_companion_command",
+                        ).with_args(
+                            self.global_context.config.booksim_module_id,
+                            **arg
+                        )
+                        for arg in self.icnt_context.get_icnt_data_transfer_args(src_owner_core_id, self.core_id, row_size * row_num, is_write=False)
+                    ]
+                
+                for dst_ptr in dst_ptrs:
+                    dst_mem_info = self.global_context.get_mem_info_by_address(dst_ptr.addr)
+                    
+                    if dst_mem_info.mem_type == GlobalContextMemType.L1:
+                        dst_owner_core_id = dst_mem_info.owner_core_ids[0]
+                    else:
+                        dst_owner_core_id = dst_mem_info.owner_core_ids[self._dma_engine_idx]
+                        
+                    if dst_owner_core_id != self.core_id:
+                        noc_msgs += [
+                            RPCMessage(
+                                src_core_id=self.core_id,
+                                dst_core_id=COMPANION_CORE_ID,
+                                cmd_id="send_companion_command",
+                            ).with_args(
+                                self.global_context.config.booksim_module_id,
+                                **arg
+                            )
+                            
+                            for arg in self.icnt_context.get_icnt_data_transfer_args(self.core_id, dst_owner_core_id, row_size * row_num, is_write=True)
+                        ]
+                    
+                for msg in noc_msgs:
+                    self.async_rpc_send_req_msg(msg)
+                
+                if not nowait:
+                    for msg in noc_msgs:
+                        self.async_rpc_wait_rsp_msg(msg)
+                
+        self.parallel_merge()
         
     @jit_prototype
-    def mem_copy_to_fifo(self, ptr: Pointer, fifo_handle: FIFOBufferHandle, entry_id: VariableHandle | int, size: int=None, ref_count: int=1):
+    def local_mem_copy_to_fifo(self, ptr: Pointer, fifo_handle: FIFOBufferHandle, entry_id: VariableHandle | int, size: int=None, ref_count: int=1):
         dst_ptr = fifo_handle.get_ptr(entry_id)
         size = size if (size is not None) else fifo_handle.entry_size
         
         self.fifo_wait_until_vacant(fifo_handle, entry_id)
-        self.mem_copy(dst_ptr, ptr, row_size=size)
+        self.local_mem_copy(dst_ptr, ptr, row_size=size)
         self.fifo_push(fifo_handle, entry_id, ref_count)
         
     @jit_prototype
-    def mem_copy_from_fifo(self, ptr: Pointer, fifo_handle: FIFOBufferHandle, entry_id: VariableHandle | int, size: int=None):
+    def local_mem_copy_from_fifo(self, ptr: Pointer, fifo_handle: FIFOBufferHandle, entry_id: VariableHandle | int, size: int=None):
         src_ptr = fifo_handle.get_ptr(entry_id)
         size = size if (size is not None) else fifo_handle.entry_size
         
         self.fifo_wait_until_valid(fifo_handle, entry_id)
-        self.mem_copy(ptr, src_ptr, row_size=size)
+        self.local_mem_copy(ptr, src_ptr, row_size=size)
         self.fifo_pop(fifo_handle, entry_id)
 
     #############################################################
@@ -430,6 +627,9 @@ class NPUCoreCycleModel(CoreCycleModel):
         super().__init__()
         
         self.core = core
+    
+    def local_mem_page_write(self, *args, **kwargs):
+        return 1  # TODO: this should be 1
     
     def mxu_load_context(self, psum_cont: DataContainer[torch.Tensor]):
         return self.core.mxu_context.get_preload_pe_arr_cycles()

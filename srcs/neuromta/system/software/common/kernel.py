@@ -65,12 +65,6 @@ def MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR(core: NPUCore, env: MCA_OperatorG
         
         if flush_ofm:
             core.local_mem_page_write(cmd.o_tile_ptr, ofm, ofm_buf.tile_size)
-            
-            # def debug_func(ofm_sig: TileSignature, container: DataContainer):
-            #     t: torch.Tensor = container.data
-            #     print(ofm_sig.signature)
-            #     print(t.view(torch.int16).reshape(ofm_buf.tile_shape))
-            # core.debug_core_with_ambiguous_func(debug_func, ofm_sig, ofm)
     else:
         raise NotImplementedError(f"Compute command {type(cmd)} is not implemented.")
             

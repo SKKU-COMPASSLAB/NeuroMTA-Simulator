@@ -224,15 +224,12 @@ class MCA_DeviceBase(Device):
         
         self.global_context = GlobalContext(config=global_config)
         
-        if icnt_config is not None:
-            self.icnt_context = IcntContext(config=icnt_config)
+        self.icnt_context = IcntContext(config=icnt_config)
             
-            self.companion_core.register_companion_module(
-                self.global_context.config.booksim_module_id,
-                module=BookSim2(config=self.icnt_context.config.booksim2_config)
-            )
-        else:
-            self.icnt_context = None
+        self.companion_core.register_companion_module(
+            self.global_context.config.booksim_module_id,
+            module=BookSim2(config=self.icnt_context.config.booksim2_config)
+        )
         
         self.mxu_config = mxu_config
         self.vpu_config = vpu_config
@@ -249,7 +246,7 @@ class MCA_DeviceBase(Device):
         ]
         
         self.dma_cores: list[DMACore] = [
-            DMACore(core_id=core_id, global_context=self.global_context)
+            DMACore(core_id=core_id, global_context=self.global_context, icnt_context=self.icnt_context)
             for core_id in self.dma_core_ids
         ]
         

@@ -1,5 +1,5 @@
-import os
 import json
+import os
 import argparse
 import multiprocessing as mp
 from neuromta.component.implementation import operator
@@ -65,18 +65,16 @@ class Benchmark:
         bias = torch.randint(low=0, high=256, size=(self.N,), dtype=self.dtype)
         
         _l1_total_per_core     = parse_mem_cap_str("1.4MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
-        _spad_size_per_core    = parse_mem_cap_str("128KB")
+        _spad_size_per_core    = parse_mem_cap_str("196KB")
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
-        logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
-        
         try:
-            l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
+            main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("30GB"))
             
-            ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(self.Ms, self.Ks)).tiling((32, 32)).allocate().update(ifm)
-            wgt_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(self.Ns, self.Ks)).tiling((32, 32)).allocate().update(wgt)
-            bias_b = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,       self.Ns)).tiling((1,  32)).allocate().update(bias)
-            ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(self.Ms, self.Ns)).tiling((32, 32)).allocate()
+            ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(self.Ms, self.Ks)).tiling((32, 32)).allocate().update(ifm)
+            wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(self.Ns, self.Ks)).tiling((32, 32)).allocate().update(wgt)
+            bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,       self.Ns)).tiling((1,  32)).allocate().update(bias)
+            ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(self.Ms, self.Ns)).tiling((32, 32)).allocate()
             
             self._l1_traffic:   int = 0
             self._main_traffic: int = 0
@@ -98,6 +96,8 @@ class Benchmark:
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
+                pipeline_granularity=16,
+                broadcast_optimize_queue_depth=64,
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -138,8 +138,8 @@ class Benchmark:
                 device.run_kernels()
                 
             self._timestamp = device.timestamp
-            self._l1_traffic = ifm.numel() * ifm.element_size() + wgt.numel() * wgt.element_size() + bias.numel() * bias.element_size() + ofm_b.shape[0] * ofm_b.shape[1] * ofm_b.dtype.itemsize
-            self._main_traffic = 0
+            self._l1_traffic = 0
+            self._main_traffic = ifm.numel() * ifm.element_size() + ofm_b.shape[0] * ofm_b.shape[1] * ofm_b.dtype.itemsize + wgt.numel() * wgt.element_size() + bias.numel() * bias.element_size()
                 
             profiler_saver.close()
             device.reset_simulation()
@@ -147,7 +147,7 @@ class Benchmark:
             logger.error(f"Error during benchmark {self.signature}: {e}")
             return False
         
-        return True  # Indicate successful run without L1 memory overflow
+        return True 
         
     @property
     def timestamp(self) -> int:

@@ -77,13 +77,13 @@ class TenstorrentConfig(dict):
             shape=icnt_shape,                       # - 12x16 torus
             subnets=2,                              # - 5 subnets
             flit_size=parse_mem_cap_str("64B"),     # - 64B flit size (the unit of flow control)
-            max_payload_size=4,                     # - 4 in flits in maximum as a payload = 256B
+            max_payload_size=32,                    # - 32 in flits in maximum as a payload = 2048B
             booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 64B * 5 * 1GHz = 320GB/s
             booksim2_kwargs={
                 "in_ports": 1,
                 "out_ports": 1,
-                "input_speedup": 1,
-                "output_speedup": 1,
+                "input_speedup": 32,
+                "output_speedup": 32,
             }
         )
         
@@ -131,7 +131,7 @@ class TenstorrentConfig(dict):
             seq_len=32,
             dtype=torch.float32,
             acc_dtype=torch.float32,
-            op_latency_per_byte=0.5,  # the peak performance assumes bfloat16 (2 bytes per operation)
+            op_latency_per_byte=1,  # the peak performance assumes bfloat16 (2 bytes per operation)
         )
         
         vpu_config = VPUConfig(

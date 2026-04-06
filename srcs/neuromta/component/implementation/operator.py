@@ -1344,9 +1344,8 @@ class MCA_OperatorGraphCompiler:
                             continue
                         
                         bcast_core_id, bcast_cmd_idx = min(cmd_locs, key=lambda x: _tmp_bcast_request_fifocnt[x[0]])
-                        # _tmp_bcast_request_traffic[bcast_core_id] += env.buffers[tile_sig.buf_name].tile_size
-                        if _tmp_bcast_request_fifocnt[bcast_core_id] >= env.recipe.pipeline_granularity:
-                            break
+                        # if _tmp_bcast_request_fifocnt[bcast_core_id] >= env.recipe.pipeline_granularity:
+                        #     break
                         _tmp_bcast_request_fifocnt[bcast_core_id] += 1
                         
                         bcast_stage = compiled_op._mappings[bcast_core_id][stage_cursor]

@@ -6,6 +6,7 @@ from typing import Sequence, Callable  #, Any
 from neuromta.framework.core import Core, Kernel, Command, RPCMessage, ThreadGroup
 from neuromta.framework.companion import CompanionCore
 from neuromta.framework.logger import logger
+from neuromta.framework.debug_utils import *
 
 
 __all__ = [
@@ -99,28 +100,35 @@ class Device:
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
         
-        remaining_cycles = None
+        # remaining_cycles = None
             
+        # for core_id, core in self.initialized_cores.items():
+        #     core.rpc_update_routine()
+        
+        # for core_id, core in self.initialized_cores.items():
+        #     if core.is_idle:
+        #         continue
+        #     c = core.get_remaining_cycles()
+            
+        #     if remaining_cycles is None:
+        #         remaining_cycles = c
+        #     elif c is not None:
+        #         remaining_cycles = min(remaining_cycles, c)
+
+        # if remaining_cycles == 0 or remaining_cycles is None:
+        #     remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
+        
+        #     if remaining_cycles == 0 or remaining_cycles is None:
+        #         remaining_cycles = cycle_resolution
+        # else:
+        #     self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
+        
+        remaining_cycles = 1
+        
         for core_id, core in self.initialized_cores.items():
             core.rpc_update_routine()
-        
-        for core_id, core in self.initialized_cores.items():
-            if core.is_idle:
-                continue
-            c = core.get_remaining_cycles()
             
-            if remaining_cycles is None:
-                remaining_cycles = c
-            elif c is not None:
-                remaining_cycles = min(remaining_cycles, c)
-
-        if remaining_cycles == 0 or remaining_cycles is None:
-            remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
-        
-            if remaining_cycles == 0 or remaining_cycles is None:
-                remaining_cycles = cycle_resolution
-        else:
-            self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
+        self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
 
         for core_id, core in self.initialized_cores.items():
             if core.is_idle:
@@ -154,6 +162,7 @@ class Device:
 
         # while not all(self.initialized_cores[core_id].is_idle for core_id in core_ids):
         while True:
+            # with print_log_execution_time(desc=f"Step {step_cnt}"):
             self.run_single_step(cycle_resolution=cycle_resolution)
             
             # break condition: step count  
