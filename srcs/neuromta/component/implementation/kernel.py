@@ -60,12 +60,15 @@ def MCA_KERNEL_CORE_LD_THREAD(
         core.parallel_merge()
         
         with new_parallel_thread("FIFO_LOADS"):
-            for ir in fifo_loads:
-                tile_sig = ir.tile_sig
-                buf = env.fifo_buffers[ir.buf]
-                tile_size = tile_sig.tile_size
+            for i, ir in enumerate(fifo_loads):
+                with new_parallel_thread(f"FIFO_LOAD{i}"):
+                    tile_sig = ir.tile_sig
+                    buf = env.fifo_buffers[ir.buf]
+                    tile_size = tile_sig.tile_size
+                
+                    core.mem_copy_from_fifo(ir.ptr, buf, ir.entry_id, tile_size)
             
-                core.mem_copy_from_fifo(ir.ptr, buf, ir.entry_id, tile_size)
+            core.parallel_merge()
             core.var_atomic_increase(env.variables[ex_pr_cnt_var_name], 1)
                 
         with new_parallel_thread("FIFO_STORES"):

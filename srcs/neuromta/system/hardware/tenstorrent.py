@@ -55,9 +55,9 @@ class TenstorrentConfig(dict):
         n_npu_core = 12 * 14
         n_dma_core = 12 * 2
         
-        n_main_mem_instances = 1
-        n_main_mem_channel_per_instance = 8
-        n_main_mem_cmd_q_per_instance = 24
+        n_main_mem_instances = 8
+        n_main_mem_channel_per_instance = 3
+        n_main_mem_cmd_q_per_instance = 3
 
         main_mem_config = MainMemoryConfig(
             # STATIC MEMORY CONFIG
@@ -71,19 +71,28 @@ class TenstorrentConfig(dict):
             dramsim3_enable=PYDRAMSIM3_AVAILABLE,
             dramsim3_src_config_path="GDDR6_8Gb_x16.ini",
             dramsim3_dst_config_path=TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name),
+            dramsim3_max_issue_per_cmd_q_per_cycle=4,
         )
         
         icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
             shape=icnt_shape,                       # - 12x16 torus
-            subnets=2,                              # - 5 subnets
-            flit_size=parse_mem_cap_str("64B"),     # - 64B flit size (the unit of flow control)
-            max_payload_size=32,                    # - 32 in flits in maximum as a payload = 2048B
-            booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 64B * 5 * 1GHz = 320GB/s
+            subnets=2,                              # - 2 independent NoCs (one per router)
+            flit_size=parse_mem_cap_str("64B"),     # - 64B flit size (flow-control unit)
+            max_payload_size=32,                    # - max payload = 32 flits (= 2048B)
+            booksim2_enable=PYBOOKSIM2_AVAILABLE,
             booksim2_kwargs={
-                "in_ports": 1,
-                "out_ports": 1,
-                "input_speedup": 32,
-                "output_speedup": 32,
+                "routing_delay": 1,
+                "vc_alloc_delay": 1,
+                "sw_alloc_delay": 1,
+                "st_prepare_delay": 0,
+                "st_final_delay": 1,
+                
+                "input_speedup": 1,
+                "output_speedup": 1,
+                "internal_speedup": 1.0,
+                
+                "num_vcs": 16,
+                "vc_buf_size": 8,
             }
         )
         

@@ -24,8 +24,11 @@ if __name__ == "__main__":
     parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
     parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
+    parser.add_argument('--report-icnt-stats', action="store_true", help="Whether to report interconnect statistics after simulation", dest="report_icnt_stats")
+    parser.add_argument('--report-dram-stats', action="store_true", help="Whether to report DRAM statistics after simulation", dest="report_dram_stats")
     parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
-    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--pipeline-gran', type=int, default=32, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--spad-size', type=str, default="512KB", help="The size of the scratchpad memory per core (e.g., '256KB')", dest="spad_size")
     parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
     args = parser.parse_args()
     
@@ -40,7 +43,7 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (4, 4))
     
-    M, N, K = 512, 512, 512
+    M, N, K = 512, 512, 256
     dtype = torch.int16
     acc_dtype = torch.int16
     blocked_mapping = True  # Enable blocked mapping for better data locality
@@ -64,9 +67,7 @@ if __name__ == "__main__":
     bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
     ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
     
-    operator = MCA_OP_LINEAR(
-        ifm_b, wgt_b, bias_b, ofm_b, 
-    )
+    operator = MCA_OP_LINEAR(ifm_b, wgt_b, bias_b, ofm_b)
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
@@ -74,7 +75,7 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=[core_group],
-        spad_space_size_per_core=parse_mem_cap_str("256KB"),
+        spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
         pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,
     )
@@ -146,10 +147,19 @@ if __name__ == "__main__":
                 f.writelines(content)
             logger.error(f"Mismatch report saved to '{mismatch_report}'.")
             logger.error(f"Total mismatches: {len(content)}/{reference.numel()}")
-            
-        # reference = reference.reshape(M // 32, 32, N // 32, 32).permute(0, 2, 1, 3)
-        # for ms in range(M // 32):
-        #     for ns in range(N // 32):
-        #         ref_tile = reference[ms, ns]
-        #         print(f"Reference tile at ({ms}, {ns}):")
-        #         print(ref_tile)
+        
+    if args.report_icnt_stats:
+        import pprint
+        from neuromta.component.context.global_context import BOOKSIM_MODULE_ID
+        from neuromta.component.companions.booksim import BookSim2
+        
+        booksim2_module: BookSim2 = device.companion_core._companion_modules[BOOKSIM_MODULE_ID]
+        pprint.pprint(booksim2_module.get_stats(), indent=4)
+
+    if args.report_dram_stats:
+        import pprint
+        from neuromta.component.context.global_context import DRAMSIM_MODULE_ID
+        from neuromta.component.companions.dramsim import DRAMSim3
+        
+        dram_module: DRAMSim3 = device.companion_core._companion_modules[DRAMSIM_MODULE_ID]
+        pprint.pprint(dram_module.get_stats(), indent=4)

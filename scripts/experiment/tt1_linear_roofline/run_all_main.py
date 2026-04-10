@@ -1,5 +1,5 @@
-import json
 import os
+import json
 import argparse
 import multiprocessing as mp
 from neuromta.component.implementation import operator
@@ -19,6 +19,7 @@ parser = argparse.ArgumentParser(description="Tenstorrent Device Benchmark Suite
 parser.add_argument("-o", "--output", type=str, default=f"{FILE_NAME}.csv", help="Output file to save benchmark results")
 parser.add_argument("-n", "--n-workers", type=int, default=mp.cpu_count(), help="Number of parallel worker processes")
 parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
+parser.add_argument('--skip-execution', action="store_true", help="Whether to skip kernel execution and only perform compilation and profiling setup", dest="skip_execution")
 args = parser.parse_args()
 
 OUTPUT_DIR = os.path.join(ROOT_DIR, ".logs")
@@ -28,21 +29,29 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
+def _find_smallest_divisor_above(num: int, threshold: int) -> int:
+    for i in range(threshold, num + 1):
+        if num % i == 0:
+            return i
+    return num
+
+def _get_shard_shape_from_tensor_shape(tensor_shape: tuple[int]) -> tuple[int]:
+    hh = tensor_shape[-2]
+    ww = tensor_shape[-1]
+    
+    return _find_smallest_divisor_above(hh, 32), _find_smallest_divisor_above(ww, 32)
+
+
 class Benchmark:
     def __init__(
         self, 
         M:  int, N:  int, K:  int,
-        Ms: int, Ns: int, Ks: int,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
     ):
         self.M: int = M
         self.N: int = N
         self.K: int = K
-        
-        self.Ms: int = Ms
-        self.Ns: int = Ns
-        self.Ks: int = Ks
         
         self.dtype:     torch.dtype = dtype
         self.acc_dtype: torch.dtype = acc_dtype
@@ -52,29 +61,68 @@ class Benchmark:
         self._main_traffic: int = 0
         self._total_ops:    int = (self.M * self.N * self.K) * 2 + (self.M * self.N)  # MACs + Bias Add
         
-    def run(self, device: TenstorrentDevice, core_group: MTA_CoreGrid):
-        if self.M % self.Ms != 0:
-            self.Ms = self.M
-        if self.N % self.Ns != 0:
-            self.Ns = self.N
-        if self.K % self.Ks != 0:
-            self.Ks = self.K
-            
-        ifm  = torch.randint(low=0, high=128, size=(self.M, self.K), dtype=self.dtype)
-        wgt  = torch.randint(low=0, high=128, size=(self.N, self.K), dtype=self.dtype)
-        bias = torch.randint(low=0, high=256, size=(self.N,), dtype=self.dtype)
+    @property
+    def ifm_shape(self) -> tuple[int]:
+        return (self.M, self.K)
+    
+    @property
+    def wgt_shape(self) -> tuple[int]:
+        return (self.N, self.K)
+    @property
+    def bias_shape(self) -> tuple[int]:
+        return (1, self.N)
+    
+    @property
+    def ofm_shape(self) -> tuple[int]:
+        return (self.M, self.N)
+    
+    @property
+    def ifm_shard_shape(self) -> tuple[int]:
+        return _get_shard_shape_from_tensor_shape(self.ifm_shape)
+    
+    @property
+    def wgt_shard_shape(self) -> tuple[int]:
+        return _get_shard_shape_from_tensor_shape(self.wgt_shape)
+    
+    @property
+    def bias_shard_shape(self) -> tuple[int]:
+        return _get_shard_shape_from_tensor_shape(self.bias_shape)
+    
+    @property
+    def ofm_shard_shape(self) -> tuple[int]:
+        return _get_shard_shape_from_tensor_shape(self.ofm_shape)
+    
+    @property
+    def ifm_total_size(self) -> int:
+        return self.M * self.K * self.dtype.itemsize
+    
+    @property
+    def wgt_total_size(self) -> int:
+        return self.N * self.K * self.dtype.itemsize
+    
+    @property
+    def bias_total_size(self) -> int:
+        return self.N * self.dtype.itemsize
+    
+    @property
+    def ofm_total_size(self) -> int:
+        return self.M * self.N * self.acc_dtype.itemsize
         
+    def run(self, device: TenstorrentDevice, core_group: MTA_CoreGrid):
         _l1_total_per_core     = parse_mem_cap_str("1.4MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
-        _spad_size_per_core    = parse_mem_cap_str("196KB")
+        _spad_size_per_core    = parse_mem_cap_str("512KB")
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
+        logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
+        
         try:
-            main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("30GB"))
+            l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
+            main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("32GB"))
             
-            ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,         dtype=ifm.dtype,       shard_shape=(self.Ms, self.Ks)).tiling((32, 32)).allocate().update(ifm)
-            wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,         dtype=wgt.dtype,       shard_shape=(self.Ns, self.Ks)).tiling((32, 32)).allocate().update(wgt)
-            bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape,        dtype=bias.dtype,      shard_shape=(1,       self.Ns)).tiling((1,  32)).allocate().update(bias)
-            ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=(self.M, self.N),  dtype=self.acc_dtype,  shard_shape=(self.Ms, self.Ns)).tiling((32, 32)).allocate()
+            ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.ifm_shape,  dtype=self.dtype,     shard_shape=self.ifm_shard_shape).tiling((32, 32)).allocate()
+            wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=self.dtype,     shard_shape=self.wgt_shard_shape).tiling((32, 32)).allocate()
+            bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=self.dtype,     shard_shape=self.bias_shard_shape).tiling((1,  32)).allocate()
+            ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.ofm_shape,  dtype=self.acc_dtype, shard_shape=self.ofm_shard_shape).tiling((32, 32)).allocate()
             
             self._l1_traffic:   int = 0
             self._main_traffic: int = 0
@@ -96,8 +144,8 @@ class Benchmark:
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                pipeline_granularity=16,
-                broadcast_optimize_queue_depth=0,
+                pipeline_granularity=32,
+                broadcast_optimize_queue_depth=16,
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -120,34 +168,44 @@ class Benchmark:
                     json.dump(summary, f, indent=4)
                     logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
                 
-            profilers = [
-                DRAMBandwidthProfiler(device, record_type="BOTH"),
-                InterconnectBandwidthProfiler(device),
-                ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
-                ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
-                ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
-            ]
-            
-            profiler_saver = ProfilerFileSaverHub(output_dir=profiler_summary_dir)
-            profiler_saver.add_profilers(*profilers)
-            
-            if args.monitor:
-                with MonitoringWindow(device, core_group, profilers, sim_name=self.signature) as monitor:
-                    device.run_kernels()
+            if args.skip_execution:
+                import pandas as pd
+                with open(output_path, "r") as f:
+                    df = pd.read_csv(f)
+                    existing_timestamp = df[df["Benchmark"] == self.signature]["Timestamp (cycles)"].values
+                    if len(existing_timestamp) > 0:
+                        self._timestamp = int(existing_timestamp[0])
+                    else:
+                        logger.warning(f"No existing timestamp found for benchmark {self.signature} in backup logs. Setting timestamp to 0.")
+                        self._timestamp = 0             
             else:
-                device.run_kernels()
+                profilers = [
+                    DRAMBandwidthProfiler(device, record_type="BOTH"),
+                    InterconnectBandwidthProfiler(device),
+                    ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
+                    ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
+                    ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
+                ]
                 
-            self._timestamp = device.timestamp
-            self._l1_traffic = 0
-            self._main_traffic = ifm.numel() * ifm.element_size() + ofm_b.shape[0] * ofm_b.shape[1] * ofm_b.dtype.itemsize + wgt.numel() * wgt.element_size() + bias.numel() * bias.element_size()
+                profiler_saver = ProfilerFileSaverHub(output_dir=profiler_summary_dir)
+                profiler_saver.add_profilers(*profilers)
+            
+                if args.monitor:
+                    with MonitoringWindow(device, core_group, profilers, sim_name=self.signature) as monitor:
+                        device.run_kernels()
+                else:
+                    device.run_kernels()
+                    
+                self._timestamp = device.timestamp
                 
-            profiler_saver.close()
-            device.reset_simulation()
+                profiler_saver.close()
+                device.reset_simulation()
+                
         except Exception as e:
             logger.error(f"Error during benchmark {self.signature}: {e}")
             return False
         
-        return True 
+        return True  # Indicate successful run without L1 memory overflow
         
     @property
     def timestamp(self) -> int:
@@ -167,7 +225,7 @@ class Benchmark:
     
     @property
     def signature(self) -> str:
-        return f"{self.M}x{self.N}x{self.K}_{self.Ms}x{self.Ns}x{self.Ks}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
+        return f"{self.M}x{self.N}x{self.K}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
     
     
 class BenchmarkProcess(mp.Process):
@@ -207,21 +265,21 @@ class BenchmarkProcess(mp.Process):
 
 benchmarks = [
     # Benchmarks: Square Matrices with Varying Sizes
-    Benchmark(M=1024, N=1024, K=1024, Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=512 , N=512,  K=512,  Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=256 , N=256,  K=256,  Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=128 , N=128,  K=128,  Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=1024, N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=512,  N=512,  K=512,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=256,  N=256,  K=256,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=128,  N=128,  K=128,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     
     # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
-    Benchmark(M=512,  N=1024, K=1024, Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=256,  N=1024, K=1024, Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=128,  N=1024, K=1024, Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=64,   N=1024, K=1024, Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=32,   N=1024, K=1024, Ms=32, Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=8,    N=1024, K=1024, Ms=8,  Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=4,    N=1024, K=1024, Ms=4,  Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=2,    N=1024, K=1024, Ms=2,  Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=1,    N=1024, K=1024, Ms=1,  Ns=32, Ks=32, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=512,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=256,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=128,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=64,   N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=32,   N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=8,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=4,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=2,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark(M=1,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
 ]
 
 if __name__ == "__main__":
@@ -245,7 +303,7 @@ if __name__ == "__main__":
     
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (4, 4), return_dict, worker_sem)
+        p = BenchmarkProcess(benchmark, config, (0, 0), (8, 8), return_dict, worker_sem)
         p.start()
         processes.append(p)
         
@@ -285,7 +343,7 @@ if __name__ == "__main__":
         img_path = os.path.join(OUTPUT_DIR, f"{FILE_NAME}.png")
         
         mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
-        noc_bisection_bw = booksim_config.peak_bandwidth_per_router() * config["processor_clock_freq"] / 1e9 * 4  # bisection bandwidth in GB/s
+        noc_bisection_bw = booksim_config.peak_bandwidth_per_router() * config["processor_clock_freq"] / 1e9
         
         print(f"=== DRAMSim3 Configuration ===")
         print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
@@ -298,7 +356,7 @@ if __name__ == "__main__":
         print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
-            peak_perf = 4 * 4 * mxu_config.peak_op_per_cycle,  # 4x4 PE array
+            peak_perf = 8 * 8 * mxu_config.peak_op_per_cycle,  # 4x4 PE array
             peak_mem_bw = mem_peak_bw,
             peak_noc_bw = noc_bisection_bw,
             src_path=output_path,

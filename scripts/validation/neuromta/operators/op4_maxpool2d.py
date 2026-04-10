@@ -21,10 +21,12 @@ os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate OP4 MaxPool2D operator on Tenstorrent hardware.")
-    parser.add_argument('--no-bcast', action="store_true", help="Whether not to use broadcast", dest="no_bcast")
     parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
-    parser.add_argument('--debug-command', action="store_true", help="Whether to show real-time debugging information for commands", dest="debug_command")
+    parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
+    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
+    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
     args = parser.parse_args()
 
     # torch.set_printoptions(linewidth=1024, threshold=10000)

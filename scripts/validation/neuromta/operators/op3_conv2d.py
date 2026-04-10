@@ -25,7 +25,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
     parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
-    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--pipeline-gran', type=int, default=32, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
     parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
     args = parser.parse_args()
 
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = device.get_npu_core_group((0, 0), (4, 4))
+    core_group = device.get_npu_core_group((0, 0), (12, 14))
     
     N, H, W, C = 1, 224, 224, 3
     FH, FW, K = 11, 11, 96
@@ -70,13 +70,13 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
+    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(Wt,  Ct)).tiling((32, 32)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(Kt,  Ct)).tiling((32, 32)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   Kt)).tiling((1,  32)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OWt, Kt)).tiling((32, 32)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(Wt,  Ct)).tiling((32, 32)).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(Kt,  Ct)).tiling((32, 32)).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   Kt)).tiling((1,  32)).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OWt, Kt)).tiling((32, 32)).allocate()
     
     operator = MCA_OP_CONV2D(
         ifm_b, wgt_b, bias_b, ofm_b, 
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=[core_group],
-        spad_space_size_per_core=parse_mem_cap_str("128KB"),
+        spad_space_size_per_core=parse_mem_cap_str("512KB"),
         pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,
     )

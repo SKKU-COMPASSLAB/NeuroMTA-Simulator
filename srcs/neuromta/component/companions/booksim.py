@@ -39,7 +39,7 @@ if PYBOOKSIM2_AVAILABLE:
             self._config: c_void_p = pybooksim2.create_config_torus_2d(subnets, x, y, xr, yr)
             
         def peak_bandwidth_per_router(self) -> float:
-            return self._flit_size * self._subnets
+            return self._flit_size * self._subnets * self._x * self._y
 
         def create_icnt(self) -> c_void_p:
             return pybooksim2.create_icnt(config=self._config)
@@ -83,6 +83,9 @@ if PYBOOKSIM2_AVAILABLE:
 
         def dispatch_command(self, cmd: CompanionCommandSignature, dispatch_callback: Callable, execute_callback: Callable) -> bool:
             return pybooksim2.icnt_dispatch_cmd(icnt=self._icnt, cmd=cmd.capsule, dispatch_callback=dispatch_callback, execute_callback=execute_callback)
+        
+        def get_stats(self) -> dict[str, int | bool]:
+            return pybooksim2.get_icnt_stats(self._icnt)
 else:
     class BookSim2Config:
         def __init__(self, flit_size: int, subnets: int, x: int, y: int, xr: int, yr: int):
@@ -98,7 +101,7 @@ else:
             return self._x * self._y * self._xr * self._yr * 2 * 16
         
         def peak_bandwidth_per_router(self) -> float:
-            return self._flit_size * self._subnets
+            return self._flit_size * self._subnets * self._x * self._y
 
     class BookSim2(CompanionModule):
         def __init__(self, config: BookSim2Config):
@@ -230,3 +233,6 @@ else:
             
             self._injection_buffers[key].append((cmd, execute_callback))
             return True
+        
+        def get_stats(self) -> dict[str, int | bool]:
+            return {}

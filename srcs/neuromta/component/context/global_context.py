@@ -3,7 +3,7 @@ import math
 from typing import Sequence, Any
 
 from neuromta.framework import *
-from neuromta.component.companions.dramsim import DRAMSim3Config
+from neuromta.component.companions.dramsim import DRAMSim3Config, PYDRAMSIM3_AVAILABLE
 
 
 __all__ = [
@@ -206,6 +206,7 @@ class MainMemoryConfig:
         dramsim3_enable: bool           = None,
         dramsim3_src_config_path: str   = "GDDR6_8Gb_x16.ini",
         dramsim3_dst_config_path: str   = "dramsim3_config.ini",
+        dramsim3_max_issue_per_cmd_q_per_cycle: int = 1,
     ):
         if dramsim3_enable is None:
             dramsim3_enable = PYDRAMSIM3_AVAILABLE
@@ -232,6 +233,7 @@ class MainMemoryConfig:
                 channel_size=channel_size,
                 n_channel_per_instance=n_channel_per_instance,
                 n_cmd_q_per_instance=n_cmd_q_per_instance,
+                max_issue_per_cmd_q_per_cycle=dramsim3_max_issue_per_cmd_q_per_cycle,
             )
         else:
             self.dramsim3_config = DRAMSim3Config(
@@ -430,7 +432,8 @@ class GlobalContext:
         addr = ptr.addr - self.main_mem_base_addr
         ch_id = addr // self.main_mem_channel_size
         inst_id = ch_id // self.config.main_mem_config.n_channel_per_instance
-        cmd_q_id = ch_id % self.config.main_mem_config.n_channel_per_instance
+        local_ch_id = ch_id % self.config.main_mem_config.n_channel_per_instance
+        cmd_q_id = local_ch_id % self.config.main_mem_config.n_cmd_q_per_instance
         addr_offset = addr % (self.main_mem_channel_size * self.config.main_mem_config.n_channel_per_instance)
         
         return {

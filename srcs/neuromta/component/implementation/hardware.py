@@ -192,7 +192,7 @@ class _MCA_MemorySpaceOverrided(MCA_MemorySpace):
 class MCA_MainMemorySpace(MCA_MemorySpace):
     def __init__(self, device: 'MCA_DeviceBase', size_per_channel: int, channel_ids: Sequence[int]=None,):
         if channel_ids is None:
-            channel_ids = list(range(device.global_context.n_main_mem_instances))
+            channel_ids = list(range(device.global_context.config.main_mem_config.n_channels))
         super().__init__(device=device, mem_type=GlobalContextMemType.MAIN, size_per_owner=size_per_channel, owner_ids=channel_ids)
         
     def empty_space(self, channel_id):

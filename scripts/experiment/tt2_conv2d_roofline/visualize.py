@@ -4,12 +4,12 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
-PEAK_PERFORMANCE   = 2 * (4 * 4) * (32 * 32)  # 4x4 Core Grid | 32x32 MXU | MAC = 2 OPs 
-PEAK_BANDWIDTH = 387.88  # theoretical peak bandwidth in GB/cycle
+PEAK_PERFORMANCE = (12 * 14) * 4096   
+PEAK_BANDWIDTH   = 387.88  # theoretical peak bandwidth in GB/cycle
 
 
 def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_path: str, img_title: str):
-    ai_x = np.logspace(-2, 4, 500)
+    ai_x = np.logspace(0, 5, 500)
 
     mem_bw_limit = ai_x * peak_mem_bw               # Bandwidth-bound: P = AI * PEAK_BANDWIDTH
     noc_bw_limit = ai_x * peak_noc_bw               # NoC Bandwidth-bound: P = AI * PEAK_NOC_BANDWIDTH
@@ -37,6 +37,7 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
     
     mem_bound_marker = 'o'
     comp_bound_marker = '^'
+    # colors = ['blue', 'green', 'purple', 'orange', 'brown', 'cyan', 'magenta', 'yellow']
     colors = [
         '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
         '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', 
@@ -44,6 +45,9 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
         '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', 
         '#ffffff', '#000000', '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'
     ]
+    
+    # mem_bound_cnt = 0
+    # comp_bound_cnt = 0
     
     mem_ai_balance = peak_perf / peak_mem_bw
     noc_ai_balance = peak_perf / peak_noc_bw
@@ -67,7 +71,7 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
             linestyle='', 
             label=name
         )
-    
+
     # Annotate the balance point
     plt.annotate(
         f'Memory Balance: ({mem_ai_balance:.2f} OPs/Byte, {peak_perf:.2f} OPs/Cycle)',
@@ -90,7 +94,7 @@ def draw(peak_perf: int, peak_mem_bw: int, peak_noc_bw: int, src_path: str, img_
     plt.xlim(ai_x.min(), ai_x.max()) 
     plt.ylim(mem_roofline.min() * 0.1, peak_perf * 2.5)
 
-    plt.legend(loc='lower right', fontsize=7)
+    plt.legend(loc='lower right', fontsize=8)
     plt.tight_layout(pad=0.8)
     plt.savefig(img_path, dpi=500)
     

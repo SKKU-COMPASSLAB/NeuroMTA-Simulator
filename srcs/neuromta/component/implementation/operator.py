@@ -35,9 +35,47 @@ def mca_operator_method(func: Callable):
 
 
 class MCA_OperatorSignature:
-    class ReorderType(enum.Enum):
-        ROW_MAJOR = "ROW_MAJOR"
-        COL_MAJOR = "COL_MAJOR"
+    class SchedulingType:
+        def __init__(self, t: str="AUTO", k: dict[str, Any]=None):
+            self.t = t
+            self.k = k or {}
+            
+        def AUTO(self) -> 'MCA_OperatorSignature.SchedulingType':
+            self.t = "AUTO"
+            return self
+            
+        def ROW_MAJOR(self) -> 'MCA_OperatorSignature.SchedulingType':
+            self.t = "ROW_MAJOR"
+            return self
+        
+        def COLUMN_MAJOR(self) -> 'MCA_OperatorSignature.SchedulingType':
+            self.t = "COLUMN_MAJOR"
+            return self
+        
+        def TEMPORAL_REUSE(self) -> 'MCA_OperatorSignature.SchedulingType':
+            self.t = "TEMPORAL_REUSE"
+            return self
+        
+        def STATIONARY(self, *buf_idx_arr: int) -> 'MCA_OperatorSignature.SchedulingType':
+            self.t = "STATIONARY"
+            self.k = {"buf_idx_arr": buf_idx_arr}
+            return self
+        
+        def INPUT_STATIONARY(self) -> 'MCA_OperatorSignature.SchedulingType':
+            self.t = "INPUT_STATIONARY"
+            return self
+        
+        def WEIGHT_STATIONARY(self) -> 'MCA_OperatorSignature.SchedulingType':
+            self.t = "WEIGHT_STATIONARY"
+            return self
+        
+        def NO_REORDER(self) -> 'MCA_OperatorSignature.SchedulingType':
+            self.t = "NO_REORDER"
+            return self
+        
+        @property
+        def is_auto(self) -> bool:
+            return self.t == "AUTO" 
     
     def __init__(
         self, 
@@ -62,12 +100,15 @@ class MCA_OperatorSignature:
         
         self.buffer_names: list[str] = []
         self.input_buffer_names: list[str] = []
+        self.param_buffer_names: list[str] = []
         self.output_buffer_name: str = None
         
         self.core_group: MCA_CoreGroup = None
-        self.reorder_type = MCA_OperatorSignature.ReorderType.ROW_MAJOR
+        self.scheduling_type = MCA_OperatorSignature.SchedulingType(t="AUTO")  # default reorder type
         
-    def add_buffer(self, buf_name: str, buffer: MCA_TensorBuffer, is_input: bool=False, is_output: bool=False):
+    def add_buffer(self, buf_name: str, buffer: MCA_TensorBuffer, is_input: bool=False, is_output: bool=False, is_param: bool=False):
+        if is_param:
+            is_input = True
         if (not is_input) and (not is_output):
             raise ValueError("Buffer must be marked as input or output.")
         
@@ -81,6 +122,8 @@ class MCA_OperatorSignature:
                         self._tiles[buf_name][(y_s, x_s, y_t, x_t)] = TileSignature(buf_name, buffer.tile_size, y_s, x_s, y_t, x_t)
         
         self.buffer_names.append(buf_name)
+        if is_param:
+            self.param_buffer_names.append(buf_name)
         if is_input:
             self.input_buffer_names.append(buf_name)
         if is_output:
@@ -139,42 +182,19 @@ class MCA_OperatorSignature:
             if old_name in self.buffer_names:
                 idx = self.buffer_names.index(old_name)
                 self.buffer_names[idx] = new_name
-    
-    def reorder_tiled_ops(self):
-        # def tile_sort_key(tiled_op: TiledOperatorSignature):
-        #     tile = tiled_op.o_tile
-        #     y_s, x_s, y_t, x_t = tile.coords
-        #     if self.reorder_type == MCA_OperatorSignature.ReorderType.ROW_MAJOR:
-        #         return (y_s, y_t, x_s, x_t)
-        #     else:
-        #         return (x_s, x_t, y_s, y_t)
-            
-        # self._tiled_ops.sort(key=tile_sort_key)
+            if old_name in self.param_buffer_names:
+                idx = self.param_buffer_names.index(old_name)
+                self.param_buffer_names[idx] = new_name
+
+    def _reorder_tiled_ops_with_key(self, key_func: Callable[[TiledOperatorSignature], Any]):
+        self._tiled_ops.sort(key=key_func)
         
+    def _reorder_tiled_ops_with_dist(self, dist_func: Callable[[TiledOperatorSignature, dict[str, int]], tuple[dict[str, int], int]]):
         _reorder_map: list[int] = []
         _dist: dict[str, int] = {}
         _cur_candidate = None
         _cur_dist = None
         _cur_score = None
-        
-        def _compute_cur_dist_score(tiled_op: TiledOperatorSignature) -> tuple[dict[str, int], int]:
-            _new_dist = _dist.copy()
-            _new_i_tiles = set()
-            
-            for uop_idx in range(tiled_op.n_uops):
-                for tile in tiled_op.i_tiles[uop_idx]:
-                    _new_i_tiles.add(tile.signature)
-                    
-            for tile_sig in _new_dist.keys():
-                if tile_sig not in _new_i_tiles:
-                    _new_dist[tile_sig] += 1
-            
-            for new_tile_sig in _new_i_tiles:
-                _new_dist[new_tile_sig] = 0
-                        
-            _score = sum(_new_dist.values())
-            
-            return _new_dist, _score
         
         while len(_reorder_map) < len(self.tiled_ops):
             for tiled_op_idx, tiled_op in enumerate(self.tiled_ops):
@@ -183,9 +203,9 @@ class MCA_OperatorSignature:
                 
                 if _cur_candidate is None:
                     _cur_candidate = tiled_op_idx
-                    _cur_dist, _cur_score = _compute_cur_dist_score(tiled_op)
+                    _cur_dist, _cur_score = dist_func(tiled_op, _dist)
                 else:
-                    _new_dist, _new_score = _compute_cur_dist_score(tiled_op)
+                    _new_dist, _new_score = dist_func(tiled_op, _dist)
                     
                     if _new_score < _cur_score:
                         _cur_candidate = tiled_op_idx
@@ -193,13 +213,6 @@ class MCA_OperatorSignature:
                         _cur_score = _new_score
                     else:
                         continue
-
-            # print(f"Selected tiled_op_idx: {_cur_candidate} with score {_cur_score}")
-            # print(f"Previous distance map:")
-            # pprint.pprint(_dist, indent=4)
-            # print(f"Current distance map:")
-            # pprint.pprint(_cur_dist, indent=4)
-            # input("Press Enter to continue ...")
 
             _reorder_map.append(_cur_candidate)
             _dist = _cur_dist
@@ -209,12 +222,75 @@ class MCA_OperatorSignature:
             _cur_score = None
             
         self._tiled_ops = [self._tiled_ops[tiled_op_idx] for tiled_op_idx in _reorder_map]
-                
-        # print(_reorder_map)
-        # input("Press Enter to continue ...")
+    
+    def reorder_tiled_ops(self):
+        if self.scheduling_type.t == "ROW_MAJOR":
+            def tile_sort_key(tiled_op: TiledOperatorSignature):
+                tile = tiled_op.o_tile
+                y_s, x_s, y_t, x_t = tile.coords
+                return (y_s, y_t, x_s, x_t)
+            
+            self._reorder_tiled_ops_with_key(tile_sort_key)
+            
+        elif self.scheduling_type.t == "COLUMN_MAJOR":
+            def tile_sort_key(tiled_op: TiledOperatorSignature):
+                tile = tiled_op.o_tile
+                y_s, x_s, y_t, x_t = tile.coords
+                return (x_s, x_t, y_s, y_t)
+            
+            self._reorder_tiled_ops_with_key(tile_sort_key)
         
-        if set(_reorder_map) != set(range(len(self.tiled_ops))):
-            raise ValueError("Invalid reorder map generated.")
+        elif self.scheduling_type.t == "TEMPORAL_REUSE":
+            def _compute_cur_dist_score(tiled_op: TiledOperatorSignature, _dist: dict[str, int]) -> tuple[dict[str, int], int]:
+                _new_dist = _dist.copy()
+                _new_i_tiles = set()
+                
+                for uop_idx in range(tiled_op.n_uops):
+                    for tile in tiled_op.i_tiles[uop_idx]:
+                        _new_i_tiles.add(tile.signature)
+                        
+                for tile_sig in _new_dist.keys():
+                    if tile_sig not in _new_i_tiles:
+                        _new_dist[tile_sig] += 1
+                
+                for new_tile_sig in _new_i_tiles:
+                    _new_dist[new_tile_sig] = 0
+                            
+                _score = sum(_new_dist.values())
+                
+                return _new_dist, _score
+            
+            self._reorder_tiled_ops_with_dist(_compute_cur_dist_score)
+            
+        elif "STATIONARY" in self.scheduling_type.t:
+            if self.scheduling_type.t == "INPUT_STATIONARY":
+                buf_names = [buf_name for buf_name in self.input_buffer_names if buf_name not in self.param_buffer_names]
+            elif self.scheduling_type.t == "WEIGHT_STATIONARY":
+                buf_names = [buf_name for buf_name in self.param_buffer_names]
+            else:
+                buf_names = [self.buffer_names[buf_idx] for buf_idx in self.scheduling_type.k["buf_idx_arr"]]
+            
+            def _compute_cur_dist_score(buf_names: list[str], tiled_op: TiledOperatorSignature, _dist: dict[str, int]) -> tuple[dict[str, int], int]:
+                _new_dist = _dist.copy()
+                _new_i_tiles = set()
+                
+                for uop_idx in range(tiled_op.n_uops):
+                    for tile in tiled_op.i_tiles[uop_idx]:
+                        if tile.buf_name in buf_names:
+                            _new_i_tiles.add(tile.signature)
+                        
+                for tile_sig in _new_dist.keys():
+                    if tile_sig not in _new_i_tiles:
+                        _new_dist[tile_sig] += 1
+                
+                for new_tile_sig in _new_i_tiles:
+                    _new_dist[new_tile_sig] = 0
+                            
+                _score = sum(_new_dist.values())
+                
+                return _new_dist, _score
+            
+            self._reorder_tiled_ops_with_dist(functools.partial(_compute_cur_dist_score, buf_names))
                 
     @property
     def op_type(self):      return self._op_type
@@ -583,30 +659,25 @@ class MCA_OperatorGraphCompiler:
         @property 
         def n_uop_nodes(self) -> int:
             return len(self.uop_nodes)
-        
-        @staticmethod
-        def _round_robin_mapping(op_sig: 'MCA_OperatorSignature', tiled_op_idx: int) -> int:
-            n_cores = len(op_sig.core_group.core_ids)
-            core_id = op_sig.core_group.core_ids[tiled_op_idx % n_cores]
-            return core_id
             
         @classmethod
         def from_op_sig(cls, op_sig: 'MCA_OperatorSignature') -> 'dict[int, MCA_OperatorGraphCompiler.Thread]':
+            total_n_tiled_ops = len(op_sig.tiled_ops)
+            n_tiled_ops_per_core = math.ceil(total_n_tiled_ops / len(op_sig.core_group.core_ids))
+            
             mappings: dict[int, MCA_OperatorGraphCompiler.Thread] = {core_id: MCA_OperatorGraphCompiler.Thread(core_id) for core_id in op_sig.core_group.core_ids}
             
-            for tiled_op_idx, tiled_op_sig in enumerate(op_sig.tiled_ops):
-                core_id = cls._round_robin_mapping(op_sig, tiled_op_idx)
+            for core_idx, core_id in enumerate(op_sig.core_group.core_ids):
+                start_idx = core_idx * n_tiled_ops_per_core
+                end_idx = min(start_idx + n_tiled_ops_per_core, total_n_tiled_ops)
                 
-                for uop_idx in range(tiled_op_sig.n_uops):
-                    output = (uop_idx == (tiled_op_sig.n_uops - 1))  # mark the last uop of each tiled op as output uop (for store scheduling)
-                    mappings[core_id].add_uop_node(op_sig.op_id, tiled_op_idx, uop_idx, output=output)
+                for tiled_op_idx in range(start_idx, end_idx):
+                    tiled_op_sig = op_sig.tiled_ops[tiled_op_idx]
                     
-            max_n_uop_nodes_per_thread = max(thread.n_uop_nodes for thread in mappings.values())
-            
-            for thread in mappings.values():
-                while thread.n_uop_nodes < max_n_uop_nodes_per_thread:
-                    thread.add_bubble(op_id=op_sig.op_id)
-            
+                    for uop_idx in range(tiled_op_sig.n_uops):
+                        output = (uop_idx == (tiled_op_sig.n_uops - 1))  # mark the last uop of each tiled op as output uop (for store scheduling)
+                        mappings[core_id].add_uop_node(op_sig.op_id, tiled_op_idx, uop_idx, output=output)
+                        
             return mappings
             
     class OperatorMetadata:
@@ -639,7 +710,6 @@ class MCA_OperatorGraphCompiler:
         
         def __init__(self, op_sig: 'MCA_OperatorSignature', recipe: 'MCA_OperatorGraphCompiler.CompileRecipe'):
             self.op_sig = op_sig
-            # self.spad_space_size_per_pp = recipe.spad_space_size_per_core // 2
             self.spad_space_size_per_core = recipe.spad_space_size_per_core
             
             self.i_buf_src: dict[str, MCA_OperatorGraphCompiler.OperatorMetadata.SrcType] = {
@@ -650,7 +720,10 @@ class MCA_OperatorGraphCompiler:
             # Dependencies related to output buffer sharing (a.k.a tile-level pipelining)
             self.o_tile_store = op_sig.buffers[op_sig.output_buffer_name].is_allocated  # if the output buffer is allocated, the computation result should be updated to the buffer
             self.o_tile_sharers: set[str] = set()  # set of op_ids that directly consume this operator's output tiles (tile-level sharers via SHARED area)
-
+            
+            # NEW! Maintain stationary data inside the SPAD space instead of loading and storing tiles inside the LD/ST space
+            self.sta_bufs: set[str] = set()
+            
             # Initialize min LD/ST area based on the operator signature
             self.min_ld_area_per_pp = 0
             self.min_st_area_per_pp = 0
@@ -659,7 +732,7 @@ class MCA_OperatorGraphCompiler:
             
             for tiled_op_sig in op_sig.tiled_ops:
                 for uop_idx in range(tiled_op_sig.n_uops):
-                    _tmp_ld_area = sum(op_sig.buffers[tile.buf_name].tile_size for tile in tiled_op_sig.i_tiles[uop_idx])
+                    _tmp_ld_area = sum(op_sig.buffers[tile.buf_name].tile_size for tile in tiled_op_sig.i_tiles[uop_idx] if tile.buf_name not in self.sta_bufs)
                     _tmp_st_area = op_sig.buffers[tiled_op_sig.o_tile.buf_name].tile_size
                     self.min_ld_area_per_pp = max(self.min_ld_area_per_pp, _tmp_ld_area)
                     self.min_st_area_per_pp = max(self.min_st_area_per_pp, _tmp_st_area)
@@ -674,23 +747,135 @@ class MCA_OperatorGraphCompiler:
             self.bcast_fifo_slot_size = max(buf.tile_size for buf_name, buf in op_sig.buffers.items() if buf_name in op_sig.input_buffer_names)
             self.bcast_buffer_size    = recipe.broadcast_optimize_queue_depth * self.bcast_fifo_slot_size
             self.opp_fifo_slot_size   = op_sig.buffers[op_sig.output_buffer_name].tile_size
-            self.max_opp_buffer_size  = self.spad_space_size_per_core - self.bcast_buffer_size - 2 * self.spad_space_size_per_pp
             
-            if self.max_opp_buffer_size < 0:
+            self.remaining_spad_for_opp_and_sta  = self.spad_space_size_per_core - self.bcast_buffer_size - 2 * self.spad_space_size_per_pp
+            
+            if self.remaining_spad_for_opp_and_sta < 0:
                 raise ValueError(f"Insufficient shared area per core for operator {op_sig.op_id}. Required: at least {self.min_ld_area_per_pp + self.min_st_area_per_pp + self.bcast_buffer_size} bytes, but only {recipe.spad_space_size_per_core} bytes available per core.")
             
             # Actual LD/ST/SHARED area per core to be determined based on the dependencies with consumer operators (initially set to 0, will be updated when analyzing dependencies)
             self.min_opp_buffer_size = 0
+            self.min_sta_buffer_size = 0
             self.thread_mapping: dict[int, MCA_OperatorGraphCompiler.Thread] = {}
             
             self._is_frozen = False
             
+        def _compute_sta_buffer_size(self, thread_mapping: 'dict[int, MCA_OperatorGraphCompiler.Thread]') -> int:
+            max_sta_area_per_core: dict[int, int] = {core_id: 0 for core_id in self.op_sig.core_group.core_ids}
+            
+            for core_id, thread in thread_mapping.items():
+                _tmp = set()
+                _tmp_max_sta_area_per_core = 0
+                
+                for uop_node in thread.uop_nodes:
+                    if uop_node.is_bubble:
+                        continue
+                    
+                    for i_tile in self.op_sig.tiled_ops[uop_node.tiled_op_idx].i_tiles[uop_node.uop_idx]:
+                        if i_tile.buf_name in self.sta_bufs and i_tile.signature not in _tmp:
+                            _tmp.add(i_tile.signature)
+                            _tmp_max_sta_area_per_core += self.op_sig.buffers[i_tile.buf_name].tile_size
+                            
+                max_sta_area_per_core[core_id] = _tmp_max_sta_area_per_core
+            
+            return max(max_sta_area_per_core.values())
+        
+        def _explore_scheduling(self):
+            if not self.op_sig.scheduling_type.is_auto:
+                return  # Only explore buffer sharing for auto-scheduled operators, for now
+            
+            remaining_spad_size = self.remaining_spad_for_opp_and_sta - self.min_opp_buffer_size
+            if remaining_spad_size <= 0:
+                return  # No remaining SPAD space for stationary buffers after allocating for output tile buffer
+            
+            logger.debug(f"Exploring tile scheduling for operator {self.op_sig.op_id} with remaining SPAD space {remaining_spad_size} bytes.")
+            
+            i_buf_totals = sum(self.op_sig.buffers[buf_name].total_size for buf_name in self.op_sig.input_buffer_names if buf_name not in self.op_sig.param_buffer_names)
+            p_buf_totals = sum(self.op_sig.buffers[buf_name].total_size for buf_name in self.op_sig.param_buffer_names)
+            
+            if i_buf_totals >= p_buf_totals:
+                logger.debug(f"Input buffers have larger total size ({i_buf_totals} bytes) than parameter buffers ({p_buf_totals} bytes). Prioritizing input stationary scheduling for operator {self.op_sig.op_id}.")
+                self.op_sig.scheduling_type.INPUT_STATIONARY()
+                self.op_sig.reorder_tiled_ops()  # reorder tiled ops to maximize the reuse of stationary buffers
+                thread_mapping = MCA_OperatorGraphCompiler.Thread.from_op_sig(self.op_sig)
+                self.sta_bufs = {buf_name for buf_name in self.op_sig.input_buffer_names if buf_name not in self.op_sig.param_buffer_names}
+                max_sta_buffer_size = self._compute_sta_buffer_size(thread_mapping)
+                
+                if max_sta_buffer_size <= remaining_spad_size:
+                    self.thread_mapping = thread_mapping
+                    self.min_sta_buffer_size = max_sta_buffer_size
+                    return
+                else:
+                    self.sta_bufs = set()  # reset stationary buffer assignment and try the next scheduling strategy
+                    self.min_sta_buffer_size = 0
+            
+            if len(self.op_sig.param_buffer_names) > 0:
+                logger.debug(f"Trying weight stationary scheduling for operator {self.op_sig.op_id}.")
+                self.op_sig.scheduling_type.WEIGHT_STATIONARY()
+                self.op_sig.reorder_tiled_ops()  # reorder tiled ops to maximize the reuse of stationary buffers
+                thread_mapping = MCA_OperatorGraphCompiler.Thread.from_op_sig(self.op_sig)
+                self.sta_bufs = {buf_name for buf_name in self.op_sig.param_buffer_names}
+                max_sta_buffer_size = self._compute_sta_buffer_size(thread_mapping)
+                
+                if max_sta_buffer_size <= remaining_spad_size:
+                    self.thread_mapping = thread_mapping
+                    self.min_sta_buffer_size = max_sta_buffer_size
+                    return
+                else:
+                    self.sta_bufs = set()  # reset stationary buffer assignment and try the next scheduling strategy
+                    self.min_sta_buffer_size = 0
+            
+            if i_buf_totals < p_buf_totals:
+                logger.debug(f"Trying input stationary scheduling for operator {self.op_sig.op_id}.")
+                self.op_sig.scheduling_type.INPUT_STATIONARY()
+                self.op_sig.reorder_tiled_ops()  # reorder tiled ops to maximize the reuse of stationary buffers
+                thread_mapping = MCA_OperatorGraphCompiler.Thread.from_op_sig(self.op_sig)
+                self.sta_bufs = {buf_name for buf_name in self.op_sig.input_buffer_names if buf_name not in self.op_sig.param_buffer_names}
+                max_sta_buffer_size = self._compute_sta_buffer_size(thread_mapping)
+                
+                if max_sta_buffer_size <= remaining_spad_size:
+                    self.thread_mapping = thread_mapping
+                    self.min_sta_buffer_size = max_sta_buffer_size
+                    return
+                else:
+                    self.sta_bufs = set()  # reset stationary buffer assignment and try the next scheduling strategy
+                    self.min_sta_buffer_size = 0
+            
+            logger.debug(f"No stationary scheduling strategy can fit into the remaining SPAD space for operator {self.op_sig.op_id}. Falling back to temporal reuse scheduling.") 
+            self.op_sig.scheduling_type.TEMPORAL_REUSE()
+            
+        def _apply_scheduling(self):
+            self.op_sig.reorder_tiled_ops()  # reorder tiled ops to maximize the reuse of stationary buffers based on the scheduling type
+
+            if "STATIONARY" not in self.op_sig.scheduling_type.t:
+                self.sta_bufs = set()
+                self.min_sta_buffer_size = 0
+                return
+            
+            self.thread_mapping = MCA_OperatorGraphCompiler.Thread.from_op_sig(self.op_sig)
+            
+            if self.op_sig.scheduling_type.t == "STATIONARY":
+                self.sta_bufs = {self.op_sig.buffer_names[buf_idx] for buf_idx in self.op_sig.scheduling_type.k["buf_idx_arr"]}
+            elif self.op_sig.scheduling_type.t == "INPUT_STATIONARY":
+                self.sta_bufs = {buf_name for buf_name in self.op_sig.input_buffer_names if buf_name not in self.op_sig.param_buffer_names}
+            elif self.op_sig.scheduling_type.t == "WEIGHT_STATIONARY":
+                self.sta_bufs = {buf_name for buf_name in self.op_sig.param_buffer_names}
+                
+            self.min_sta_buffer_size = self._compute_sta_buffer_size(self.thread_mapping)
+            
         def freeze(self, thread_mapping: 'dict[int, MCA_OperatorGraphCompiler.Thread]' = None):
-            self.thread_mapping = MCA_OperatorGraphCompiler.Thread.from_op_sig(self.op_sig) if thread_mapping is None else thread_mapping
-            self.spad_space_size_per_pp = math.floor((self.spad_space_size_per_core - self.bcast_buffer_size - self.min_opp_buffer_size) / 2)
+            if thread_mapping is None:
+                if self.op_sig.scheduling_type.is_auto:
+                    self._explore_scheduling()  # explore stationary buffer sharing to minimize the total shared area requirement before finalizing the thread mapping
+                else:
+                    self._apply_scheduling()
+            else:
+                self.thread_mapping = thread_mapping
+            
+            self.spad_space_size_per_pp = math.floor((self.spad_space_size_per_core - self.bcast_buffer_size - self.min_opp_buffer_size - self.min_sta_buffer_size) / 2)
             
             if self.spad_space_size_per_pp < 0:
-                raise ValueError(f"Insufficient shared area per core for operator {self.op_sig.op_id} after accounting for reserved space. Required: at least {self.min_opp_buffer_size + self.bcast_buffer_size} bytes, but only {self.spad_space_size_per_core} bytes available per core.")
+                raise ValueError(f"Insufficient shared area per core for operator {self.op_sig.op_id} after accounting for reserved space. Required: at least {self.min_opp_buffer_size + self.min_sta_buffer_size + self.bcast_buffer_size} bytes, but only {self.spad_space_size_per_core} bytes available per core.")
             if self.min_st_area_per_pp + self.min_ld_area_per_pp > self.spad_space_size_per_pp:
                 raise ValueError(f"Insufficient shared area per core for operator {self.op_sig.op_id}. Required: {self.min_st_area_per_pp + self.min_ld_area_per_pp} bytes, maximum allowed: {self.spad_space_size_per_pp} bytes.")
             
@@ -705,6 +890,17 @@ class MCA_OperatorGraphCompiler:
             thread_mappings = {op_id: MCA_OperatorGraphCompiler.Thread.from_op_sig(op_metas[op_id].op_sig) for op_id in op_ids}
             max_shared_area_per_core: dict[str, dict[int, int]] = {op_id: {core_id: 0 for core_id in op_metas[op_id].op_sig.core_group} for op_id in op_ids}  # {op_id: {core_id: shared_area_size}}
             
+            for op_id in op_ids:
+                op_sig = op_metas[op_id].op_sig
+                if len(op_sig.param_buffer_names) > 0 and op_sig.scheduling_type.is_auto:
+                    op_sig.scheduling_type.WEIGHT_STATIONARY()
+                    op_sig.reorder_tiled_ops()  # reorder tiled ops to maximize the reuse of stationary buffers
+            
+            max_sta_area_per_op: dict[str, int] = {
+                op_id: op_metas[op_id]._compute_sta_buffer_size(thread_mappings[op_id])
+                for op_id in op_ids
+            }
+                        
             for srd_op_id in op_ids:
                 src_op_meta = op_metas[srd_op_id]
                 
@@ -759,15 +955,23 @@ class MCA_OperatorGraphCompiler:
 
             # STAGE 2: Freeze the operator metadata with the determined thread mapping and shared tile-to-slot mapping
             is_freeze_possible = True
+            is_scheduling_possible = True
             
             for op_id in op_ids:
                 op_meta = op_metas[op_id]
                 shared_area_required = max(max_shared_area_per_core[op_id].values()) * 2  # factor of 2 for double buffering
                 
-                if shared_area_required > op_meta.max_opp_buffer_size:
-                    logger.debug(f"Cannot freeze operator {op_id} due to insufficient shared area per pp for pipelining. Required: {shared_area_required} bytes, maximum allowed: {op_meta.max_opp_buffer_size} bytes.")
-                    is_freeze_possible = False
-                    
+                if is_scheduling_possible:
+                    if shared_area_required > (op_meta.remaining_spad_for_opp_and_sta - max_sta_area_per_op[op_id]):
+                        logger.debug(f"Cannot freeze operator {op_id} due to insufficient shared area per pp for pipelining. Required: {shared_area_required} bytes, maximum allowed: {op_meta.remaining_spad_for_opp_and_sta} bytes.")
+                        is_scheduling_possible = False
+                
+                if not is_scheduling_possible:
+                    if shared_area_required > op_meta.remaining_spad_for_opp_and_sta:
+                        logger.debug(f"Cannot freeze operator {op_id} even with weight stationary scheduling due to insufficient shared area per pp. Required: {shared_area_required} bytes, maximum allowed: {op_meta.remaining_spad_for_opp_and_sta} bytes.")
+                        is_freeze_possible = False
+                        break
+                
             if not is_freeze_possible:
                 for op_id in op_ids:
                     op_meta = op_metas[op_id]
@@ -796,6 +1000,11 @@ class MCA_OperatorGraphCompiler:
                         dst_op_meta.i_buf_src[op_meta.op_sig.output_buffer_name] = MCA_OperatorGraphCompiler.OperatorMetadata.SrcType.TILE_SHARED(op_id)
                     
                     op_meta.min_opp_buffer_size = max(max_shared_area_per_core[op_id].values()) * 2
+                    
+                    if not is_scheduling_possible:
+                        op_meta.op_sig.scheduling_type.NO_REORDER()
+                        op_meta._apply_scheduling()  # apply the original scheduling without weight stationary optimization if weight stationary scheduling is not possible due to shared area constraints
+                    
                     op_meta.freeze(thread_mapping=thread_mappings[op_id])
                 
                 return True
@@ -940,11 +1149,20 @@ class MCA_OperatorGraphCompiler:
                 pipeline_targets[-1].add(op_id)
                 
             for op_ids in pipeline_targets:
-                if not MCA_OperatorGraphCompiler.OperatorMetadata.check_dependency_and_freeze(self, list(op_ids)):
-                    merge_targets.append(op_ids)
+                if len(op_ids) == 0:
+                    continue
+                elif len(op_ids) == 1:
+                    op_id = next(iter(op_ids))
+                    op_meta = self.op_meta[op_id]
+                    op_meta.freeze()
+                    logger.debug(f"Successfully froze operator metadata for pipeline target with single operator {op_id}.")
+                    self.grouped_compile_targets.append([op_id])
                 else:
-                    logger.debug(f"Successfully froze operator metadata for pipeline target with operators {op_ids}.")
-                self.grouped_compile_targets.append(sorted(list(op_ids), key=lambda x: self.target_op_order.index(x)))
+                    if not MCA_OperatorGraphCompiler.OperatorMetadata.check_dependency_and_freeze(self, list(op_ids)):
+                        merge_targets.append(op_ids)
+                    else:
+                        logger.debug(f"Successfully froze operator metadata for pipeline target with operators {op_ids}.")
+                        self.grouped_compile_targets.append(sorted(list(op_ids), key=lambda x: self.target_op_order.index(x)))
             
             for op_ids in merge_targets:
                 core_group = MCA_CoreGroup.merge_core_groups([self.op_meta[op_id].op_sig.core_group for op_id in op_ids])
@@ -974,10 +1192,11 @@ class MCA_OperatorGraphCompiler:
             # L1 Memory Layout
             #     
             #                                                    (boundary direction)                                 (boundary direction)
-            #     (bcast_offset)     (opp_offset)           (pp_offset)   -->                                    (pp_offset)   -->         
-            #     |--- BCAST FIFO ---|------ OPP FIFO ------|-- ST Area -->|<------------- LD Area --------------|-- ST Area -->|<------------- LD Area --------------|
-            #                                               |---------------- Ping-Pong Buffer 0 ----------------|---------------- Ping-Pong Buffer 1 ----------------|
+            #     (sta_offset)       (bcast_offset)     (opp_offset)           (pp_offset)   -->                                    (pp_offset)   -->         
+            #     |--- STATIONARY ---|--- BCAST FIFO ---|------ OPP FIFO ------|-- ST Area -->|<------------- LD Area --------------|-- ST Area -->|<------------- LD Area --------------|
+            #                                                                  |---------------- Ping-Pong Buffer 0 ----------------|---------------- Ping-Pong Buffer 1 ----------------|
             
+            self.sta_offsets   = {core_id: l1_space.allocate(core_id, op_meta.min_sta_buffer_size) for core_id in core_group.core_ids}
             self.bcast_offsets = {core_id: l1_space.allocate(core_id, op_meta.bcast_buffer_size) for core_id in core_group.core_ids}
             self.opp_offsets   = {core_id: l1_space.allocate(core_id, op_meta.min_opp_buffer_size) for core_id in core_group.core_ids}
             self.pp_offsets    = {core_id: [l1_space.allocate(core_id, op_meta.spad_space_size_per_pp), l1_space.allocate(core_id, op_meta.spad_space_size_per_pp)] for core_id in core_group.core_ids}
@@ -988,6 +1207,7 @@ class MCA_OperatorGraphCompiler:
             self.bcast_fifo_tile_cnt: dict[int, int] = {core_id: 0 for core_id in core_group.core_ids}  # {core_id: number of tiles in the broadcast FIFO}
             self.opp_fifo_tile_cnt: dict[int, int] = {core_id: 0 for core_id in core_group.core_ids}  # {core_id: number of tiles in the OPP FIFO}
             
+            self.cached_sta_tiles: dict[int, dict[TileSignature, Pointer]] = {core_id: {} for core_id in core_group.core_ids}  # {core_id: {tile_signature: pointer}}
             self.cached_ld_tiles: dict[int, dict[int, dict[TileSignature, Pointer]]] = {core_id: {pp_idx: {} for pp_idx in [0, 1]} for core_id in core_group.core_ids}  # {core_id: {pp_idx: {tile_signature: pointer}}}
             self.cached_st_tiles: dict[int, dict[int, dict[TileSignature, Pointer]]] = {core_id: {pp_idx: {} for pp_idx in [0, 1]} for core_id in core_group.core_ids}  # {core_id: {pp_idx: {tile_signature: pointer}}}
             
@@ -1006,6 +1226,15 @@ class MCA_OperatorGraphCompiler:
             for core_id in core_group.core_ids}  # {core_id: {pp_idx: current_offset}}
             
             l1_space.remove()
+            
+        def sta_add_tile(self, tile: TileSignature, core_id: int) -> None:
+            if tile in self.cached_sta_tiles[core_id]:
+                return
+            self.cached_sta_tiles[core_id][tile] = self.sta_offsets[core_id]
+            self.sta_offsets[core_id] = Pointer(self.sta_offsets[core_id].addr + tile.tile_size)
+            
+        def sta_tile_exists(self, tile: TileSignature, core_id: int) -> bool:
+            return tile in self.cached_sta_tiles[core_id]
             
         def bcast_add_tile(self, tile: TileSignature, core_id: int) -> int:
             self.tile_to_bcast_fifo_slot[tile] = (core_id, self.bcast_fifo_tile_cnt[core_id])
@@ -1111,7 +1340,7 @@ class MCA_OperatorGraphCompiler:
             
             overlapped_st_tiles = self._get_st_tiles_to_be_stored_in_fragmented_st_area(core_id, new_st_tiles)
             new_st_area = sum(tile.tile_size for tile in new_st_tiles if tile not in overlapped_st_tiles)
-            new_ld_area = sum(tile.tile_size for tile in new_ld_tiles)
+            new_ld_area = sum(tile.tile_size for tile in new_ld_tiles if tile not in self.cached_sta_tiles[core_id])
             
             if self.ld_cursors[core_id][pp_idx].addr - new_ld_area < self.st_ld_boundaries[core_id][pp_idx].addr + new_st_area:
                 return False
@@ -1150,6 +1379,10 @@ class MCA_OperatorGraphCompiler:
                     else:
                         _cached_ld_ptrs[tile] = self.cached_ld_tiles[core_id][pp_idx][tile]
                         continue
+                    
+                if tile in self.cached_sta_tiles[core_id]:
+                    _cached_ld_ptrs[tile] = self.cached_sta_tiles[core_id][tile]
+                    continue
                 
                 new_pointer = self.ld_cursors[core_id][pp_idx] - tile.tile_size
                 self.cached_ld_tiles[core_id][pp_idx][tile] = new_pointer
@@ -1170,9 +1403,11 @@ class MCA_OperatorGraphCompiler:
                     
         def pp_get_cached_ld_tile_ptr(self, core_id: int, tile: TileSignature) -> Pointer:
             pp_idx = self.pp_flags[core_id]
-            if tile not in self.cached_ld_tiles[core_id][pp_idx]:
-                return None
-            return self.cached_ld_tiles[core_id][pp_idx][tile]
+            if tile in self.cached_sta_tiles[core_id]:
+                return self.cached_sta_tiles[core_id][tile]
+            if tile in self.cached_ld_tiles[core_id][pp_idx]:
+                return self.cached_ld_tiles[core_id][pp_idx][tile]
+            return None
         
         def pp_get_cached_st_tile_ptr(self, core_id: int, tile: TileSignature) -> Pointer:
             pp_idx = self.pp_flags[core_id]
@@ -1262,7 +1497,7 @@ class MCA_OperatorGraphCompiler:
                 for core_id in op_metas[op_id].op_sig.core_group.core_ids
             }
             for op_id in op_ids
-        }
+        }                   
         
         # STAGE 1: Analyze dependencies and determine tile-level sharing relationships (for pipelining)
         for src_op_id in op_ids:
@@ -1295,6 +1530,14 @@ class MCA_OperatorGraphCompiler:
                     tiled_op_sig = op_meta.op_sig.tiled_ops[uop_node.tiled_op_idx]
                     i_tiles = tiled_op_sig.i_tiles[uop_node.uop_idx]
                     o_tile = tiled_op_sig.o_tile
+                    
+                    for i_tile in i_tiles:
+                        if i_tile.buf_name in op_meta.sta_bufs:
+                            if not mem_state.sta_tile_exists(i_tile, core_id):
+                                mem_state.sta_add_tile(i_tile, core_id)
+                                compiled_ops[op_id].add_load_ir(core_id, MCA_CompiledOperator.IR.MEM_LOAD_TILE(
+                                    i_tile, mem_state.pp_get_cached_ld_tile_ptr(core_id, i_tile)
+                                ))
                     
                     if not mem_state.pp_check_space_available(core_id, i_tiles, [o_tile] if uop_node.output else None):
                         mem_state.pp_clear(core_id)
@@ -1443,7 +1686,8 @@ class MCA_OperatorGraphCompiler:
             
         for op_id in self._op_order:
             op_sig = self._op_sigs[op_id]
-            op_sig.reorder_tiled_ops()  # reorder tiled ops in ROW/COLUMN major order (it will be predetermined by the global enviroment)
+            if not op_sig.scheduling_type.is_auto:
+                op_sig.reorder_tiled_ops()  # reorder tiled ops in ROW/COLUMN major order (it will be predetermined by the global enviroment)
             env.add_op_sig(op_sig)
             
         env.freeze()  # freeze the environment to create L1 memory space with pipeline pattern

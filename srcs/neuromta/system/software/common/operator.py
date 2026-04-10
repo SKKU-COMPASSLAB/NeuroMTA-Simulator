@@ -39,8 +39,8 @@ def MCA_OP_LINEAR(
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("wgt",  wgt,  is_input=True)
-    op_sig.add_buffer("bias", bias, is_input=True)
+    op_sig.add_buffer("wgt",  wgt,  is_param=True)
+    op_sig.add_buffer("bias", bias, is_param=True)
     op_sig.add_buffer("ofm",  ofm,  is_output=True)
     
     return common_mapping_lib.MCA_MAPPER_LINEAR(op_sig)
@@ -81,8 +81,8 @@ def MCA_OP_LINEAR_RELU(
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("wgt",  wgt,  is_input=True)
-    op_sig.add_buffer("bias", bias, is_input=True)
+    op_sig.add_buffer("wgt",  wgt,  is_param=True)
+    op_sig.add_buffer("bias", bias, is_param=True)
     op_sig.add_buffer("ofm",  ofm,  is_output=True)
     
     return common_mapping_lib.MCA_MAPPER_LINEAR(op_sig)
@@ -109,8 +109,8 @@ def MCA_OP_CONV2D(
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("wgt",  wgt,  is_input=True)
-    op_sig.add_buffer("bias", bias, is_input=True)
+    op_sig.add_buffer("wgt",  wgt,  is_param=True)
+    op_sig.add_buffer("bias", bias, is_param=True)
     op_sig.add_buffer("ofm",  ofm,  is_output=True)
     
     op_sig.global_kwargs["stride"] = (stride, stride) if isinstance(stride, int) else stride

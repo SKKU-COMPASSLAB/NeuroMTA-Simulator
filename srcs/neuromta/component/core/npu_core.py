@@ -84,45 +84,45 @@ class NPUCore(Core):
         
         self.local_mem_page_read(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset)
         
-        # if dst_core_id != src_core_id:
-        #     noc_msgs = [
-        #         RPCMessage(
-        #             src_core_id=self.core_id,
-        #             dst_core_id=COMPANION_CORE_ID,
-        #             cmd_id="send_companion_command",
-        #         ).with_args(
-        #             self.global_context.config.booksim_module_id,
-        #             **arg
-        #         )
-        #         for arg in self.icnt_context.get_icnt_data_transfer_args(src_core_id, dst_core_id, row_size * row_num, is_write=True)
-        #     ]
+        if dst_core_id != src_core_id:
+            noc_msgs = [
+                RPCMessage(
+                    src_core_id=self.core_id,
+                    dst_core_id=COMPANION_CORE_ID,
+                    cmd_id="send_companion_command",
+                ).with_args(
+                    self.global_context.config.booksim_module_id,
+                    **arg
+                )
+                for arg in self.icnt_context.get_icnt_data_transfer_args(src_core_id, dst_core_id, row_size * row_num, is_write=True)
+            ]
             
-        #     for msg in noc_msgs:
-        #         self.async_rpc_send_req_msg(msg)
-        #     for msg in noc_msgs:
-        #         self.async_rpc_wait_rsp_msg(msg)
+            for msg in noc_msgs:
+                self.async_rpc_send_req_msg(msg)
+            for msg in noc_msgs:
+                self.async_rpc_wait_rsp_msg(msg)
                 
     @jit_prototype
     def remote_mem_page_write(self, src_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
         dst_core_id = self.core_id
         
-        # if src_core_id != dst_core_id:
-        #     noc_msgs = [
-        #         RPCMessage(
-        #             src_core_id=self.core_id,
-        #             dst_core_id=COMPANION_CORE_ID,
-        #             cmd_id="send_companion_command",
-        #         ).with_args(
-        #             self.global_context.config.booksim_module_id,
-        #             **arg
-        #         )
-        #         for arg in self.icnt_context.get_icnt_data_transfer_args(src_core_id, dst_core_id, row_size * row_num, is_write=False)
-        #     ]
+        if src_core_id != dst_core_id:
+            noc_msgs = [
+                RPCMessage(
+                    src_core_id=self.core_id,
+                    dst_core_id=COMPANION_CORE_ID,
+                    cmd_id="send_companion_command",
+                ).with_args(
+                    self.global_context.config.booksim_module_id,
+                    **arg
+                )
+                for arg in self.icnt_context.get_icnt_data_transfer_args(src_core_id, dst_core_id, row_size * row_num, is_write=False)
+            ]
             
-        #     for msg in noc_msgs:
-        #         self.async_rpc_send_req_msg(msg)
-        #     for msg in noc_msgs:
-        #         self.async_rpc_wait_rsp_msg(msg)
+            for msg in noc_msgs:
+                self.async_rpc_send_req_msg(msg)
+            for msg in noc_msgs:
+                self.async_rpc_wait_rsp_msg(msg)
         
         self.local_mem_page_write(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset, cont_row_zero_pad)
     
@@ -155,6 +155,9 @@ class NPUCore(Core):
             dst_row_stride = row_size
             
         container = DataContainer()
+        
+        if src_owner_core_id != self.core_id and dst_owner_core_id != self.core_id:
+            raise Exception("At least one of the source and destination buffers must belong to the current core for 'mem_copy' method.")
 
         if src_owner_core_id == self.core_id:
             self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)

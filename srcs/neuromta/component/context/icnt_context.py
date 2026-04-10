@@ -94,7 +94,7 @@ class IcntContext:
         return [{
             "src_id": src_id,
             "dst_id": dst_id,
-            "subnet": (src_id + dst_id) % self.config.booksim2_config._subnets if self.config.booksim2_enable else 0, #subnet,
+            "subnet": (src_id + dst_id + i) % self.config.booksim2_config._subnets,
             "n_flits": min(payload_size, n_flits - i * payload_size),
             "is_write": is_write,
             "is_response": not is_write,
