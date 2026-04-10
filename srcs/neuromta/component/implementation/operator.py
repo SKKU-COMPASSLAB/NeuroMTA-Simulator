@@ -190,38 +190,51 @@ class MCA_OperatorSignature:
         self._tiled_ops.sort(key=key_func)
         
     def _reorder_tiled_ops_with_dist(self, dist_func: Callable[[TiledOperatorSignature, dict[str, int]], tuple[dict[str, int], int]]):
-        _reorder_map: list[int] = []
-        _dist: dict[str, int] = {}
-        _cur_candidate = None
-        _cur_dist = None
-        _cur_score = None
-        
-        while len(_reorder_map) < len(self.tiled_ops):
-            for tiled_op_idx, tiled_op in enumerate(self.tiled_ops):
-                if tiled_op_idx in _reorder_map:
-                    continue
-                
-                if _cur_candidate is None:
-                    _cur_candidate = tiled_op_idx
-                    _cur_dist, _cur_score = dist_func(tiled_op, _dist)
-                else:
-                    _new_dist, _new_score = dist_func(tiled_op, _dist)
-                    
-                    if _new_score < _cur_score:
-                        _cur_candidate = tiled_op_idx
-                        _cur_dist = _new_dist
-                        _cur_score = _new_score
-                    else:
+        tiled_ops = self._tiled_ops
+        n_tiled_ops = len(tiled_ops)
+
+        if n_tiled_ops <= 1:
+            return
+
+        selected = [False] * n_tiled_ops
+        n_remaining = n_tiled_ops
+        reordered_tiled_ops: list[TiledOperatorSignature] = []
+        dist_state: dict[str, int] = {}
+
+        pbar = tqdm.tqdm(total=n_tiled_ops, desc="Reordering tiled ops", unit="op")
+
+        try:
+            while n_remaining > 0:
+                cur_candidate = -1
+                cur_dist = None
+                cur_score = None
+
+                for tiled_op_idx in range(n_tiled_ops):
+                    if selected[tiled_op_idx]:
                         continue
 
-            _reorder_map.append(_cur_candidate)
-            _dist = _cur_dist
-            
-            _cur_candidate = None
-            _cur_dist = None
-            _cur_score = None
-            
-        self._tiled_ops = [self._tiled_ops[tiled_op_idx] for tiled_op_idx in _reorder_map]
+                    tiled_op = tiled_ops[tiled_op_idx]
+
+                    if cur_candidate < 0:
+                        cur_candidate = tiled_op_idx
+                        cur_dist, cur_score = dist_func(tiled_op, dist_state)
+                    else:
+                        new_dist, new_score = dist_func(tiled_op, dist_state)
+                        if new_score < cur_score:
+                            cur_candidate = tiled_op_idx
+                            cur_dist = new_dist
+                            cur_score = new_score
+
+                selected[cur_candidate] = True
+                reordered_tiled_ops.append(tiled_ops[cur_candidate])
+                dist_state = cur_dist
+                n_remaining -= 1
+
+                pbar.update(1)
+        finally:
+            pbar.close()
+
+        self._tiled_ops = reordered_tiled_ops
     
     def reorder_tiled_ops(self):
         if self.scheduling_type.t == "ROW_MAJOR":

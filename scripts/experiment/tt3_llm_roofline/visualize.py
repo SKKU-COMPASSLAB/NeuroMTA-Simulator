@@ -4,7 +4,7 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
-PEAK_PERFORMANCE   = 2 * (4 * 4) * (32 * 32)  # 4x4 Core Grid | 32x32 MXU | MAC = 2 OPs 
+PEAK_PERFORMANCE   = 2 * (12 * 14) * (32 * 32)  # 12x14 Core Grid | 32x32 MXU | MAC = 2 OPs 
 PEAK_BANDWIDTH = 387.88  # theoretical peak bandwidth in GB/cycle
 
 
