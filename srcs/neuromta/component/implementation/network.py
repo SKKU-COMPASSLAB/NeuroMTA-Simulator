@@ -670,6 +670,7 @@ class MCA_CompiledNetworkGraph:
             pipeline_granularity: int=8,
             broadcast_optimize_queue_depth: int=32,
             operator_pipelining: bool=False,
+            context_buffer_slot_num: int=4,
         ):
             self.main_data_mem_space_size_per_channel = main_data_mem_space_size_per_channel
             self.l1_data_mem_space_size_per_core = l1_data_mem_space_size_per_core
@@ -682,6 +683,7 @@ class MCA_CompiledNetworkGraph:
                 pipeline_granularity=pipeline_granularity,
                 broadcast_optimize_queue_depth=broadcast_optimize_queue_depth,
                 operator_pipelining=operator_pipelining,
+                context_buffer_slot_num=context_buffer_slot_num,
             )
             
         def supports(self, module_type: type | str) -> bool:

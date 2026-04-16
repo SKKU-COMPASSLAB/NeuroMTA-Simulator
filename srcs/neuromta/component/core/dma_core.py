@@ -30,10 +30,10 @@ class DMACore(Core):
         self.set_mem_handle(mem_handle=self.mem_info.mem_handle)
         
     @jit_prototype
-    def remote_mem_page_read(self, dst_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
+    def remote_mem_page_read(self, dst_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
         src_core_id = self.core_id
         
-        self.local_mem_page_read(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset)
+        self.local_mem_page_read(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset, cont_row_zero_pad)
         
         with new_parallel_thread("NOC"):
             noc_msgs = [
@@ -74,7 +74,7 @@ class DMACore(Core):
         self.parallel_merge()
             
     @jit_prototype
-    def remote_mem_page_write(self, src_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
+    def remote_mem_page_write(self, src_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
         dst_core_id = self.core_id
         
         with new_parallel_thread("NOC"):
@@ -115,7 +115,7 @@ class DMACore(Core):
                 
         self.parallel_merge()
 
-        self.local_mem_page_write(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset, cont_row_zero_pad)
+        self.local_mem_page_write(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset)
         
 class DMACoreCycleModel(CoreCycleModel):
     def __init__(self, core: DMACore):

@@ -1,11 +1,10 @@
-import abc
-import enum
+import torch
 import math
-from typing import Any, Sequence, Dict, List, Callable
+import functools
+from typing import Any
 
 from neuromta.framework import *
 from neuromta.component.core import *
-from neuromta.component.context.global_context import GlobalContextMemInfo
 from neuromta.component.implementation.tensor_buffer import *
 from neuromta.component.implementation.hardware import *
 
@@ -17,13 +16,18 @@ __all__ = [
 
 
 class TileSignature:
-    def __init__(self, buf_name: str, tile_size: int, y_s: int, x_s: int, y_t: int, x_t: int):
+    def __init__(self, buf_name: str, tile_shape: tuple[int], dtype: torch.dtype, y_s: int, x_s: int, y_t: int, x_t: int):
         self.buf_name = buf_name
-        self.tile_size = tile_size
+        self.tile_shape = tile_shape
+        self.dtype = dtype
         self.coords: tuple[int, int, int, int] = (y_s, x_s, y_t, x_t)
         
     def depends_on(self, other: 'TileSignature') -> bool:
         return self.buf_name == other.buf_name and self.coords == other.coords
+    
+    @property
+    def tile_size(self) -> int:
+        return functools.reduce(lambda a, b: a * b, self.tile_shape, 1) * self.dtype.itemsize
 
     @property
     def signature(self) -> str:

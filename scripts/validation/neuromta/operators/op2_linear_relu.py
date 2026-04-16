@@ -59,10 +59,10 @@ if __name__ == "__main__":
     ofm_mem_space      = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
     param_mem_space    = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(128, 128)).tiling((32, 32)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(128, 128)).tiling((32, 32)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   128)).tiling((1,  32)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(128, 128)).tiling((32, 32)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=ifm_mem_space,   shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=param_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=param_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=ofm_mem_space,   shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
     
     operator = MCA_OP_LINEAR_RELU(
         ifm_b, wgt_b, bias_b, ofm_b

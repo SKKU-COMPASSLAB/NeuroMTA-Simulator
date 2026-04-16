@@ -148,7 +148,7 @@ class MXUContext:
             self._pe_arr_regs = torch.zeros_like(self._pe_arr_regs)
         return regs
 
-    def load_tile_pe_arr(self, tile: torch.Tensor):
+    def set_pe_arr_regs(self, tile: torch.Tensor):
         self._pe_arr_regs[:, :] = tile.to(dtype=self._acc_dtype)
 
     def execute_gemm(self, ifm_tile: torch.Tensor, wgt_tile: torch.Tensor=None, psum_tile: torch.Tensor=None) -> torch.Tensor:

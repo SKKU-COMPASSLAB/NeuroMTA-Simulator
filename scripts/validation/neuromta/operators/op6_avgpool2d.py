@@ -71,7 +71,6 @@ if __name__ == "__main__":
     operator = MCA_OP_AVGPOOL2D(
         ifm_b, ofm_b, 
         window=WINDOW, stride=STRIDE, padding=PADDING, dilation=DILATION,
-        use_collective_tile_load=False,
     )
     
     compiler = MCA_OperatorGraphCompiler()

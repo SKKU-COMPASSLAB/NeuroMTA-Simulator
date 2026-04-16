@@ -84,7 +84,10 @@ class CommandTracer:
 
 class ExecutionTimeProfiler:
     ALL_COMMANDS = lambda x: True
-    NO_VAR_WAIT = lambda cmd: cmd.cmd_id not in ["var_atomic_barrier", "var_conditional_wait", "var_atomic_wait", "var_atomic_compare_and_swap"]
+    NO_VAR_WAIT = lambda cmd: cmd.cmd_id not in [
+        "var_atomic_barrier", "var_conditional_wait", "var_atomic_wait", "var_atomic_compare_and_swap", 
+        "fifo_wait_until_valid", "fifo_wait_until_vacant",
+    ]
 
     class ProcessState:
         def __init__(self):

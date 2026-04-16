@@ -73,17 +73,26 @@ class GoogleTPUConfig(dict):
             dramsim3_dst_config_path=GOOGLE_TPU_IP_DRAMSIM_CONFIG_FMT(config_name=config_name),
         )
         
-        icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
-            shape=icnt_shape,                       # - 12x16 torus
-            subnets=5,                              # - 5 subnets
-            flit_size=parse_mem_cap_str("64B"),     # - 64B flit size (the unit of flow control)
-            max_payload_size=4,                     # - 4 in flits in maximum as a payload = 256B
-            booksim2_enable=PYBOOKSIM2_AVAILABLE,   # - theoretical bandwidth per direction: 64B * 5 * 1GHz = 320GB/s
+        icnt_config = IcntConfig(                       # INTERCONNECT CONFIG
+            processor_clock_freq=processor_clock_freq,  # - 1.35GHz (from the tenstorrent blackhole specsheet, refer to the official github repo)
+            shape=icnt_shape,                           # - 12x16 torus
+            subnets=2,                                  # - 2 independent NoCs (one per router)
+            flit_size=parse_mem_cap_str("64B"),         # - 64B flit size (flow-control unit)
+            max_payload_size=32,                        # - max payload = 32 flits (= 2048B)
+            booksim2_enable=PYBOOKSIM2_AVAILABLE,
             booksim2_kwargs={
-                "in_ports": 32,
-                "out_ports": 32,
-                "input_speedup": 32,
-                "output_speedup": 32,
+                "routing_delay": 1,
+                "vc_alloc_delay": 1,
+                "sw_alloc_delay": 1,
+                "st_prepare_delay": 0,
+                "st_final_delay": 1,
+                
+                "input_speedup": 1,
+                "output_speedup": 1,
+                "internal_speedup": 1.0,
+                
+                "num_vcs": 16,
+                "vc_buf_size": 8,
             }
         )
         

@@ -43,11 +43,24 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         pipeline_granularity: int=8,
         broadcast_optimize_queue_depth: int=32,
         operator_pipelining: bool=False,
+        context_buffer_slot_num: int=4,
         
         dtype: torch.dtype=torch.float16,
         acc_dtype: torch.dtype=torch.float16,
     ):
-        super().__init__(device, core_groups, main_data_mem_space_size_per_channel, l1_data_mem_space_size_per_core, spad_mem_space_size_per_core, pipeline_granularity, broadcast_optimize_queue_depth, operator_pipelining)
+        super().__init__(
+            device, 
+            core_groups, 
+        
+            main_data_mem_space_size_per_channel, 
+            l1_data_mem_space_size_per_core, 
+            spad_mem_space_size_per_core, 
+            
+            pipeline_granularity, 
+            broadcast_optimize_queue_depth, 
+            operator_pipelining, 
+            context_buffer_slot_num
+        )
         
         self.dtype = dtype
         self.acc_dtype = acc_dtype

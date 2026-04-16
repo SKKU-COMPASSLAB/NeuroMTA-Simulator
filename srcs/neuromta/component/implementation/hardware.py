@@ -163,6 +163,14 @@ class MCA_MemorySpace:
     def is_removed(self) -> bool:
         return self._is_removed
     
+    @property
+    def is_main(self) -> bool:
+        return self.mem_type == GlobalContextMemType.MAIN
+    
+    @property
+    def is_l1(self) -> bool:
+        return self.mem_type == GlobalContextMemType.L1
+    
     def override(self, new_owners) -> '_MCA_MemorySpaceOverrided':
         return _MCA_MemorySpaceOverrided(original_mem_space=self, new_owners=new_owners)
     

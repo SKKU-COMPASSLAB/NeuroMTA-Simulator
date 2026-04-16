@@ -44,7 +44,7 @@ class TenstorrentConfig(dict):
     @classmethod
     def BLACKHOLE(
         cls,
-        processor_clock_freq: int = parse_freq_str("1.5GHz"),
+        processor_clock_freq: int = parse_freq_str("1.35GHz"),
         main_mem_channel_size: int = parse_mem_cap_str("4GB"),
         l1_mem_bank_size: int = parse_mem_cap_str("1.5MB"),
         l1_mem_dynamic_space_size_per_bank: int = 0,
@@ -56,7 +56,7 @@ class TenstorrentConfig(dict):
         n_dma_core = 12 * 2
         
         n_main_mem_instances = 8
-        n_main_mem_channel_per_instance = 3
+        n_main_mem_channel_per_instance = 1
         n_main_mem_cmd_q_per_instance = 3
 
         main_mem_config = MainMemoryConfig(
@@ -74,11 +74,12 @@ class TenstorrentConfig(dict):
             dramsim3_max_issue_per_cmd_q_per_cycle=4,
         )
         
-        icnt_config = IcntConfig(                   # INTERCONNECT CONFIG
-            shape=icnt_shape,                       # - 12x16 torus
-            subnets=2,                              # - 2 independent NoCs (one per router)
-            flit_size=parse_mem_cap_str("64B"),     # - 64B flit size (flow-control unit)
-            max_payload_size=32,                    # - max payload = 32 flits (= 2048B)
+        icnt_config = IcntConfig(                       # INTERCONNECT CONFIG
+            processor_clock_freq=processor_clock_freq,  # - 1.35GHz (from the tenstorrent blackhole specsheet, refer to the official github repo)
+            shape=icnt_shape,                           # - 12x16 torus
+            subnets=2,                                  # - 2 independent NoCs (one per router)
+            flit_size=parse_mem_cap_str("64B"),         # - 64B flit size (flow-control unit)
+            max_payload_size=32,                        # - max payload = 32 flits (= 2048B)
             booksim2_enable=PYBOOKSIM2_AVAILABLE,
             booksim2_kwargs={
                 "routing_delay": 1,

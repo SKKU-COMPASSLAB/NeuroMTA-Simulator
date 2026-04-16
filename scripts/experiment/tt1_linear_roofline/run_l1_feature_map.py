@@ -44,11 +44,16 @@ def _get_shard_shape_from_tensor_shape(tensor_shape: tuple[int]) -> tuple[int]:
 
 class Benchmark:
     def __init__(
-        self, 
+        self,
+        core_group_offset: tuple[int, int],
+        core_group_shape: tuple[int, int], 
         M:  int, N:  int, K:  int,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
     ):
+        self.core_group_offset: tuple[int, int] = core_group_offset
+        self.core_group_shape:  tuple[int, int] = core_group_shape
+        
         self.M: int = M
         self.N: int = N
         self.K: int = K
@@ -108,9 +113,15 @@ class Benchmark:
     def ofm_total_size(self) -> int:
         return self.M * self.N * self.acc_dtype.itemsize
         
-    def run(self, device: TenstorrentDevice, core_group: MTA_CoreGrid):
-        _l1_total_per_core     = parse_mem_cap_str("1.4MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
-        _spad_size_per_core    = parse_mem_cap_str("512KB")
+    def run(self, device: TenstorrentDevice):
+        try:
+            core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
+        except:
+            logger.error(f"Failed to get core group with offset {self.core_group_offset} and shape {self.core_group_shape}. Check if the configuration is valid for the device.")
+            return False
+        
+        _l1_total_per_core     = parse_mem_cap_str("1.5MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
+        _spad_size_per_core    = parse_mem_cap_str("1MB")
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
         logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
@@ -144,8 +155,6 @@ class Benchmark:
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                pipeline_granularity=32,
-                broadcast_optimize_queue_depth=16,
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -206,6 +215,10 @@ class Benchmark:
             return False
         
         return True  # Indicate successful run without L1 memory overflow
+    
+    @property
+    def n_cores(self) -> int:
+        return self.core_group_shape[0] * self.core_group_shape[1]
         
     @property
     def timestamp(self) -> int:
@@ -225,16 +238,14 @@ class Benchmark:
     
     @property
     def signature(self) -> str:
-        return f"{self.M}x{self.N}x{self.K}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
+        return f"n_cores_{self.n_cores}_{self.M}x{self.N}x{self.K}_{str(self.dtype).split('.')[-1]}_{str(self.acc_dtype).split('.')[-1]}"
     
     
 class BenchmarkProcess(mp.Process):
-    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, core_group_offset: tuple[int, int], core_group_shape: tuple[int, int], return_dict: dict, worker_sem):
+    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, return_dict: dict, worker_sem):
         super().__init__()
         self.benchmark = benchmark
         self.device_config = device_config
-        self.core_group_offset = core_group_offset
-        self.core_group_shape = core_group_shape
         self.return_dict = return_dict
         self.worker_sem = worker_sem
         
@@ -246,9 +257,9 @@ class BenchmarkProcess(mp.Process):
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
         
-        core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
+        # core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
         
-        flag = self.benchmark.run(device, core_group)
+        flag = self.benchmark.run(device)
         if not flag:
             return
         
@@ -257,6 +268,7 @@ class BenchmarkProcess(mp.Process):
             "total_ops":    self.benchmark.total_ops,
             "l1_traffic":   self.benchmark.l1_traffic,
             "main_traffic": self.benchmark.main_traffic,
+            "n_cores":      self.benchmark.n_cores,
         }
         
         self.worker_sem.release()
@@ -265,21 +277,22 @@ class BenchmarkProcess(mp.Process):
 
 benchmarks = [
     # Benchmarks: Square Matrices with Varying Sizes
-    Benchmark(M=1024, N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=512,  N=512,  K=512,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=256,  N=256,  K=256,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=128,  N=128,  K=128,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 8), M=1024, N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 8), M=512,  N=512,  K=512,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 8), M=256,  N=256,  K=256,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (4, 4), M=128,  N=128,  K=128,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     
     # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
-    Benchmark(M=512,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=256,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=128,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=64,   N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=32,   N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=8,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=4,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=2,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark(M=1,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 8), M=512,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 8), M=256,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 4), M=128,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 4), M=64,   N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 4), M=32,   N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 4), M=16,   N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 4), M=8,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 4), M=4,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 4), M=2,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark((0, 0), (8, 4), M=1,    N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
 ]
 
 if __name__ == "__main__":
@@ -303,7 +316,7 @@ if __name__ == "__main__":
     
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (8, 8), return_dict, worker_sem)
+        p = BenchmarkProcess(benchmark, config, return_dict, worker_sem)
         p.start()
         processes.append(p)
         
@@ -311,7 +324,7 @@ if __name__ == "__main__":
         p.join()
     
     with open(output_path, "w") as f:
-        f.write("Benchmark,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
+        f.write("Benchmark,Number of Cores,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
         for benchmark in benchmarks:
             if benchmark.signature not in return_dict:
                 logger.error(f"Missing results for benchmark {benchmark.signature}")
@@ -323,6 +336,7 @@ if __name__ == "__main__":
             total_ops    = result["total_ops"]
             l1_traffic   = result["l1_traffic"]
             main_traffic = result["main_traffic"]
+            n_cores      = result["n_cores"]
             
             ops_per_cycle   = total_ops / timestamp
             l1_bandwidth    = l1_traffic / timestamp
@@ -330,7 +344,7 @@ if __name__ == "__main__":
             total_bandwidth = l1_bandwidth + main_bandwidth
             arith_intensity = (total_ops / (main_traffic + l1_traffic)) if (main_traffic + l1_traffic) != 0 else 0
             
-            f.write(f"{benchmark.signature},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
+            f.write(f"{benchmark.signature},{n_cores},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
     
     print(f"Benchmark results saved to '{output_path}'.")
     
@@ -343,11 +357,11 @@ if __name__ == "__main__":
         img_path = os.path.join(OUTPUT_DIR, f"{FILE_NAME}.png")
         
         mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
-        noc_bisection_bw = booksim_config.peak_bandwidth_per_router() * config["processor_clock_freq"] / 1e9
+        noc_bisection_bw = booksim_config.peak_bisection_bandwidth() / 1e9  # in GB/s
         
         print(f"=== DRAMSim3 Configuration ===")
         print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
-        print(f"number of channels per instance: {dramsim_config.n_cmd_q_per_instance}")
+        print(f"number of cmd q per instance: {dramsim_config.n_cmd_q_per_instance}")
         print(f"number of instances: {dramsim_config.n_instance}")
         
         print(f"=== BookSim2 Configuration ===")
@@ -356,7 +370,7 @@ if __name__ == "__main__":
         print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
-            peak_perf = 8 * 8 * mxu_config.peak_op_per_cycle,  # 4x4 PE array
+            peak_perf_per_core=mxu_config.peak_op_per_cycle,
             peak_mem_bw = mem_peak_bw,
             peak_noc_bw = noc_bisection_bw,
             src_path=output_path,

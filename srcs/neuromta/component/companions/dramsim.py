@@ -47,7 +47,6 @@ if PYDRAMSIM3_AVAILABLE:
                 system_params={
                     "channel_size": channel_size // (1024 * 1024),  # GB -> MB
                     "channels": n_channel_per_instance,
-                    # "address_mapping": "rorababgchco",
                 },
                 dram_structure_params={
                     "bankgroups": 1  # TODO: more authentic way of doing this..?

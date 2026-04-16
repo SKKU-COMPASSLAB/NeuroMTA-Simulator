@@ -16,6 +16,7 @@ class IcntConfig:
     def __init__(
         self,
         
+        processor_clock_freq: int,
         shape: tuple[int, int], 
         flit_size: int          = parse_mem_cap_str("32B"),
         max_payload_size: int   = 256,
@@ -30,6 +31,7 @@ class IcntConfig:
         y_dim = shape[1]
         
         booksim2_config = BookSim2Config(
+            processor_clock_freq=processor_clock_freq,
             flit_size=flit_size,
             subnets=subnets,
             x=x_dim,

@@ -10,146 +10,174 @@ from neuromta.component.implementation.operator import *
 
 
 __all__ = [
-    "MCA_KERNEL_CORE_LD_THREAD",
-    "MCA_KERNEL_CORE_EX_THREAD",
-    "MCA_KERNEL_CORE_ST_THREAD",
+    "MCA_KernelTemplate",
 ]
 
 
-def FIFO_IR_SORT_KEY(cmd: MCA_CompiledOperator.IR.MEM_LOAD_FROM_FIFO | MCA_CompiledOperator.IR.MEM_STORE_TO_FIFO):
-    return cmd.buf, cmd.entry_id
-  
-@jit_prototype
-def MCA_KERNEL_CORE_LD_THREAD(
-    core: NPUCore, 
-    env: MCA_OperatorGraphCompiler.Environment, 
-    stage: MCA_CompiledOperator.Stage,
-    ex_pp_cnt_var_name: str,
-    ex_pr_cnt_var_name: str,
-    gb_barrier: tuple[VariableHandle, VariableHandle, int] = None,
-):
-    
-    core.var_atomic_compare_and_swap(env.variables[ex_pp_cnt_var_name], 0, 1)
-    
-    for group in stage.groups:
-        mem_loads:   list[MCA_CompiledOperator.IR.MEM_LOAD_TILE]      = []
-        fifo_loads:  list[MCA_CompiledOperator.IR.MEM_LOAD_FROM_FIFO] = []
-        fifo_stores: list[MCA_CompiledOperator.IR.MEM_STORE_TO_FIFO]  = []
-        # fifo_load_stores: list[MCA_CompiledOperator.IR.MEM_LOAD_FROM_FIFO | MCA_CompiledOperator.IR.MEM_STORE_TO_FIFO] = []
+class MCA_KernelTemplate:
+    def get_ld_thread_kernel(self, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage) -> KernelPrototype:
+        return KernelPrototype(
+            core=core,
+            func=self.LD_THREAD,
+            args=(env, stage),
+            kwargs={}
+        )
         
-        for ir in group.loads:
-            if isinstance(ir, MCA_CompiledOperator.IR.NOP):
-                continue
-            elif isinstance(ir, MCA_CompiledOperator.IR.MEM_LOAD_TILE):
-                mem_loads.append(ir)
-            elif isinstance(ir, MCA_CompiledOperator.IR.MEM_LOAD_FROM_FIFO):
-                fifo_loads.append(ir)
-            elif isinstance(ir, MCA_CompiledOperator.IR.MEM_STORE_TO_FIFO):
-                fifo_stores.append(ir)
-            else:
-                raise Exception(f"Unsupported IR type '{type(ir).__name__}' in load thread kernel.")
+    def get_ex_thread_kernel(self, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage) -> KernelPrototype:
+        return KernelPrototype(
+            core=core,
+            func=self.EX_THREAD,
+            args=(env, stage),
+            kwargs={}
+        )
         
-        for i, ir in enumerate(mem_loads):
-            with new_parallel_thread(f"MEM_LOAD{i}"):
-                tile_sig = ir.tile_sig
-                buf = env.buffers[ir.tile_sig.buf_name]
-                src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad = buf.get_tile_ptr_read_args(*tile_sig.coords)
+    def get_st_thread_kernel(self, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage) -> KernelPrototype:
+        return KernelPrototype(
+            core=core,
+            func=self.ST_THREAD,
+            args=(env, stage),
+            kwargs={}
+        )
+        
+    def get_barrier_kernel(self, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, barrier: tuple[str, str, int]) -> KernelPrototype:
+        return KernelPrototype(
+            core=core,
+            func=self.BARRIER,
+            args=(env, barrier),
+            kwargs={}
+        )
+    
+    @classmethod
+    def read_from_ref(cls, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, ref: MCA_CompiledOperator.IR.Reference, row_pattern: dict[int, int]=None, inplace_container: DataContainer=None) -> DataContainer:
+        tile_sig = ref.tile_sig
+                    
+        if tile_sig is None:
+            raise Exception("Tile signature is required for MEM_COPY_TILE IR in load thread kernel.")
+        
+        tensor = env.buffers[tile_sig.buf_name]
+        row_size = tensor.tile_shape[1] * tensor.dtype.itemsize
+        row_num = tensor.tile_shape[0]
+        
+        container = inplace_container if inplace_container is not None else DataContainer(shape=tensor.tile_shape, dtype=tensor.dtype)  # Allocate container with the same shape and dtype as the tile
+        
+        if ref.is_fifo():
+            fifo_handle = env.fifo_buffers[ref.ref_type.buf_name]
+            slot_id = ref.slot_id
+            core.mem_read_from_fifo(container, fifo_handle, slot_id, row_size, row_num, row_pattern=row_pattern)
+        elif ref.is_spm():
+            tile_sig = ref.tile_sig
+            ptr = ref.ptr
+            core.mem_read(ptr, container, row_size, row_num, row_pattern=row_pattern)
+        elif ref.is_tensor():
+            tile_sig = ref.tile_sig
+            buf = env.buffers[ref.ref_type.buf_name]
+            src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad = buf.get_tile_ptr_read_args(*tile_sig.coords)
+            core.mem_read(src_ptr, container, row_size, row_num, src_row_stride, dst_row_stride, row_pattern=row_pattern, cont_row_zero_pad=dst_row_zero_pad)
+        else:
+            raise Exception(f"Unsupported source type '{type(ref).__name__}' in MEM_COPY_TILE IR in load thread kernel.")
+        
+        return container
+        
+    @classmethod
+    def write_to_ref(cls, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, container: DataContainer, ref: MCA_CompiledOperator.IR.Reference, row_pattern: dict[int, int]=None):
+        tile_sig = ref.tile_sig
+                    
+        if tile_sig is None:
+            raise Exception("Tile signature is required for MEM_COPY_TILE IR in load thread kernel.")
+        
+        tensor = env.buffers[tile_sig.buf_name]
+        row_size = tensor.tile_shape[1] * tensor.dtype.itemsize
+        row_num = tensor.tile_shape[0]
+        
+        if ref.is_fifo():
+            fifo_handle = env.fifo_buffers[ref.ref_type.buf_name]
+            slot_id = ref.slot_id
+            core.mem_write_to_fifo(container, fifo_handle, slot_id, row_size, row_num, row_pattern=row_pattern, ref_count=ref.ref_cnt)
+        elif ref.is_spm():
+            tile_sig = ref.tile_sig
+            ptr = ref.ptr
+            core.mem_write(ptr, container, row_size, row_num, row_pattern=row_pattern)
+        elif ref.is_tensor():
+            tile_sig = ref.tile_sig
+            buf = env.buffers[ref.ref_type.buf_name]
+            dst_ptr, row_size, row_num, src_row_stride, dst_row_stride = buf.get_tile_ptr_write_args(*tile_sig.coords)
+            core.mem_write(dst_ptr, container, row_size, row_num, dst_row_stride, src_row_stride, row_pattern=row_pattern)
+        else:
+            raise Exception(f"Unsupported destination type '{type(ref).__name__}' in MEM_COPY_TILE IR in load thread kernel.")
+    
+    @classmethod
+    def LD_THREAD(cls, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage):
+        thread_lock = VariableHandle.tmp(initial_value=0)
+        
+        for thread_id, ir in enumerate(stage.loads):
+            with new_parallel_thread(f"{thread_id}"):
+                if isinstance(ir, MCA_CompiledOperator.IR.NOP):
+                    continue
+                elif isinstance(ir, MCA_CompiledOperator.IR.MEM_COPY_TILE):
+                    container = cls.read_from_ref(core, env, ir.src)
+                    core.var_atomic_wait(thread_lock, thread_id)
+                    for dst in ir.dsts:
+                        cls.write_to_ref(core, env, container, dst)
+                    core.var_atomic_increase(thread_lock)
+                else:
+                    raise Exception(f"Unsupported IR type '{type(ir).__name__}' in LD_THREAD kernel.")
                 
-                core.mem_copy(ir.ptr, src_ptr, row_size, row_num, src_row_stride, dst_row_stride, dst_row_zero_pad)
-            
         core.parallel_merge()
-        
-        with new_parallel_thread("FIFO_LOADS"):
-            for i, ir in enumerate(fifo_loads):
-                with new_parallel_thread(f"FIFO_LOAD{i}"):
-                    tile_sig = ir.tile_sig
-                    buf = env.fifo_buffers[ir.buf]
-                    tile_size = tile_sig.tile_size
-                
-                    core.mem_copy_from_fifo(ir.ptr, buf, ir.entry_id, tile_size)
-            
-            core.parallel_merge()
-            core.var_atomic_increase(env.variables[ex_pr_cnt_var_name], 1)
-                
-        with new_parallel_thread("FIFO_STORES"):
-            for ir in fifo_stores:
-                tile_sig = ir.tile_sig
-                buf = env.fifo_buffers[ir.buf]
-                tile_size = tile_sig.tile_size
-                
-                core.mem_copy_to_fifo(ir.ptr, buf, ir.entry_id, tile_size, ir.ref_count)
-                
-    core.parallel_merge()
-    
-    if gb_barrier is not None:
-        core.var_atomic_barrier(*gb_barrier)
-    
-@jit_prototype
-def MCA_KERNEL_CORE_EX_THREAD(
-    core: NPUCore, 
-    env: MCA_OperatorGraphCompiler.Environment, 
-    stage: MCA_CompiledOperator.Stage,
-    op_compute_methods: list[Callable],
-    ex_pp_cnt_var_name: str,
-    ex_pr_cnt_var_name: str,
-    st_pp_cnt_var_name: str,
-    st_pr_cnt_var_name: str,
-    gb_barrier: tuple[VariableHandle, VariableHandle, int] = None,
-):
-    core.var_atomic_compare_and_swap(env.variables[ex_pp_cnt_var_name], 1, 0)
-    core.var_atomic_compare_and_swap(env.variables[st_pp_cnt_var_name], 0, 1)
-    
-    for group in stage.groups:
-        core.var_conditional_wait(env.variables[ex_pr_cnt_var_name], env.variables[ex_pr_cnt_var_name].greater_than(0))
-        
-        for ir in group.executes:
+
+    @classmethod
+    def EX_THREAD(cls, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage):
+        for ir in stage.executes:
             if isinstance(ir, MCA_CompiledOperator.IR.NOP):
                 continue
             elif isinstance(ir, MCA_CompiledOperator.IR.EXE_UOP):
-                for method in op_compute_methods:
-                    method(core, env, ir)
+                cls.EXE_UOP(core, env, ir)
+            elif isinstance(ir, MCA_CompiledOperator.IR.EXE_CTX_LOAD):
+                cls.EXE_CTX_LOAD(core, env, ir)
+            elif isinstance(ir, MCA_CompiledOperator.IR.EXE_CTX_STORE):
+                cls.EXE_CTX_STORE(core, env, ir)
             else:
-                raise Exception(f"Unsupported IR type '{type(ir).__name__}' in execution thread kernel.")
-        
-        core.var_atomic_increase(env.variables[ex_pr_cnt_var_name], -1)
-        core.var_atomic_increase(env.variables[st_pr_cnt_var_name], 1)
-        
-    if gb_barrier is not None:
-        core.var_atomic_barrier(*gb_barrier)
-
-@jit_prototype
-def MCA_KERNEL_CORE_ST_THREAD(
-    core: NPUCore, 
-    env: MCA_OperatorGraphCompiler.Environment, 
-    stage: MCA_CompiledOperator.Stage,
-    st_pp_cnt_var_name: str,
-    st_pr_cnt_var_name: str,
-    gb_barrier: tuple[VariableHandle, VariableHandle, int] = None,
-):  
-    core.var_atomic_compare_and_swap(env.variables[st_pp_cnt_var_name], 1, 0)
-    
-    for group in stage.groups:
-        core.var_conditional_wait(env.variables[st_pr_cnt_var_name], env.variables[st_pr_cnt_var_name].greater_than(0))
-        
-        for ir in group.stores:
+                raise Exception(f"Unsupported IR type '{type(ir).__name__}' in EX_THREAD kernel.")
+            
+    @classmethod
+    def ST_THREAD(cls, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage):
+        for ir in stage.stores:
             if isinstance(ir, MCA_CompiledOperator.IR.NOP):
                 continue
-            elif isinstance(ir, MCA_CompiledOperator.IR.MEM_STORE_TILE):
-                tile_sig = ir.tile_sig
-                buf = env.buffers[ir.tile_sig.buf_name]
-                dst_ptr, row_size, row_num, src_row_stride, dst_row_stride = buf.get_tile_ptr_write_args(*tile_sig.coords)
-                
-                core.mem_copy(dst_ptr, ir.ptr, row_size, row_num, src_row_stride, dst_row_stride)
-            elif isinstance(ir, MCA_CompiledOperator.IR.MEM_STORE_TO_FIFO):
-                tile_sig = ir.tile_sig
-                buf = env.fifo_buffers[ir.buf]
-                tile_size = tile_sig.tile_size
-                
-                core.mem_copy_to_fifo(ir.ptr, buf, ir.entry_id, tile_size, ir.ref_count)
+            elif isinstance(ir, MCA_CompiledOperator.IR.MEM_COPY_TILE):                
+                container = cls.read_from_ref(core, env, ir.src)
+                for dst in ir.dsts:
+                    cls.write_to_ref(core, env, container, dst)
             else:
-                raise Exception(f"Unsupported IR type '{type(ir).__name__}' in store thread kernel.")
-        
-        core.var_atomic_increase(env.variables[st_pr_cnt_var_name], -1)
-        
-    if gb_barrier is not None:
-        core.var_atomic_barrier(*gb_barrier)
+                raise Exception(f"Unsupported IR type '{type(ir).__name__}' in ST_THREAD kernel.")
+    
+    @classmethod
+    def BARRIER(cls, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, barrier: tuple[str, str, int]):
+        arrival_cnt, blocking, total_cnt = barrier
+        core.var_atomic_barrier(env.variables[arrival_cnt], env.variables[blocking], total_cnt)
+    
+    @classmethod
+    def EXE_UOP(
+        cls,
+        core: NPUCore, 
+        env: MCA_OperatorGraphCompiler.Environment, 
+        ir: MCA_CompiledOperator.IR.EXE_UOP,
+    ):
+        raise NotImplementedError("EXE_UOP execution is not implemented yet.")
+    
+    @classmethod
+    def EXE_CTX_LOAD(
+        cls,
+        core: NPUCore, 
+        env: MCA_OperatorGraphCompiler.Environment, 
+        ir: MCA_CompiledOperator.IR.EXE_CTX_LOAD,
+    ):
+        raise NotImplementedError("EXE_CTX_LOAD execution is not implemented yet.")
+    
+    @classmethod
+    def EXE_CTX_STORE(
+        cls,
+        core: NPUCore, 
+        env: MCA_OperatorGraphCompiler.Environment, 
+        ir: MCA_CompiledOperator.IR.EXE_CTX_STORE,
+    ):
+        raise NotImplementedError("EXE_CTX_STORE execution is not implemented yet.")

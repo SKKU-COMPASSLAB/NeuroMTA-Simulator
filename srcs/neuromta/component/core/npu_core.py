@@ -79,10 +79,10 @@ class NPUCore(Core):
             self.async_rpc_wait_rsp_msg(msg)
             
     @jit_prototype
-    def remote_mem_page_read(self, dst_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
+    def remote_mem_page_read(self, dst_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
         src_core_id = self.core_id
         
-        self.local_mem_page_read(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset)
+        self.local_mem_page_read(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset, cont_row_zero_pad)
         
         if dst_core_id != src_core_id:
             noc_msgs = [
@@ -103,7 +103,7 @@ class NPUCore(Core):
                 self.async_rpc_wait_rsp_msg(msg)
                 
     @jit_prototype
-    def remote_mem_page_write(self, src_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
+    def remote_mem_page_write(self, src_core_id: int, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
         dst_core_id = self.core_id
         
         if src_core_id != dst_core_id:
@@ -124,7 +124,7 @@ class NPUCore(Core):
             for msg in noc_msgs:
                 self.async_rpc_wait_rsp_msg(msg)
         
-        self.local_mem_page_write(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset, cont_row_zero_pad)
+        self.local_mem_page_write(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset)
     
     @jit_prototype
     def mem_copy(self, dst_ptr: Pointer, src_ptr: Pointer, row_size: int, row_num: int=1, src_row_stride: int=None, dst_row_stride: int=None, dst_row_zero_pad: int=0):
@@ -160,7 +160,7 @@ class NPUCore(Core):
             raise Exception("At least one of the source and destination buffers must belong to the current core for 'mem_copy' method.")
 
         if src_owner_core_id == self.core_id:
-            self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size)
+            self.local_mem_page_read(src_ptr, container, row_size, row_num, src_row_stride, row_size, cont_row_zero_pad=dst_row_zero_pad)
         else:
             data_rd_request = RPCMessage(
                 src_core_id=self.core_id,
@@ -174,13 +174,14 @@ class NPUCore(Core):
                 row_num=row_num,
                 mem_row_stride=src_row_stride,
                 cont_row_stride=row_size,
+                cont_row_zero_pad=dst_row_zero_pad
             )
             
             self.async_rpc_send_req_msg(data_rd_request)
             self.async_rpc_wait_rsp_msg(data_rd_request)
         
         if dst_owner_core_id == self.core_id:
-            self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size, cont_row_zero_pad=dst_row_zero_pad)
+            self.local_mem_page_write(dst_ptr, container, row_size, row_num, dst_row_stride, row_size)
         else:
             data_wr_request = RPCMessage(
                 src_core_id=self.core_id,
@@ -194,7 +195,6 @@ class NPUCore(Core):
                 row_num=row_num,
                 mem_row_stride=dst_row_stride,
                 cont_row_stride=row_size,
-                cont_row_zero_pad=dst_row_zero_pad
             )
             
             self.async_rpc_send_req_msg(data_wr_request)
@@ -217,6 +217,77 @@ class NPUCore(Core):
         self.fifo_wait_until_valid(fifo_handle, entry_id)
         self.mem_copy(ptr, src_ptr, row_size=size)
         self.fifo_pop(fifo_handle, entry_id)
+        
+    @jit_prototype
+    def mem_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
+        if self.check_ptr_belonging(ptr):
+            self.local_mem_page_read(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset, cont_row_zero_pad)
+        else:
+            src_owner_core_id = self.get_buffer_owner(ptr)
+            
+            data_rd_request = RPCMessage(
+                src_core_id=self.core_id,
+                dst_core_id=src_owner_core_id,
+                cmd_id="remote_mem_page_read"
+            ).with_args(
+                dst_core_id=self.core_id,
+                ptr=ptr,
+                container=container,
+                row_size=row_size,
+                row_num=row_num,
+                mem_row_stride=mem_row_stride,
+                cont_row_stride=cont_row_stride,
+                row_pattern=row_pattern,
+                cont_row_offset=cont_row_offset,
+                cont_row_zero_pad=cont_row_zero_pad
+            )
+            
+            self.async_rpc_send_req_msg(data_rd_request)
+            self.async_rpc_wait_rsp_msg(data_rd_request)
+            
+    @jit_prototype
+    def mem_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
+        if self.check_ptr_belonging(ptr):
+            self.local_mem_page_write(ptr, container, row_size, row_num, mem_row_stride, cont_row_stride, row_pattern, cont_row_offset)
+        else:
+            dst_owner_core_id = self.get_buffer_owner(ptr)
+            
+            data_wr_request = RPCMessage(
+                src_core_id=self.core_id,
+                dst_core_id=dst_owner_core_id,
+                cmd_id="remote_mem_page_write"
+            ).with_args(
+                src_core_id=self.core_id,
+                ptr=ptr,
+                container=container,
+                row_size=row_size,
+                row_num=row_num,
+                mem_row_stride=mem_row_stride,
+                cont_row_stride=cont_row_stride,
+                row_pattern=row_pattern,
+                cont_row_offset=cont_row_offset
+            )
+            
+            self.async_rpc_send_req_msg(data_wr_request)
+            self.async_rpc_wait_rsp_msg(data_wr_request)
+            
+    @jit_prototype
+    def mem_read_from_fifo(self, container: DataContainer[torch.Tensor], fifo_handle: FIFOBufferHandle, entry_id: VariableHandle | int, row_size: int, row_num: int=1, row_pattern: dict[int, int]=None):
+        src_ptr = fifo_handle.get_ptr(entry_id)
+        row_size = row_size if (row_size is not None) else fifo_handle.entry_size
+        
+        self.fifo_wait_until_valid(fifo_handle, entry_id)
+        self.mem_read(src_ptr, container, row_size=row_size, row_num=row_num, row_pattern=row_pattern)
+        self.fifo_pop(fifo_handle, entry_id)
+        
+    @jit_prototype
+    def mem_write_to_fifo(self, container: DataContainer[torch.Tensor], fifo_handle: FIFOBufferHandle, entry_id: VariableHandle | int, row_size: int, row_num: int=1, row_pattern: dict[int, int]=None, ref_count: int=1):
+        dst_ptr = fifo_handle.get_ptr(entry_id)
+        row_size = row_size if (row_size is not None) else fifo_handle.entry_size
+        
+        self.fifo_wait_until_vacant(fifo_handle, entry_id)
+        self.mem_write(dst_ptr, container, row_size=row_size, row_num=row_num, row_pattern=row_pattern)
+        self.fifo_push(fifo_handle, entry_id, ref_count)
 
     #############################################################
     # MXU Commands
@@ -229,7 +300,7 @@ class NPUCore(Core):
     @core_command_method
     def mxu_load_context(self, psum_cont: DataContainer[torch.Tensor]):
         psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.config.ofm_tile_shape)
-        self.mxu_context.load_tile_pe_arr(psum_tile)
+        self.mxu_context.set_pe_arr_regs(psum_tile)
         
     @core_command_method
     def mxu_store_context(self, psum_cont: DataContainer[torch.Tensor]):
@@ -242,8 +313,8 @@ class NPUCore(Core):
         
         ifm_cont:  DataContainer[torch.Tensor],
         wgt_cont:  DataContainer[torch.Tensor],
-        psum_cont: DataContainer[torch.Tensor],
-        ofm_cont:  DataContainer[torch.Tensor],
+        psum_cont: DataContainer[torch.Tensor] | None,
+        ofm_cont:  DataContainer[torch.Tensor] | None,
         
         preload_psum:  bool=False,
         flush_ofm:     bool=False,
@@ -256,7 +327,7 @@ class NPUCore(Core):
             return  # Terminate the command to reduce the simulation time without actual MXU functional unit (do not return anything to make sure that the command is executed only once)
         
         if preload_psum:
-            if psum_cont.data is None:
+            if psum_cont is None or psum_cont.data is None:
                 psum_tile = torch.zeros(self.mxu_context.config.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
             else:
                 psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype)
@@ -269,7 +340,7 @@ class NPUCore(Core):
                 if ifm_transposed: 
                     psum_tile = psum_tile.T
                 
-            self.mxu_context.load_tile_pe_arr(psum_tile)  
+            self.mxu_context.set_pe_arr_regs(psum_tile)  
 
         ifm_tile = ifm_cont.data.view(self.mxu_context.dtype)  #.reshape(self.mxu_context.ifm_tile_shape)
         wgt_tile = wgt_cont.data.view(self.mxu_context.dtype)  #.reshape(self.mxu_context.wgt_tile_shape)
@@ -288,6 +359,9 @@ class NPUCore(Core):
         self.mxu_context.execute_gemm(ifm_tile=ifm_tile, wgt_tile=wgt_tile)
             
         if flush_ofm:
+            if ofm_cont is None:
+                raise ValueError("ofm_cont must be provided when flush_ofm is True in mxu_tiled_gemm command.")
+            
             ofm_tile = self.mxu_context.get_pe_arr_regs()  
                 
             if ifm_transposed: 
@@ -317,7 +391,7 @@ class NPUCore(Core):
             else:
                 psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.config.ofm_tile_shape)
             
-            self.mxu_context.load_tile_pe_arr(psum_tile)
+            self.mxu_context.set_pe_arr_regs(psum_tile)
         
         ifm_tile = ifm_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.config.ofm_tile_shape)
         if ifm_transposed: ifm_tile = ifm_tile.T
@@ -333,7 +407,7 @@ class NPUCore(Core):
 
         op: MXUElementwiseOp,
         src:  DataContainer[torch.Tensor],
-        dst:  DataContainer[torch.Tensor],
+        dst:  DataContainer[torch.Tensor] | None,
         
         preload_psum:  bool=False,
         flush_ofm:     bool=False,
@@ -343,12 +417,12 @@ class NPUCore(Core):
             return  # Terminate the command to reduce the simulation time without actual MXU functional unit (do not return anything to make sure that the command is executed only once)
         
         if preload_psum:
-            if dst.data is None:
+            if dst is None or dst.data is None:
                 psum_tile = torch.zeros(self.mxu_context.config.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
             else:
                 psum_tile = dst.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.config.ofm_tile_shape)
                     
-            self.mxu_context.load_tile_pe_arr(psum_tile)
+            self.mxu_context.set_pe_arr_regs(psum_tile)
 
         ifm_tile = src.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.config.ifm_tile_shape)
         if ifm_transposed: ifm_tile = ifm_tile.T
@@ -356,6 +430,9 @@ class NPUCore(Core):
         self.mxu_context.execute_elemwise(ifm_tile=ifm_tile, op=op)
         
         if flush_ofm:
+            if dst is None:
+                raise ValueError("dst must be provided when flush_ofm is True in mxu_tiled_elemwise command.")
+            
             ofm_tile = self.mxu_context.get_pe_arr_regs()
             dst.data = ofm_tile
             

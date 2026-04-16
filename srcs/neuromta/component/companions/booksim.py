@@ -25,10 +25,11 @@ __all__ = [
 
 if PYBOOKSIM2_AVAILABLE:
     class BookSim2Config:
-        def __init__(self, flit_size: int, subnets: int, x: int, y: int, xr: int, yr: int):
+        def __init__(self, processor_clock_freq: float, flit_size: int, subnets: int, x: int, y: int, xr: int, yr: int):
             if not PYBOOKSIM2_AVAILABLE:
                 raise RuntimeError("[ERROR] BookSim2 is not available. Please install pybooksim2 to use this module.")
             
+            self.processor_clock_freq: float = processor_clock_freq
             self._flit_size: int = flit_size
             self._subnets: int = subnets
             self._x: int = x
@@ -39,7 +40,10 @@ if PYBOOKSIM2_AVAILABLE:
             self._config: c_void_p = pybooksim2.create_config_torus_2d(subnets, x, y, xr, yr)
             
         def peak_bandwidth_per_router(self) -> float:
-            return self._flit_size * self._subnets * self._x * self._y
+            return self._flit_size * self._subnets * self.processor_clock_freq
+        
+        def peak_bisection_bandwidth(self) -> float:
+            return self.peak_bandwidth_per_router() * self._y * 2
 
         def create_icnt(self) -> c_void_p:
             return pybooksim2.create_icnt(config=self._config)
@@ -88,7 +92,8 @@ if PYBOOKSIM2_AVAILABLE:
             return pybooksim2.get_icnt_stats(self._icnt)
 else:
     class BookSim2Config:
-        def __init__(self, flit_size: int, subnets: int, x: int, y: int, xr: int, yr: int):
+        def __init__(self, processor_clock_freq: float, flit_size: int, subnets: int, x: int, y: int, xr: int, yr: int):
+            self.processor_clock_freq: float = processor_clock_freq
             self._flit_size: int = flit_size
             self._subnets: int = subnets
             self._x: int = x
@@ -101,7 +106,10 @@ else:
             return self._x * self._y * self._xr * self._yr * 2 * 16
         
         def peak_bandwidth_per_router(self) -> float:
-            return self._flit_size * self._subnets * self._x * self._y
+            return self._flit_size * self._subnets * self.processor_clock_freq
+        
+        def peak_bisection_bandwidth(self) -> float:
+            return self.peak_bandwidth_per_router() * self._y * 2
 
     class BookSim2(CompanionModule):
         def __init__(self, config: BookSim2Config):

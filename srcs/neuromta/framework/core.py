@@ -470,12 +470,14 @@ class KernelPrototype:
         return self
         
     def compile(self) -> 'Kernel':
-        with Kernel(kernel_id=self.compiled_kernel_id) as kernel:
+        kernel = Kernel(kernel_id=self.compiled_kernel_id)
+        with kernel:
             try:
                 self.func(self.core, *self.args, **self.kwargs)
             except Exception as e:
                 logger.error(f"Exception occurred while compiling kernel '{kernel.kernel_id}': {e}")
                 logger.error(f"  - args: {self.args} | kwargs: {self.kwargs}")
+                # logger.error(f"  - callstack: {kernel.root_callstack}")
                 raise e
         kernel.slot_id = self.slot_id
         kernel.slot_level = self.slot_level if self.slot_level is not None else 0
@@ -651,8 +653,13 @@ class Kernel:
     def is_finished(self, core: 'Core') -> bool:
         for step in self._execution_steps:
             if isinstance(step, KernelPrototype):
-                step = step.compile()
-                step.root_kernel = self
+                try:
+                    step = step.compile()
+                    step.root_kernel = self
+                except Exception as e:
+                    logger.error(f"Exception occurred while compiling kernel prototype '{step.compiled_kernel_id}' in kernel '{self.kernel_id}': {e}")
+                    logger.error(f"  - callstack: {self.callstack}")
+                    raise e
             
             if isinstance(step, Command):
                 if not step.is_finished(core, self):
@@ -1200,7 +1207,7 @@ class Core:
         self.mem_handle.set_data(ptr, size=size, data=init_data)
         
     @core_command_method
-    def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
+    def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_read' method.")
         
@@ -1219,9 +1226,12 @@ class Core:
         for d, s in row_pattern.items():
             src_data = self.mem_handle.get_data(ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
             container.data[d, cont_row_offset:cont_row_offset+row_size] = src_data
+            
+            if cont_row_zero_pad > 0:
+                container.data[d, cont_row_offset+row_size:cont_row_offset+row_size+cont_row_zero_pad] = 0
         
     @core_command_method
-    def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
+    def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_write' method.")
 
@@ -1235,15 +1245,11 @@ class Core:
         if not container.is_mem_segment:
             raise ValueError("container.data must be a Tensor for local_mem_page_write.")
 
-        cont_data = container.data.flatten().view(torch.uint8).reshape(row_num, cont_row_stride)
+        cont_data = container.data.flatten().view(torch.uint8)[:row_num * cont_row_stride].reshape(row_num, cont_row_stride)
         
         for d, s in row_pattern.items():
             dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
             self.mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
-            
-            if cont_row_zero_pad > 0:
-                zero_data = torch.zeros((cont_row_zero_pad,), dtype=torch.uint8)
-                self.mem_handle.set_data(ptr + (s * mem_row_stride) + row_size, size=cont_row_zero_pad, data=zero_data)
 
     ###########################################################################
     # Static Memory Space Management

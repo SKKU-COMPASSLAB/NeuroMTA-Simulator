@@ -13,7 +13,6 @@ __all__ = [
     "MCA_MAPPER_LINEAR",
     "MCA_MAPPER_UNARY",
     "MCA_MAPPER_CONV2D",
-    "MCA_MAPPER_FLATTEN",
 ]
 
 def MCA_MAPPER_LINEAR(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
@@ -66,31 +65,18 @@ def MCA_MAPPER_LINEAR(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
                     
                     for k_s in range(ifm.shard_grid[1]):
                         for k_t in range(ifm.tile_grid_per_shard[1]):
+                            i_tiles=[
+                                op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)],
+                                op_sig.tiles["wgt"][(n_s, k_s, n_t, k_t)],
+                            ]
+                            if k_s == 0 and k_t == 0:
+                                i_tiles.append(op_sig.tiles["bias"][(0, n_s, 0, n_t)])  # TODO: bias or psum?
                             tiled_op.add_uop(
-                                i_tiles=[
-                                    op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)],
-                                    op_sig.tiles["wgt"][(n_s, k_s, n_t, k_t)],
-                                    op_sig.tiles["bias"][(0, n_s, 0, n_t)],
-                                ],
+                                i_tiles=i_tiles,
                                 o_tile=op_sig.tiles["ofm"][(m_s, n_s, m_t, n_t)],
                             )
     
     return op_sig
-    
-# def MCA_MAPPER_UNARY_INPLACE(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
-#     ifm = op_sig.buffers["ifm"]
-    
-#     for m_s in range(ifm.shard_grid[0]):
-#         for k_s in range(ifm.shard_grid[1]):
-#             for m_t in range(ifm.tile_grid_per_shard[0]):
-#                 for k_t in range(ifm.tile_grid_per_shard[1]):
-#                     tiled_op = op_sig.new_tiled_op()
-#                     tiled_op.add_uop(
-#                         i_tiles=[op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)]],
-#                         o_tile=op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)],
-#                     )
-    
-#     return op_sig
 
 def MCA_MAPPER_UNARY(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
     ifm = op_sig.buffers["ifm"]
@@ -207,39 +193,6 @@ def MCA_MAPPER_CONV2D(
         
         if ifm_x_shards != ofm_x_shards:
             raise Exception(f"IFM and OFM shard grid feature size mismatch in input channel C dimension: {ifm_x_shards} != {ofm_x_shards}")
-        
-    # if is_conv2d:
-    #     wgt_tiles: dict[tuple[int, ...], TileSignature] = {
-    #         (y_s, x_s, y_t, x_t): TileSignature("wgt", wgt, y_s, x_s, y_t, x_t)
-    #         for y_s in range(wgt.shard_grid[0])
-    #         for x_s in range(wgt.shard_grid[1])
-    #         for y_t in range(wgt.tile_grid_per_shard[0])
-    #         for x_t in range(wgt.tile_grid_per_shard[1])
-    #     }
-        
-    #     bias_tiles: dict[tuple[int, ...], TileSignature] = {
-    #         (0, x_s, 0, x_t): TileSignature("bias", bias, 0, x_s, 0, x_t)
-    #         for x_s in range(bias.shard_grid[1])
-    #         for x_t in range(bias.tile_grid_per_shard[1])
-    #     }
-        
-    # ifm_tiles: dict[tuple[int, ...], TileSignature] = {
-    #     (y_s, x_s, y_t, x_t): TileSignature("ifm", ifm, y_s, x_s, y_t, x_t)
-    #     for y_s in range(ifm.shard_grid[0])
-    #     for x_s in range(ifm.shard_grid[1])
-    #     for y_t in range(ifm.tile_grid_per_shard[0])
-    #     for x_t in range(ifm.tile_grid_per_shard[1])
-    # }
-    
-    # ofm_tiles: dict[tuple[int, ...], TileSignature] = {
-    #     (y_s, x_s, y_t, x_t): TileSignature("ofm", ofm, y_s, x_s, y_t, x_t)
-    #     for y_s in range(ofm.shard_grid[0])
-    #     for x_s in range(ofm.shard_grid[1])
-    #     for y_t in range(ofm.tile_grid_per_shard[0])
-    #     for x_t in range(ofm.tile_grid_per_shard[1])
-    # }
-    
-    # tiled_ops: list[TiledOperatorSignature] = []
     
     OW_N_TILES = ofm.tile_grid[0] // (N * OH)
     K_N_TILES  = ofm.tile_grid[1]
@@ -268,9 +221,6 @@ def MCA_MAPPER_CONV2D(
                             ofm_x_tile_idx = k_tile_it
                             ofm_tile_idx = ofm.get_shard_grid_from_tile_grid_idx(ofm_y_tile_idx, ofm_x_tile_idx)
                             ofm_tile = op_sig.tiles["ofm"][ofm_tile_idx]
-                            # tiled_op.o_tile = ofm_tiles[ofm_tile_idx]
-                            # tiled_op.i_tiles = []
-                            # tiled_op.op_kwargs = {"ifm_load_kwargs": []}
 
                             for fh_it in range(FH):  # NO TILING over filter height dimension
                                 for fw_it in range(FW):  # NO TILING over filter width dimension
@@ -297,12 +247,10 @@ def MCA_MAPPER_CONV2D(
                                             wgt_y_tile_idx = fh_it * FW * K_N_TILES + fw_it * K_N_TILES + k_tile_it
                                             wgt_x_tile_idx = c_tile_per_group_it
                                             wgt_tile_idx = wgt.get_shard_grid_from_tile_grid_idx(wgt_y_tile_idx, wgt_x_tile_idx)
-                                            # wgt_tile = wgt_tiles[wgt_tile_idx]
                                             wgt_tile = op_sig.tiles["wgt"][wgt_tile_idx]
                                             
                                             # GET PSUM tile signature (BIAS or partially merged OFM)
                                             psum_tile_idx = bias.get_shard_grid_from_tile_grid_idx(0, k_tile_it)
-                                            # psum_tile = bias_tiles[psum_tile_idx]
                                             psum_tile = op_sig.tiles["bias"][psum_tile_idx]
 
                                         # GET IFM tile signature with halo memcpy patterns
@@ -342,14 +290,14 @@ def MCA_MAPPER_CONV2D(
                                         uop_kwargs = {}
                                         
                                         # Compute core uses all the individual IFM tiles and handles the memcpy patterns internally
-                                        uop_kwargs["use_collective_tile_load"] = False
                                         uop_kwargs["ifm_tile_count"] = len(ifm_tile_idx_with_memcpy_pattern)
                                         uop_kwargs["memcpy_pattern"] = list(ifm_tile_idx_with_memcpy_pattern.values())
                                         uop_i_tiles.extend([op_sig.tiles["ifm"][idx] for idx in ifm_tile_idx_with_memcpy_pattern.keys()])
                                                 
                                         if is_conv2d:
                                             uop_i_tiles.append(wgt_tile)
-                                            uop_i_tiles.append(psum_tile)
+                                            if tiled_op.n_uops == 0:
+                                                uop_i_tiles.append(psum_tile)
                                         
                                         tiled_op.add_uop(
                                             i_tiles=uop_i_tiles,
@@ -369,106 +317,4 @@ def MCA_MAPPER_CONV2D(
         
     # input()
                             
-    return op_sig
-
-def MCA_MAPPER_FLATTEN(
-    op_sig: MCA_OperatorSignature,
-) -> MCA_OperatorSignature:
-    ifm = op_sig.buffers["ifm"]
-    ofm = op_sig.buffers["ofm"]
-    
-    if len(ofm.shape) != 2:
-        raise Exception(f"OFM tensor must be 2D for TENSOR_FLATTEN operator mapping, but got shape: {ofm.shape}")
-    if ifm.dtype != ofm.dtype:
-        raise Exception(f"IFM and OFM dtype mismatch: {ifm.dtype} != {ofm.dtype}")
-    if ifm.numel != ofm.numel:
-        raise Exception(f"IFM and OFM number of elements mismatch: {ifm.numel} != {ofm.numel}")
-    if ifm.tile_shape[-1] != ofm.tile_shape[-1]:
-        raise Exception(f"IFM and OFM does not have the same row-wise tile size: {ifm.tile_shape[-1]} != {ofm.tile_shape[-1]}")
-    
-    # ifm_tiles: dict[tuple[int, ...], TileSignature] = {
-    #     (y_s, x_s, y_t, x_t): TileSignature("ifm", ifm, y_s, x_s, y_t, x_t)
-    #     for y_s in range(ifm.shard_grid[0])
-    #     for x_s in range(ifm.shard_grid[1])
-    #     for y_t in range(ifm.tile_grid_per_shard[0])
-    #     for x_t in range(ifm.tile_grid_per_shard[1])
-    # }
-    
-    # ofm_tiles: dict[tuple[int, ...], TileSignature] = {
-    #     (y_s, x_s, y_t, x_t): TileSignature("ofm", ofm, y_s, x_s, y_t, x_t)
-    #     for y_s in range(ofm.shard_grid[0])
-    #     for x_s in range(ofm.shard_grid[1])
-    #     for y_t in range(ofm.tile_grid_per_shard[0])
-    #     for x_t in range(ofm.tile_grid_per_shard[1])
-    # }
-    
-    IFM_W = ifm.shape[-1]
-    
-    OFM_H_TILES = ofm.tile_grid[0]
-    OFM_W_TILES = ofm.tile_grid[1]
-    
-    OFM_H_TILES_PER_SHARD = ofm.tile_grid_per_shard[0]
-    OFM_W_TILES_PER_SHARD = ofm.tile_grid_per_shard[1]
-    
-    IFM_H_STRIDE = functools.reduce(lambda x, y: x * y, ifm.shape[1:-1], 1)  # stride between two adjacent IFM H sticks in terms of number of elements
-    
-    tiled_ops = []
-    
-    for ofm_h_tile_it in range(OFM_H_TILES):
-        for ofm_w_tile_it in range(OFM_W_TILES):
-            ofm_tile_idx = ofm.get_shard_grid_from_tile_grid_idx(ofm_h_tile_it, ofm_w_tile_it)
-            
-            ofm_h_shard_it         = ofm_h_tile_it // OFM_H_TILES_PER_SHARD
-            ofm_h_rem_tile_it      = ofm_h_tile_it % OFM_H_TILES_PER_SHARD 
-            ofm_h_actual_tile_size = min(ofm.tile_shape[0], ofm.shard_shape[0] - ofm_h_rem_tile_it * ofm.tile_shape[0])
-
-            ofm_w_shard_it         = ofm_w_tile_it // OFM_W_TILES_PER_SHARD
-            ofm_w_rem_tile_it      = ofm_w_tile_it % OFM_W_TILES_PER_SHARD
-            ofm_w_actual_offset    = ofm_w_shard_it * ofm.shard_shape[1] + ofm_w_rem_tile_it * ofm.tile_shape[1]
-
-            ifm_h_actual_offset = (ofm_h_shard_it * ofm.shard_shape[0] * IFM_H_STRIDE) + ((ofm_w_actual_offset % (IFM_H_STRIDE * IFM_W)) // IFM_W)
-            ifm_w_actual_offset = ofm_w_actual_offset % IFM_W
-
-            ifm_tile_idx_with_memcpy_pattern: dict[tuple[int, ...], dict[int, int]] = {}
-            
-            for ofm_h_stick_it in range(ofm_h_actual_tile_size):
-                ifm_h_stick_idx = ifm_h_actual_offset + ofm_h_stick_it * IFM_H_STRIDE
-                
-                ifm_h_shard_it = ifm_h_stick_idx // ifm.shard_shape[0]
-                ifm_h_intra_shard_idx = ifm_h_stick_idx % ifm.shard_shape[0]
-                ifm_h_intra_shard_tile_it = ifm_h_intra_shard_idx // ifm.tile_shape[0]
-                ifm_h_intra_tile_offset = ifm_h_intra_shard_idx % ifm.tile_shape[0]
-                
-                ifm_w_shard_it = ifm_w_actual_offset // ifm.shard_shape[1]
-                ifm_w_intra_shard_idx = ifm_w_actual_offset % ifm.shard_shape[1]
-                ifm_w_intra_shard_tile_it = ifm_w_intra_shard_idx // ifm.tile_shape[1]
-                
-                ifm_tile_idx = (ifm_h_shard_it, ifm_w_shard_it, ifm_h_intra_shard_tile_it, ifm_w_intra_shard_tile_it)
-                
-                if ifm_tile_idx not in ifm_tile_idx_with_memcpy_pattern:
-                    ifm_tile_idx_with_memcpy_pattern[ifm_tile_idx] = {}
-                    
-                ifm_tile_idx_with_memcpy_pattern[ifm_tile_idx][ofm_h_stick_it] = ifm_h_intra_tile_offset
-                
-            # tiled_op = TiledOperatorSignature(
-            #     i_tiles=[],
-            #     o_tile=op_sig.tiles["ofm"][ofm_tile_idx],
-            # )
-            tiled_op = op_sig.new_tiled_op()
-            
-            ifm_tile = CollectiveTileSignature(
-                buf_name="ifm",
-                buf=ifm,
-                src_tiles=[op_sig.tiles["ifm"][idx] for idx in ifm_tile_idx_with_memcpy_pattern.keys()],
-                memcpy_patterns=list(ifm_tile_idx_with_memcpy_pattern.values()),
-            )
-            
-            tiled_op.add_uop(
-                i_tiles=[ifm_tile],
-                o_tile=op_sig.tiles["ofm"][ofm_tile_idx],
-            )
-            
-            # tiled_op.i_tiles.append((ifm_tile,))
-            # tiled_ops.append(tiled_op)
-    
     return op_sig

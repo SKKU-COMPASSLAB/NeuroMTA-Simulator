@@ -14,8 +14,8 @@ if __name__ == "__main__":
     ROOT = os.path.abspath(os.path.dirname(__file__))
     
     commands = [
-        f"python3 {ROOT}/run_all_l1.py -n {args.num_processes} {'--monitor' if args.monitor else ''} {'--skip-execution' if args.skip_execution else ''}",
-        f"python3 {ROOT}/run_all_main.py -n {args.num_processes} {'--monitor' if args.monitor else ''} {'--skip-execution' if args.skip_execution else ''}",
+        # f"python3 {ROOT}/run_all_l1.py -n {args.num_processes} {'--monitor' if args.monitor else ''} {'--skip-execution' if args.skip_execution else ''}",
+        # f"python3 {ROOT}/run_all_main.py -n {args.num_processes} {'--monitor' if args.monitor else ''} {'--skip-execution' if args.skip_execution else ''}",
         f"python3 {ROOT}/run_l1_feature_map.py -n {args.num_processes} {'--monitor' if args.monitor else ''} {'--skip-execution' if args.skip_execution else ''}",
     ]
     

@@ -43,12 +43,6 @@ class MCA_TensorBuffer:
         self._shard_y = shard_shape[0]
         self._shard_x = shard_shape[1]
         
-        # self._pad_y = (self._shard_y - (self._shape[-2] % self._shard_y)) % self._shard_y
-        # self._pad_x = (self._shard_x - (self._shape[-1] % self._shard_x)) % self._shard_x
-        
-        # self._layout_y = functools.reduce(lambda x, y: x * y, self._shape[:-2], 1) * (self._shape[-2] + self._pad_y)
-        # self._layout_x = self._shape[-1] + self._pad_x
-        
         if self._shape[-2] % self._shard_y != 0:
             raise ValueError(f"Height {self._shape[-2]} is not divisible by shard height {self._shard_y}.")
         if self._shape[-1] % self._shard_x != 0:

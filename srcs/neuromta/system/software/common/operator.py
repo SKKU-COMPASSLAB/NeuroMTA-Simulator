@@ -7,7 +7,6 @@ from neuromta.component.implementation.tensor_buffer import *
 from neuromta.component.implementation.mapping import *
 from neuromta.component.implementation.operator import *
 
-import neuromta.component.implementation.kernel as mca_kernel_lib
 import neuromta.system.software.common.kernel as common_kernel_lib
 import neuromta.system.software.common.mapping as common_mapping_lib
 
@@ -19,7 +18,6 @@ __all__ = [
     "MCA_OP_CONV2D",
     "MCA_OP_MAXPOOL2D",
     "MCA_OP_AVGPOOL2D",
-    "MCA_OP_FLATTEN",
 ]
 
 
@@ -32,10 +30,7 @@ def MCA_OP_LINEAR(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="LINEAR",
-        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
-        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
-        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
-        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_LINEAR],
+        kernel_template=common_kernel_lib.MCA_KERNEL_TILED_LINEAR()
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -53,10 +48,7 @@ def MCA_OP_RELU(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="RELU",
-        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
-        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
-        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
-        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_RELU],
+        kernel_template=common_kernel_lib.MCA_KERNEL_TILED_RELU()
     )
     
     op_sig.add_buffer("ifm", ifm, is_input=True)
@@ -74,10 +66,7 @@ def MCA_OP_LINEAR_RELU(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="LINEAR_RELU",
-        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
-        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
-        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
-        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MERGED_LINEAR_RELU],
+        kernel_template=common_kernel_lib.MCA_KERNEL_MERGED_LINEAR_RELU()
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -102,10 +91,7 @@ def MCA_OP_CONV2D(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="CONV2D",
-        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
-        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
-        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
-        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_CONV2D],
+        kernel_template=common_kernel_lib.MCA_KERNEL_TILED_CONV2D()
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -136,10 +122,7 @@ def MCA_OP_MAXPOOL2D(
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="MAXPOOL2D",
-        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
-        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
-        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
-        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_MAXPOOL2D],
+        kernel_template=common_kernel_lib.MCA_KERNEL_TILED_MAXPOOL2D(),
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -165,15 +148,10 @@ def MCA_OP_AVGPOOL2D(
     stride: Sequence[int],
     padding: Sequence[int],
     dilation: Sequence[int],
-    
-    use_collective_tile_load: bool=False,
 ) -> MCA_OperatorSignature:
     op_sig = MCA_OperatorSignature(
         op_type="AVGPOOL2D",
-        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
-        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
-        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
-        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_TILED_AVGPOOL2D],
+        kernel_template=common_kernel_lib.MCA_KERNEL_TILED_AVGPOOL2D(),
     )
     
     op_sig.add_buffer("ifm",  ifm,  is_input=True)
@@ -188,24 +166,3 @@ def MCA_OP_AVGPOOL2D(
         op_sig,
         is_conv2d=False,
     )
-
-
-
-@mca_operator_method 
-def MCA_OP_FLATTEN(
-    ifm:  MCA_TensorBuffer,
-    ofm:  MCA_TensorBuffer,
-    
-) -> MCA_OperatorSignature:
-    op_sig = MCA_OperatorSignature(
-        op_type="FLATTEN",
-        ld_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_LD_THREAD,
-        ex_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_EX_THREAD,
-        st_thread_template=mca_kernel_lib.MCA_KERNEL_CORE_ST_THREAD,
-        op_ex_kernels=[common_kernel_lib.MCA_KERNEL_CORE_STAGE_COMPUTE_DIRECT_COPY],
-    )
-    
-    op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("ofm",  ofm,  is_output=True)
-    
-    return common_mapping_lib.MCA_MAPPER_FLATTEN(op_sig)
