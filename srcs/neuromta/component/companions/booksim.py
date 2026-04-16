@@ -87,9 +87,9 @@ if PYBOOKSIM2_AVAILABLE:
 
         def dispatch_command(self, cmd: CompanionCommandSignature, dispatch_callback: Callable, execute_callback: Callable) -> bool:
             return pybooksim2.icnt_dispatch_cmd(icnt=self._icnt, cmd=cmd.capsule, dispatch_callback=dispatch_callback, execute_callback=execute_callback)
-        
-        def get_stats(self) -> dict[str, int | bool]:
-            return pybooksim2.get_icnt_stats(self._icnt)
+
+        def get_stats(self) -> dict[int, dict[str, float | int]]:
+            return pybooksim2.get_icnt_router_stats(icnt=self._icnt)
 else:
     class BookSim2Config:
         def __init__(self, processor_clock_freq: float, flit_size: int, subnets: int, x: int, y: int, xr: int, yr: int):
@@ -241,6 +241,6 @@ else:
             
             self._injection_buffers[key].append((cmd, execute_callback))
             return True
-        
-        def get_stats(self) -> dict[str, int | bool]:
+
+        def get_stats(self) -> dict[int, dict[str, float | int]]:
             return {}

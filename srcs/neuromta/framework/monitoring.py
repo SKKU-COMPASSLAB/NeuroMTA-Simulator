@@ -169,6 +169,8 @@ class MonitoringWindow(MonitorClient):
         return self
     
     def close(self):
+        for tracker in self._core_trackers.values():
+            tracker.update(tracker.totals)
         self.update(cycle=self._device.timestamp, enforce=True)
         
         logger.info("Simulation finished with NeuroMTA Simulator! Closing client ...")
