@@ -1,4 +1,5 @@
 import os
+import abc
 import json
 import argparse
 import multiprocessing as mp
@@ -29,20 +30,193 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
-def _find_smallest_divisor_above(num: int, threshold: int) -> int:
-    for i in range(threshold, num + 1):
-        if num % i == 0:
-            return i
-    return num
-
-def _get_shard_shape_from_tensor_shape(tensor_shape: tuple[int]) -> tuple[int]:
-    hh = tensor_shape[-2]
-    ww = tensor_shape[-1]
+class Benchmark(abc.ABC):
+    @property
+    def signature(self) -> str:
+        return f"UnknownBenchmark({id(self):016x})"
     
-    return _find_smallest_divisor_above(hh, 32), _find_smallest_divisor_above(ww, 32)
+    @abc.abstractmethod
+    def run(self, device: TenstorrentDevice) -> bool:
+        pass
+    
+    
+class LinearBenchmark(Benchmark):
+    def __init__(
+        self,
+        core_group_offset: tuple[int, int],
+        core_group_shape: tuple[int, int], 
+        M:  int, N:  int, K:  int,
+        dtype:     torch.dtype,
+        acc_dtype: torch.dtype,
+    ):
+        self.core_group_offset: tuple[int, int] = core_group_offset
+        self.core_group_shape:  tuple[int, int] = core_group_shape
+        
+        self.M: int = M
+        self.N: int = N
+        self.K: int = K
+        
+        self.dtype:     torch.dtype = dtype
+        self.acc_dtype: torch.dtype = acc_dtype
+        
+        self._timestamp:    int = 0
+        self._l1_traffic:   int = 0
+        self._main_traffic: int = 0
+        self._total_ops:    int = (self.M * self.N * self.K) * 2 + (self.M * self.N)  # MACs + Bias Add
+        
+    @property
+    def ifm_shape(self) -> tuple[int]:
+        return (self.M, self.K)
+    
+    @property
+    def wgt_shape(self) -> tuple[int]:
+        return (self.N, self.K)
+    @property
+    def bias_shape(self) -> tuple[int]:
+        return (1, self.N)
+    
+    @property
+    def ofm_shape(self) -> tuple[int]:
+        return (self.M, self.N)
+    
+    @property
+    def ifm_total_size(self) -> int:
+        return self.M * self.K * self.dtype.itemsize
+    
+    @property
+    def wgt_total_size(self) -> int:
+        return self.N * self.K * self.dtype.itemsize
+    
+    @property
+    def bias_total_size(self) -> int:
+        return self.N * self.dtype.itemsize
+    
+    @property
+    def ofm_total_size(self) -> int:
+        return self.M * self.N * self.acc_dtype.itemsize
+        
+    def run(self, device: TenstorrentDevice):
+        try:
+            core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
+        except:
+            logger.error(f"Failed to get core group with offset {self.core_group_offset} and shape {self.core_group_shape}. Check if the configuration is valid for the device.")
+            return False
+        
+        _l1_total_per_core     = parse_mem_cap_str("1.5MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
+        _spad_size_per_core    = parse_mem_cap_str("1MB")
+        _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
+        
+        logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
+        
+        try:
+            l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
+            main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("32GB"))
+            
+            ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ifm_shape,  dtype=self.dtype,     ).allocate()
+            wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=self.dtype,     ).allocate()
+            bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=self.dtype,     ).allocate()
+            ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ofm_shape,  dtype=self.acc_dtype, ).allocate()
+            
+            self._l1_traffic:   int = 0
+            self._main_traffic: int = 0
+            
+            for b in [ifm_b, wgt_b, bias_b, ofm_b]:
+                if b.mem_space.mem_type == GlobalContextMemType.L1:
+                    self._l1_traffic += b.total_size
+                else:
+                    self._main_traffic += b.total_size
+                    
+            op = MCA_OP_LINEAR( 
+                ifm_b, wgt_b, bias_b, ofm_b, 
+            )
+            
+            compiler = MCA_OperatorGraphCompiler()
+            compiler.add_op(op)
+            
+            global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
+                device=device,
+                core_groups=[core_group],
+                spad_space_size_per_core=_spad_size_per_core,
+                broadcast_optimize_queue_depth=32,
+                context_buffer_slot_num=4,
+                ld_ex_buffer_slot_num=16,
+                ex_st_buffer_slot_num=16,
+                concurrent_load_num=8,
+                reuse_priority="TEMPORAL",
+            )
+            
+            compiled_ops = compiler.compile(global_recipe)
+        
+            device.remove_all_l1_mem_space()
+            device.remove_all_main_mem_space()
+            
+            compiled_ops.dispatch()
+            
+            benchmark_summary_dir = os.path.join(SUMMARY_DIR, self.signature)
+            compilation_summary_dir = os.path.join(benchmark_summary_dir, "summaries")
+            profiler_summary_dir = os.path.join(benchmark_summary_dir, "profiles")
+            os.makedirs(benchmark_summary_dir, exist_ok=True)
+            os.makedirs(compilation_summary_dir, exist_ok=True)
+            os.makedirs(profiler_summary_dir, exist_ok=True)
+            
+            for op_id, summary in compiled_ops.summary().items():
+                tmp_output_path = os.path.join(compilation_summary_dir, f"op_summary_{op_id}.json")
+                with open(tmp_output_path, "w") as f:
+                    json.dump(summary, f, indent=4)
+                    logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
+                
+            if args.skip_execution:
+                import pandas as pd
+                with open(output_path, "r") as f:
+                    df = pd.read_csv(f)
+                    existing_timestamp = df[df["Benchmark"] == self.signature]["Timestamp (cycles)"].values
+                    if len(existing_timestamp) > 0:
+                        self._timestamp = int(existing_timestamp[0])
+                    else:
+                        logger.warning(f"No existing timestamp found for benchmark {self.signature} in backup logs. Setting timestamp to 0.")
+                        self._timestamp = 0             
+            else:
+                if args.monitor:
+                    with MonitoringWindow(device, core_group, sim_name=self.signature) as monitor:
+                        device.run_kernels()
+                else:
+                    device.run_kernels()
+                    
+                self._timestamp = device.timestamp
+                device.reset_simulation()
+                
+        except Exception as e:
+            logger.error(f"Error during benchmark {self.signature}: {e}")
+            return False
+        
+        return True  # Indicate successful run without L1 memory overflow
+    
+    @property
+    def n_cores(self) -> int:
+        return self.core_group_shape[0] * self.core_group_shape[1]
+        
+    @property
+    def timestamp(self) -> int:
+        return self._timestamp
+    
+    @property
+    def total_ops(self) -> int:
+        return self._total_ops
+    
+    @property
+    def l1_traffic(self) -> int:
+        return self._l1_traffic
+    
+    @property
+    def main_traffic(self) -> int:
+        return self._main_traffic
+    
+    @property
+    def signature(self) -> str:
+        return f"LN_C{self.n_cores}_{self.M}x{self.N}x{self.K}"
+    
 
-
-class Benchmark:
+class Conv2dBenchmark(Benchmark):
     def __init__(
         self,
         core_group_offset: tuple[int, int],
@@ -95,22 +269,6 @@ class Benchmark:
     @property
     def ofm_shape(self) -> tuple[int]:
         return (self.N, self.OH, self.OW, self.K)
-    
-    @property
-    def ifm_shard_shape(self) -> tuple[int]:
-        return _get_shard_shape_from_tensor_shape(self.ifm_shape)
-    
-    @property
-    def wgt_shard_shape(self) -> tuple[int]:
-        return _get_shard_shape_from_tensor_shape(self.wgt_shape)
-    
-    @property
-    def bias_shard_shape(self) -> tuple[int]:
-        return _get_shard_shape_from_tensor_shape(self.bias_shape)
-    
-    @property
-    def ofm_shard_shape(self) -> tuple[int]:
-        return _get_shard_shape_from_tensor_shape(self.ofm_shape)
     
     @property
     def ifm_total_size(self) -> int:
@@ -254,11 +412,11 @@ class Benchmark:
         stride_signature = "x".join(map(str, self.stride)) if self.stride[0] != self.stride[1] else str(self.stride[0])
         padding_signature = "x".join(map(str, self.padding)) if self.padding[0] != self.padding[1] else str(self.padding[0])
         dilation_signature = "x".join(map(str, self.dilation)) if self.dilation[0] != self.dilation[1] else str(self.dilation[0])
-        return f"n_cores_{self.n_cores}_{ifm_shape_signature}_{wgt_shape_signature}_{stride_signature}_{padding_signature}_{dilation_signature}"
+        return f"CV_C{self.n_cores}_{ifm_shape_signature}_{wgt_shape_signature}_{stride_signature}_{padding_signature}_{dilation_signature}"
     
     
 class BenchmarkProcess(mp.Process):
-    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, return_dict: dict, worker_sem):
+    def __init__(self, benchmark: Conv2dBenchmark, device_config: TenstorrentConfig, return_dict: dict, worker_sem):
         super().__init__()
         self.benchmark = benchmark
         self.device_config = device_config
@@ -272,8 +430,6 @@ class BenchmarkProcess(mp.Process):
         device = TenstorrentDevice(**self.device_config)
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
-        
-        # core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
         
         flag = self.benchmark.run(device)
         if not flag:
@@ -293,20 +449,31 @@ class BenchmarkProcess(mp.Process):
 
 benchmarks = [
     # AlexNet
-    Benchmark((0, 0), (12, 14), N=1, H=224, W=224, C=3,   FH=11, FW=11, K=96,  stride=(4, 4), padding=(2, 2), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=27,  W=27,  C=96,  FH=5,  FW=5,  K=256, stride=(1, 1), padding=(2, 2), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=384, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=256, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=224, W=224, C=3,   FH=11, FW=11, K=96,  stride=(4, 4), padding=(2, 2), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=27,  W=27,  C=96,  FH=5,  FW=5,  K=256, stride=(1, 1), padding=(2, 2), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=384, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=13,  W=13,  C=256, FH=3,  FW=3,  K=256, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
     
     # ResNet18
-    Benchmark((0, 0), (12, 14), N=1, H=224, W=224, C=3,   FH=7,  FW=7,  K=64,  stride=(2, 2), padding=(3, 3), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=64,  stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=128, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=128, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=256, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=256, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=512, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
-    Benchmark((0, 0), (12, 14), N=1, H=7,   W=7,   C=512, FH=3,  FW=3,  K=512, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=224, W=224, C=3,   FH=7,  FW=7,  K=64,  stride=(2, 2), padding=(3, 3), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=64,  stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=56,  W=56,  C=64,  FH=3,  FW=3,  K=128, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=128, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=28,  W=28,  C=128, FH=3,  FW=3,  K=256, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=256, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=14,  W=14,  C=256, FH=3,  FW=3,  K=512, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    Conv2dBenchmark((0, 0), (12, 14), N=1, H=7,   W=7,   C=512, FH=3,  FW=3,  K=512, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
+    
+    # Benchmarks: Square Matrices with Varying Sizes
+    LinearBenchmark((0, 0), (8, 8), M=1024, N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (8, 8), M=512,  N=512,  K=512,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (8, 8), M=256,  N=256,  K=256,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (4, 4), M=128,  N=128,  K=128,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    
+    # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
+    LinearBenchmark((0, 0), (8, 8), M=512,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (8, 8), M=256,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (8, 4), M=128,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
 ]
 
 if __name__ == "__main__":
@@ -388,7 +555,7 @@ if __name__ == "__main__":
             peak_noc_bw = noc_bisection_bw,
             src_path=output_path,
             img_path=img_path,
-            img_title=f"{type(config).__name__} Roofline Analysis - {FILE_NAME}"
+            img_title=f"{type(config).__name__} Roofline Analysis"
         )
         
         print(f"Roofline visualization saved to '{img_path}'.")

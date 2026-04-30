@@ -44,13 +44,18 @@ def _get_shard_shape_from_tensor_shape(tensor_shape: tuple[int]) -> tuple[int]:
 
 class Benchmark:
     def __init__(
-        self, 
+        self,
         signature: str,
+        core_group_offset: tuple[int, int],
+        core_group_shape: tuple[int, int], 
         M:  int, N:  int, K:  int,
         dtype:     torch.dtype,
         acc_dtype: torch.dtype,
     ):
-        self.signature: str = signature
+        self.signature = signature
+        self.core_group_offset: tuple[int, int] = core_group_offset
+        self.core_group_shape:  tuple[int, int] = core_group_shape
+        
         self.M: int = M
         self.N: int = N
         self.K: int = K
@@ -110,9 +115,15 @@ class Benchmark:
     def ofm_total_size(self) -> int:
         return self.M * self.N * self.acc_dtype.itemsize
         
-    def run(self, device: TenstorrentDevice, core_group: MTA_CoreGrid):
-        _l1_total_per_core     = parse_mem_cap_str("1.4MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
-        _spad_size_per_core    = parse_mem_cap_str("512KB")
+    def run(self, device: TenstorrentDevice):
+        try:
+            core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
+        except:
+            logger.error(f"Failed to get core group with offset {self.core_group_offset} and shape {self.core_group_shape}. Check if the configuration is valid for the device.")
+            return False
+        
+        _l1_total_per_core     = parse_mem_cap_str("1.5MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
+        _spad_size_per_core    = parse_mem_cap_str("1MB")
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
         logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
@@ -120,11 +131,17 @@ class Benchmark:
         try:
             l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
             main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("32GB"))
-            
-            ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ifm_shape,  dtype=self.dtype,     shard_shape=self.ifm_shard_shape).tiling((32, 32)).allocate()
-            wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=self.dtype,     shard_shape=self.wgt_shard_shape).tiling((32, 32)).allocate()
-            bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=self.dtype,     shard_shape=self.bias_shard_shape).tiling((1,  32)).allocate()
-            ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ofm_shape,  dtype=self.acc_dtype, shard_shape=self.ofm_shard_shape).tiling((32, 32)).allocate()
+
+            if "prefill" in self.signature:
+                ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.ifm_shape,  dtype=self.dtype).allocate()
+                wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=self.dtype).allocate()
+                bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=self.dtype).allocate()
+                ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.ofm_shape,  dtype=self.acc_dtype).allocate()
+            else:
+                ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ifm_shape,  dtype=self.dtype).allocate()
+                wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=self.dtype).allocate()
+                bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=self.dtype).allocate()
+                ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ofm_shape,  dtype=self.acc_dtype).allocate()
             
             self._l1_traffic:   int = 0
             self._main_traffic: int = 0
@@ -146,8 +163,12 @@ class Benchmark:
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                pipeline_granularity=32,
-                broadcast_optimize_queue_depth=16,
+                broadcast_optimize_queue_depth=32,
+                context_buffer_slot_num=4,
+                ld_ex_buffer_slot_num=16,
+                ex_st_buffer_slot_num=16,
+                concurrent_load_num=8,
+                reuse_priority="TEMPORAL",
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -163,12 +184,6 @@ class Benchmark:
             os.makedirs(benchmark_summary_dir, exist_ok=True)
             os.makedirs(compilation_summary_dir, exist_ok=True)
             os.makedirs(profiler_summary_dir, exist_ok=True)
-            
-            for op_id, summary in compiled_ops.summary().items():
-                tmp_output_path = os.path.join(compilation_summary_dir, f"op_summary_{op_id}.json")
-                with open(tmp_output_path, "w") as f:
-                    json.dump(summary, f, indent=4)
-                    logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
                 
             if args.skip_execution:
                 import pandas as pd
@@ -181,26 +196,14 @@ class Benchmark:
                         logger.warning(f"No existing timestamp found for benchmark {self.signature} in backup logs. Setting timestamp to 0.")
                         self._timestamp = 0             
             else:
-                profilers = [
-                    DRAMBandwidthProfiler(device, record_type="BOTH"),
-                    InterconnectBandwidthProfiler(device),
-                    ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
-                    ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
-                    ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
-                ]
-                
-                profiler_saver = ProfilerFileSaverHub(output_dir=profiler_summary_dir)
-                profiler_saver.add_profilers(*profilers)
-            
                 if args.monitor:
-                    with MonitoringWindow(device, core_group, profilers, sim_name=self.signature) as monitor:
+                    with MonitoringWindow(device, core_group, sim_name=self.signature) as monitor:
                         device.run_kernels()
                 else:
                     device.run_kernels()
                     
                 self._timestamp = device.timestamp
                 
-                profiler_saver.close()
                 device.reset_simulation()
                 
         except Exception as e:
@@ -208,6 +211,10 @@ class Benchmark:
             return False
         
         return True  # Indicate successful run without L1 memory overflow
+    
+    @property
+    def n_cores(self) -> int:
+        return self.core_group_shape[0] * self.core_group_shape[1]
         
     @property
     def timestamp(self) -> int:
@@ -223,16 +230,14 @@ class Benchmark:
     
     @property
     def main_traffic(self) -> int:
-        return self._main_traffic
+        return self._main_traffic    
     
     
 class BenchmarkProcess(mp.Process):
-    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, core_group_offset: tuple[int, int], core_group_shape: tuple[int, int], return_dict: dict, worker_sem):
+    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, return_dict: dict, worker_sem):
         super().__init__()
         self.benchmark = benchmark
         self.device_config = device_config
-        self.core_group_offset = core_group_offset
-        self.core_group_shape = core_group_shape
         self.return_dict = return_dict
         self.worker_sem = worker_sem
         
@@ -244,9 +249,9 @@ class BenchmarkProcess(mp.Process):
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
         
-        core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
+        # core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
         
-        flag = self.benchmark.run(device, core_group)
+        flag = self.benchmark.run(device)
         if not flag:
             return
         
@@ -255,22 +260,23 @@ class BenchmarkProcess(mp.Process):
             "total_ops":    self.benchmark.total_ops,
             "l1_traffic":   self.benchmark.l1_traffic,
             "main_traffic": self.benchmark.main_traffic,
+            "n_cores":      self.benchmark.n_cores,
         }
         
         self.worker_sem.release()
         logger.info(f"process finished for {self.benchmark.signature}")
-
+        
 
 benchmarks = [
-    Benchmark("qkv_proj (prefill)",  M=2048, N=4096,  K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("up_proj (prefill)",   M=2048, N=11008, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("down_proj (prefill)", M=2048, N=4096,  K=11008, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("lm_head (prefill)",   M=2048, N=32000, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark("qkv_proj (prefill)",  (0, 0), (12, 14), M=2048, N=4096,  K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark("up_proj (prefill)",   (0, 0), (12, 14), M=2048, N=11008, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark("down_proj (prefill)", (0, 0), (12, 14), M=2048, N=4096,  K=11008, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark("lm_head (prefill)",   (0, 0), (12, 14), M=2048, N=32000, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     
-    Benchmark("qkv_proj (decode)",   M=1,    N=4096,  K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("up_proj (decode)",    M=1,    N=11008, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("down_proj (decode)",  M=1,    N=4096,  K=11008, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("lm_head (decode)",    M=1,    N=32000, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark("qkv_proj (decode)",   (0, 0), (12, 14), M=1,    N=4096,  K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark("up_proj (decode)",    (0, 0), (12, 14), M=1,    N=11008, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark("down_proj (decode)",  (0, 0), (12, 14), M=1,    N=4096,  K=11008, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    Benchmark("lm_head (decode)",    (0, 0), (12, 14), M=1,    N=32000, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
 ]
 
 if __name__ == "__main__":
@@ -294,7 +300,7 @@ if __name__ == "__main__":
     
     processes: list[BenchmarkProcess] = []
     for benchmark in benchmarks:
-        p = BenchmarkProcess(benchmark, config, (0, 0), (12, 14), return_dict, worker_sem)
+        p = BenchmarkProcess(benchmark, config, return_dict, worker_sem)
         p.start()
         processes.append(p)
         
@@ -302,7 +308,7 @@ if __name__ == "__main__":
         p.join()
     
     with open(output_path, "w") as f:
-        f.write("Benchmark,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
+        f.write("Benchmark,Number of Cores,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
         for benchmark in benchmarks:
             if benchmark.signature not in return_dict:
                 logger.error(f"Missing results for benchmark {benchmark.signature}")
@@ -314,6 +320,7 @@ if __name__ == "__main__":
             total_ops    = result["total_ops"]
             l1_traffic   = result["l1_traffic"]
             main_traffic = result["main_traffic"]
+            n_cores      = result["n_cores"]
             
             ops_per_cycle   = total_ops / timestamp
             l1_bandwidth    = l1_traffic / timestamp
@@ -321,7 +328,7 @@ if __name__ == "__main__":
             total_bandwidth = l1_bandwidth + main_bandwidth
             arith_intensity = (total_ops / (main_traffic + l1_traffic)) if (main_traffic + l1_traffic) != 0 else 0
             
-            f.write(f"{benchmark.signature},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
+            f.write(f"{benchmark.signature},{n_cores},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
     
     print(f"Benchmark results saved to '{output_path}'.")
     
@@ -334,11 +341,11 @@ if __name__ == "__main__":
         img_path = os.path.join(OUTPUT_DIR, f"{FILE_NAME}.png")
         
         mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
-        noc_bisection_bw = booksim_config.peak_bandwidth_per_router() * config["processor_clock_freq"] / 1e9
+        noc_bisection_bw = booksim_config.peak_bisection_bandwidth() / 1e9  # in GB/s
         
         print(f"=== DRAMSim3 Configuration ===")
         print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
-        print(f"number of channels per instance: {dramsim_config.n_cmd_q_per_instance}")
+        print(f"number of cmd q per instance: {dramsim_config.n_cmd_q_per_instance}")
         print(f"number of instances: {dramsim_config.n_instance}")
         
         print(f"=== BookSim2 Configuration ===")
@@ -347,7 +354,7 @@ if __name__ == "__main__":
         print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
-            peak_perf = 12 * 14 * mxu_config.peak_op_per_cycle,  # 12x14 PE array
+            peak_perf_per_core=mxu_config.peak_op_per_cycle,
             peak_mem_bw = mem_peak_bw,
             peak_noc_bw = noc_bisection_bw,
             src_path=output_path,

@@ -15,11 +15,11 @@ __all__ = [
 
 
 class MCA_KernelTemplate:
-    def get_ld_thread_kernel(self, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage) -> KernelPrototype:
+    def get_ld_thread_kernel(self, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage, concurrent_load_num: int) -> KernelPrototype:
         return KernelPrototype(
             core=core,
             func=self.LD_THREAD,
-            args=(env, stage),
+            args=(env, stage, concurrent_load_num),
             kwargs={}
         )
         
@@ -106,21 +106,31 @@ class MCA_KernelTemplate:
             raise Exception(f"Unsupported destination type '{type(ref).__name__}' in MEM_COPY_TILE IR in load thread kernel.")
     
     @classmethod
-    def LD_THREAD(cls, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage):
-        thread_lock = VariableHandle.tmp(initial_value=0)
+    def LD_THREAD(cls, core: NPUCore, env: MCA_OperatorGraphCompiler.Environment, stage: MCA_CompiledOperator.Stage, concurrent_load_num: int):
+        ir_lock = VariableHandle.tmp(initial_value=0)
+        n_threads = concurrent_load_num
         
-        for thread_id, ir in enumerate(stage.loads):
+        for thread_id in range(n_threads):
             with new_parallel_thread(f"{thread_id}"):
-                if isinstance(ir, MCA_CompiledOperator.IR.NOP):
-                    continue
-                elif isinstance(ir, MCA_CompiledOperator.IR.MEM_COPY_TILE):
-                    container = cls.read_from_ref(core, env, ir.src)
-                    core.var_atomic_wait(thread_lock, thread_id)
-                    for dst in ir.dsts:
-                        cls.write_to_ref(core, env, container, dst)
-                    core.var_atomic_increase(thread_lock)
-                else:
-                    raise Exception(f"Unsupported IR type '{type(ir).__name__}' in LD_THREAD kernel.")
+                for ir in stage.loads:
+                    if isinstance(ir, MCA_CompiledOperator.IR.MEM_COPY_TILE):
+                        if ir.ir_idx is None:
+                            raise Exception("IR index is required for MEM_COPY_TILE IR in load thread kernel.")
+                        if ir.ir_idx % n_threads != thread_id:
+                            continue  # skip IRs that are not assigned to the current thread
+                        
+                        if len(ir.wait_ir_idx) > 0:
+                            core.var_conditional_wait(ir_lock, ir_lock.greater_than(max(ir.wait_ir_idx)))
+                            
+                        container = cls.read_from_ref(core, env, ir.src)
+                        
+                        core.var_atomic_wait(ir_lock, ir.ir_idx)
+                        for dst in ir.dsts:
+                            cls.write_to_ref(core, env, container, dst)
+                        core.var_atomic_init(ir_lock, ir.ir_idx + 1)  # release the next waiting IR (if any)
+                        core.debug_core_with_ambiguous_func(lambda core, thread_id, ir: logger.debug(f"LOAD CORE: {core.core_id:<3d} thread_id: {thread_id} ir: {ir.signature()}"), core, thread_id, ir)
+                    else:
+                        raise Exception(f"Unsupported IR type '{type(ir).__name__}' in LD_THREAD kernel.")
                 
         core.parallel_merge()
 

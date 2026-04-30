@@ -155,6 +155,12 @@ class Benchmark:
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
+                broadcast_optimize_queue_depth=32,
+                context_buffer_slot_num=4,
+                ld_ex_buffer_slot_num=16,
+                ex_st_buffer_slot_num=16,
+                concurrent_load_num=8,
+                reuse_priority="TEMPORAL",
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -188,26 +194,13 @@ class Benchmark:
                         logger.warning(f"No existing timestamp found for benchmark {self.signature} in backup logs. Setting timestamp to 0.")
                         self._timestamp = 0             
             else:
-                profilers = [
-                    DRAMBandwidthProfiler(device, record_type="BOTH"),
-                    InterconnectBandwidthProfiler(device),
-                    ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
-                    ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
-                    ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
-                ]
-                
-                profiler_saver = ProfilerFileSaverHub(output_dir=profiler_summary_dir)
-                profiler_saver.add_profilers(*profilers)
-            
                 if args.monitor:
-                    with MonitoringWindow(device, core_group, profilers, sim_name=self.signature) as monitor:
+                    with MonitoringWindow(device, core_group, sim_name=self.signature) as monitor:
                         device.run_kernels()
                 else:
                     device.run_kernels()
                     
                 self._timestamp = device.timestamp
-                
-                profiler_saver.close()
                 device.reset_simulation()
                 
         except Exception as e:
@@ -361,7 +354,6 @@ if __name__ == "__main__":
         
         print(f"=== DRAMSim3 Configuration ===")
         print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
-        print(f"number of cmd q per instance: {dramsim_config.n_cmd_q_per_instance}")
         print(f"number of instances: {dramsim_config.n_instance}")
         
         print(f"=== BookSim2 Configuration ===")

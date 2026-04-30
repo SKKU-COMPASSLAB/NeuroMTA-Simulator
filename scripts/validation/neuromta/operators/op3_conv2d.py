@@ -23,9 +23,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate OP3 Conv2D operator on Tenstorrent hardware.")
     parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
     parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
+    parser.add_argument('--bcast-queue-depth', type=int, default=32, help="The depth of the broadcast queue", dest="bcast_queue_depth")
+    parser.add_argument('--spad-size', type=str, default="1MB", help="The size of the scratchpad memory per core (e.g., '256KB')", dest="spad_size")
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
-    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
-    parser.add_argument('--pipeline-gran', type=int, default=32, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
     parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
     args = parser.parse_args()
 
@@ -41,21 +41,17 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (12, 14))
     
-    N, H, W, C = 1, 224, 224, 3
-    FH, FW, K = 11, 11, 96
-    STRIDE, PADDING, DILATION = (4, 4), (2, 2), (1, 1)
+    N, H, W, C = 1, 14, 14, 256
+    FH, FW, K = 3, 3, 512
+    STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
+    # N, H, W, C = 1, 56, 56, 64
+    # FH, FW, K = 3, 3, 128
+    # STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
+    # N, H, W, C = 1, 224, 224, 3
+    # FH, FW, K = 11, 11, 96
+    # STRIDE, PADDING, DILATION = (4, 4), (2, 2), (1, 1)
     OH = (H + 2 * PADDING[0] - DILATION[0] * (FH - 1) - 1) // STRIDE[0] + 1
     OW = (W + 2 * PADDING[1] - DILATION[1] * (FW - 1) - 1) // STRIDE[1] + 1
-    
-    Wt = 56
-    OWt = 55
-    Ct = 32
-    Kt = 32
-    
-    if (W % Wt != 0): Wt = W
-    if (OW % OWt != 0): OWt = OW
-    if C % Ct != 0: Ct = C
-    if K % Kt != 0: Kt = K
     
     dtype = torch.int16
     acc_dtype = torch.int16
@@ -70,13 +66,13 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
+    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(Wt,  Ct)).tiling((32, 32)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(Kt,  Ct)).tiling((32, 32)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,   Kt)).tiling((1,  32)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OWt, Kt)).tiling((32, 32)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype).allocate()
     
     operator = MCA_OP_CONV2D(
         ifm_b, wgt_b, bias_b, ofm_b, 
@@ -89,9 +85,13 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=[core_group],
-        spad_space_size_per_core=parse_mem_cap_str("512KB"),
-        pipeline_granularity=args.pipeline_gran,
+        spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
         broadcast_optimize_queue_depth=args.bcast_queue_depth,
+        context_buffer_slot_num=4,
+        ld_ex_buffer_slot_num=16,
+        ex_st_buffer_slot_num=16,
+        concurrent_load_num=8,
+        reuse_priority="TEMPORAL",
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -114,7 +114,7 @@ if __name__ == "__main__":
     profiler_saver.add_profilers(*profilers)
     
     if args.monitor:
-        with MonitoringWindow(device, core_group, profilers) as monitor:
+        with MonitoringWindow(device, core_group) as monitor:
             st = time.time()
             device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()
@@ -164,7 +164,7 @@ if __name__ == "__main__":
                                 sim_val = simulated[n, oh, ow, k].item()
                                 ref_val = reference[n, oh, ow, k].item()
                                 if sim_val != ref_val:
-                                    content.append(f"Mismatch at position ({n}, {oh}, {ow}, {k}): simulated={sim_val}, reference={ref_val}\n")
+                                    content.append(f"Mismatch at position ({n}, {oh}, {ow}, {k}): simulated={sim_val}, reference={ref_val}, difference={abs(sim_val - ref_val)}\n")
                 f.writelines(content)
             logger.error(f"Mismatch report saved to '{mismatch_report}'.")
             logger.error(f"Total mismatches: {len(content)}/{simulated.numel()}")

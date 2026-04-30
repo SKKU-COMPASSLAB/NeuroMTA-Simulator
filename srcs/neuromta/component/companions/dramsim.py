@@ -33,7 +33,6 @@ if PYDRAMSIM3_AVAILABLE:
             n_instance: int,
             channel_size: int,
             n_channel_per_instance: int,
-            n_cmd_q_per_instance: int,
             max_issue_per_cmd_q_per_cycle: int = 1,
         ):  
             if not os.path.isfile(src_config_path):
@@ -58,7 +57,6 @@ if PYDRAMSIM3_AVAILABLE:
             self.n_instance = n_instance
             self.channel_size = channel_size
             self.n_channel_per_instance = n_channel_per_instance
-            self.n_cmd_q_per_instance = n_cmd_q_per_instance
             self.max_issue_per_cmd_q_per_cycle = max(1, int(max_issue_per_cmd_q_per_cycle))
             
         def peak_bandwidth(self) -> float:
@@ -83,7 +81,6 @@ if PYDRAMSIM3_AVAILABLE:
                 pydramsim3.create_msys(
                     config_file=self.config.config_path,
                     output_dir=pydramsim3.PYDRAMSIM_DEFAULT_OUT_DIR,
-                    cmd_queue_num=self.config.n_cmd_q_per_instance,
                     max_issue_per_cmd_q_per_cycle=self.config.max_issue_per_cmd_q_per_cycle,
                 ) for _ in range(self.config.n_instance)
             ]
@@ -91,48 +88,6 @@ if PYDRAMSIM3_AVAILABLE:
             self._mem_clock_time = pydramsim3.msys_get_tck(self._msys_instances[0])
             self._ref_clock_time = 1 / (self.config.processor_clock_freq * (1e-9))
             self._rem_clock_sync_time = 0
-
-            self._stats_cmd_count = [
-                [0 for _ in range(self.config.n_cmd_q_per_instance)]
-                for _ in range(self.config.n_instance)
-            ]
-            self._stats_completed_cmd_count = [
-                [0 for _ in range(self.config.n_cmd_q_per_instance)]
-                for _ in range(self.config.n_instance)
-            ]
-            self._stats_total_exec_cycles = [
-                [0 for _ in range(self.config.n_cmd_q_per_instance)]
-                for _ in range(self.config.n_instance)
-            ]
-            self._stats_issue_timestamp: dict[int, int] = {}
-
-        def _get_stat_key(self, cmd: CompanionCommandSignature) -> tuple[int, int] | None:
-            inst_id = int(cmd.kwargs.get("inst_id", -1))
-            cmd_q_id = int(cmd.kwargs.get("cmd_q_id", -1))
-            if (0 <= inst_id < self.config.n_instance) and (0 <= cmd_q_id < self.config.n_cmd_q_per_instance):
-                return inst_id, cmd_q_id
-            return None
-
-        def _record_dispatch(self, cmd: CompanionCommandSignature):
-            key = self._get_stat_key(cmd)
-            if key is None:
-                return
-            inst_id, cmd_q_id = key
-            self._stats_cmd_count[inst_id][cmd_q_id] += 1
-            base_time = self.companion_core.timestamp if self.companion_core is not None else 0
-            self._stats_issue_timestamp[cmd.capsule_id] = int(base_time)
-
-        def _record_execute(self, cmd: CompanionCommandSignature):
-            key = self._get_stat_key(cmd)
-            if key is None:
-                return
-
-            inst_id, cmd_q_id = key
-            issue_time = self._stats_issue_timestamp.pop(cmd.capsule_id, None)
-            commit_time = self.companion_core.timestamp if self.companion_core is not None else None
-            if issue_time is not None and commit_time is not None:
-                self._stats_total_exec_cycles[inst_id][cmd_q_id] += max(0, int(commit_time - issue_time))
-            self._stats_completed_cmd_count[inst_id][cmd_q_id] += 1
             
         def update_cycle_time(self, cycle_time):
             self._rem_clock_sync_time += cycle_time * self._ref_clock_time
@@ -143,11 +98,10 @@ if PYDRAMSIM3_AVAILABLE:
             for msys in self._msys_instances:
                 pydramsim3.msys_cycle_step(msys=msys, cycles=mem_cycles)
 
-        def create_command(self, inst_id: int, cmd_q_id: int, addr: int, size: int, is_write: bool) -> CompanionCommandSignature:
-            capsule = pydramsim3.create_msys_cmd(cmd_q_id=cmd_q_id, addr=addr, size=size, is_write=is_write)
+        def create_command(self, inst_id: int, addr: int, size: int, is_write: bool) -> CompanionCommandSignature:
+            capsule = pydramsim3.create_msys_cmd(addr=addr, size=size, is_write=is_write)
             cmd = CompanionCommandSignature(module_id=self.module_id, capsule=capsule, kwargs={
                 "inst_id": inst_id,
-                "cmd_q_id": cmd_q_id,
                 "addr": addr,
                 "size": size,
                 "is_write": is_write,
@@ -157,37 +111,17 @@ if PYDRAMSIM3_AVAILABLE:
         def dispatch_command(self, cmd: CompanionCommandSignature, dispatch_callback: Callable, execute_callback: Callable) -> bool:
             inst_id = cmd.kwargs["inst_id"]
             msys = self._msys_instances[inst_id]
-
-            def wrapped_execute_callback(capsule):
-                self._record_execute(cmd)
-                if execute_callback is not None:
-                    execute_callback(capsule)
-
+            
             flag = pydramsim3.msys_dispatch_cmd(
                 msys=msys,
                 cmd=cmd.capsule,
                 dispatch_callback=dispatch_callback,
-                execute_callback=wrapped_execute_callback,
+                execute_callback=execute_callback,
             )
-            if flag:
-                self._record_dispatch(cmd)
             return flag
 
         def get_stats(self) -> dict[str, Any]:
-            avg_exec_cycles = [
-                [
-                    0.0
-                    if self._stats_completed_cmd_count[inst_id][cmd_q_id] == 0
-                    else (self._stats_total_exec_cycles[inst_id][cmd_q_id] / self._stats_completed_cmd_count[inst_id][cmd_q_id])
-                    for cmd_q_id in range(self.config.n_cmd_q_per_instance)
-                ]
-                for inst_id in range(self.config.n_instance)
-            ]
-
-            return {
-                "command_count_per_instance_cmd_q": self._stats_cmd_count,
-                "avg_command_exec_cycles_per_instance_cmd_q": avg_exec_cycles,
-            }
+            return {}
 else:
     class DRAMSim3Config:
         def __init__(
@@ -196,14 +130,12 @@ else:
             n_instance: int,
             channel_size: int,
             n_channel_per_instance: int,
-            n_cmd_q_per_instance: int,
             bandwidth_per_instance: int,
         ):  
             self.processor_clock_freq = processor_clock_freq
             self.n_instance = n_instance
             self.channel_size = channel_size
             self.n_channel_per_instance = n_channel_per_instance
-            self.n_cmd_q_per_instance = n_cmd_q_per_instance
             self.bandwidth_per_instance = bandwidth_per_instance
             
         def peak_bandwidth(self) -> float:
@@ -215,7 +147,6 @@ else:
                 "n_instance": self.n_instance,
                 "channel_size": self.channel_size,
                 "n_channel_per_instance": self.n_channel_per_instance,
-                "n_cmd_q_per_instance": self.n_cmd_q_per_instance,
                 "bandwidth_per_instance": self.bandwidth_per_instance,
             }
 
@@ -228,56 +159,14 @@ else:
             self._suspended_cmds: list[tuple[CompanionCommandSignature, Callable]] = []
             
             # Internal Queues per (instance, cmd_q)
-            self._cmd_queues: dict[tuple[int, int], list[tuple[CompanionCommandSignature, Callable]]] = {}
+            self._inst_cmd_queues: dict[int, list[tuple[CompanionCommandSignature, Callable]]] = {}
             
             # Commands currently being processed by DRAM
             self._in_flight_cmds: list[list] = []
             
             self._base_latency_cycles = 40
             self._max_queue_depth = 16
-
-            self._stats_cmd_count = [
-                [0 for _ in range(self.config.n_cmd_q_per_instance)]
-                for _ in range(self.config.n_instance)
-            ]
-            self._stats_completed_cmd_count = [
-                [0 for _ in range(self.config.n_cmd_q_per_instance)]
-                for _ in range(self.config.n_instance)
-            ]
-            self._stats_total_exec_cycles = [
-                [0 for _ in range(self.config.n_cmd_q_per_instance)]
-                for _ in range(self.config.n_instance)
-            ]
-            self._stats_issue_timestamp: dict[int, int] = {}
-
-        def _get_stat_key(self, cmd: CompanionCommandSignature) -> tuple[int, int] | None:
-            inst_id = int(cmd.kwargs.get("inst_id", -1))
-            cmd_q_id = int(cmd.kwargs.get("cmd_q_id", -1))
-            if (0 <= inst_id < self.config.n_instance) and (0 <= cmd_q_id < self.config.n_cmd_q_per_instance):
-                return inst_id, cmd_q_id
-            return None
-
-        def _record_dispatch(self, cmd: CompanionCommandSignature):
-            key = self._get_stat_key(cmd)
-            if key is None:
-                return
-            inst_id, cmd_q_id = key
-            self._stats_cmd_count[inst_id][cmd_q_id] += 1
-            base_time = self.companion_core.timestamp if self.companion_core is not None else 0
-            self._stats_issue_timestamp[cmd.capsule_id] = int(base_time)
-
-        def _record_execute(self, cmd: CompanionCommandSignature):
-            key = self._get_stat_key(cmd)
-            if key is None:
-                return
-
-            inst_id, cmd_q_id = key
-            issue_time = self._stats_issue_timestamp.pop(cmd.capsule_id, None)
-            commit_time = self.companion_core.timestamp if self.companion_core is not None else None
-            if issue_time is not None and commit_time is not None:
-                self._stats_total_exec_cycles[inst_id][cmd_q_id] += max(0, int(commit_time - issue_time))
-            self._stats_completed_cmd_count[inst_id][cmd_q_id] += 1
-
+            
         def _get_transfer_cycles(self, size_bytes: int) -> int:
             # Calculate burst duration based on bandwidth
             return max(1, size_bytes // max(1, self.config.bandwidth_per_instance))
@@ -303,14 +192,13 @@ else:
 
             # STEP 2: Issue commands from internal queues to DRAM (In-Flight)
             # We model HOL blocking here: only one active command per (inst, q_id).
-            for key, queue in self._cmd_queues.items():
+            for key, queue in self._inst_cmd_queues.items():
                 if not queue:
                     continue
                     
                 # Check if this specific queue is already busy in-flight
                 is_queue_busy = any(
-                    c[1].capsule['inst_id'] == key[0] and 
-                    c[1].capsule['cmd_q_id'] == key[1] 
+                    c[1].capsule['inst_id'] == key
                     for c in self._in_flight_cmds
                 )
                 
@@ -324,14 +212,13 @@ else:
             remaining_suspended = []
             for cmd, callback in self._suspended_cmds:
                 inst_id = cmd.capsule['inst_id']
-                q_id = cmd.capsule['cmd_q_id']
-                key = (inst_id, q_id)
+                key = inst_id
                 
-                if key not in self._cmd_queues:
-                    self._cmd_queues[key] = []
+                if key not in self._inst_cmd_queues:
+                    self._inst_cmd_queues[key] = []
                 
-                if len(self._cmd_queues[key]) < self._max_queue_depth:
-                    self._cmd_queues[key].append((cmd, callback))
+                if len(self._inst_cmd_queues[key]) < self._max_queue_depth:
+                    self._inst_cmd_queues[key].append((cmd, callback))
                 else:
                     # If the queue is full, keep it in the suspended list for the next cycle
                     remaining_suspended.append((cmd, callback))
@@ -348,28 +235,9 @@ else:
         def dispatch_command(self, cmd: CompanionCommandSignature, dispatch_callback: Callable, execute_callback: Callable) -> bool:
             if dispatch_callback is not None:
                 dispatch_callback(cmd.capsule)
-
-            def wrapped_execute_callback(capsule):
-                self._record_execute(cmd)
-                if execute_callback is not None:
-                    execute_callback(capsule)
                 
-            self._suspended_cmds.append((cmd, wrapped_execute_callback))
-            self._record_dispatch(cmd)
+            self._suspended_cmds.append((cmd, execute_callback))
             return True
 
         def get_stats(self) -> dict[str, Any]:
-            avg_exec_cycles = [
-                [
-                    0.0
-                    if self._stats_completed_cmd_count[inst_id][cmd_q_id] == 0
-                    else (self._stats_total_exec_cycles[inst_id][cmd_q_id] / self._stats_completed_cmd_count[inst_id][cmd_q_id])
-                    for cmd_q_id in range(self.config.n_cmd_q_per_instance)
-                ]
-                for inst_id in range(self.config.n_instance)
-            ]
-
-            return {
-                "command_count_per_instance_cmd_q": self._stats_cmd_count,
-                "avg_command_exec_cycles_per_instance_cmd_q": avg_exec_cycles,
-            }
+            return {}

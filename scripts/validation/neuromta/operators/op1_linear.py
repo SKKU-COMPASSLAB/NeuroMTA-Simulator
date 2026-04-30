@@ -26,8 +26,7 @@ if __name__ == "__main__":
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
     parser.add_argument('--report-icnt-stats', action="store_true", help="Whether to report interconnect statistics after simulation", dest="report_icnt_stats")
     parser.add_argument('--report-dram-stats', action="store_true", help="Whether to report DRAM statistics after simulation", dest="report_dram_stats")
-    parser.add_argument('--bcast-queue-depth', type=int, default=64, help="The depth of the broadcast queue", dest="bcast_queue_depth")
-    parser.add_argument('--pipeline-gran', type=int, default=32, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
     parser.add_argument('--spad-size', type=str, default="1MB", help="The size of the scratchpad memory per core (e.g., '256KB')", dest="spad_size")
     parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
     args = parser.parse_args()
@@ -41,9 +40,9 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = device.get_npu_core_group((0, 0), (4, 4))
+    core_group = device.get_npu_core_group((0, 0), (12, 14))
     
-    M, N, K = 128, 128, 128
+    M, N, K = 2048, 4096, 4096
     dtype = torch.int16
     acc_dtype = torch.int16
     
@@ -57,13 +56,13 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    # l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=device.get_npu_core_group()).override(core_group)
+    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=device.get_npu_core_group()).override(core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(ifm)
-    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate().update(wgt)
-    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype, shard_shape=(1,  32)).tiling((1,  32)).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(32, 32)).tiling((32, 32)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype).allocate().update(ifm)
+    wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype).allocate().update(wgt)
+    bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype).allocate().update(bias)
+    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype).allocate()
     
     operator = MCA_OP_LINEAR(ifm_b, wgt_b, bias_b, ofm_b)
     
@@ -74,12 +73,12 @@ if __name__ == "__main__":
         device=device,
         core_groups=[core_group],
         spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
-        pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,
         context_buffer_slot_num=4,
         ld_ex_buffer_slot_num=16,
         ex_st_buffer_slot_num=16,
-        reuse_priority=MCA_OperatorGraphCompiler.CompileRecipe.ReusePriority.TEMPORAL
+        concurrent_load_num=32,
+        reuse_priority="TEMPORAL",
     )
     
     compiled_ops = compiler.compile(global_recipe)
@@ -107,7 +106,7 @@ if __name__ == "__main__":
     profiler_saver.add_profilers(*profilers)
     
     if args.monitor:
-        with MonitoringWindow(device, core_group, profilers) as monitor:
+        with MonitoringWindow(device, core_group) as monitor:
             st = time.time()
             device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()

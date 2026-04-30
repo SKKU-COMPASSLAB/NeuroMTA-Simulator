@@ -44,7 +44,7 @@ def _shade_from_base_color(base_color, index: int, total: int):
 
 
 def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_path: str, img_path: str, img_title: str):
-    ai_x = np.logspace(-2, 4, 500)
+    ai_x = np.logspace(-1, 6, 500)
 
     workloads = {}
     df = pd.read_csv(src_path)

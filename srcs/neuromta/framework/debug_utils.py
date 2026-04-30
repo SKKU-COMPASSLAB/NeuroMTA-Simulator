@@ -20,6 +20,11 @@ class print_log_execution_time:
             return
         elapsed_time_ns = time.perf_counter_ns() - self.st_time_ns
         logger.debug(f"{self.desc} \tExecution time: {elapsed_time_ns} ns")
+        
+    def get(self):
+        if self.disable:
+            return 0
+        return time.perf_counter_ns() - self.st_time_ns
     
     def __enter__(self):
         self.open()

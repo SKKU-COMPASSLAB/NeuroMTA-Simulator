@@ -266,6 +266,18 @@ class MCA_DeviceBase(Device):
             
         self._main_mem_spaces: list[MCA_MainMemorySpace] = []
         self._l1_mem_spaces: list[MCA_L1MemorySpace] = []
+        
+    @property
+    def mxu_ifm_tile_shape(self) -> tuple[int, int]:
+        return self.mxu_config.ifm_tile_shape
+    
+    @property
+    def mxu_wgt_tile_shape(self) -> tuple[int, int]:
+        return self.mxu_config.wgt_tile_shape
+    
+    @property
+    def mxu_ofm_tile_shape(self) -> tuple[int, int]:
+        return self.mxu_config.ofm_tile_shape
     
     ################################################################
     # NPU Hardware Resource Access API

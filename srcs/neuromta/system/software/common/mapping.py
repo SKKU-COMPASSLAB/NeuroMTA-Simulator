@@ -213,7 +213,6 @@ def MCA_MAPPER_CONV2D(
                         for k_tile_per_group_it in range(K_N_TILES_PER_GROUP):  # TILING over output channel (32 for Tenstorrent)
                             k_tile_it = group_it * K_N_TILES_PER_GROUP + k_tile_per_group_it
                             
-                            # tiled_op = TiledOperatorSignature(i_tiles=[], o_tile=None)
                             tiled_op = op_sig.new_tiled_op()
                             
                             # GET OFM tile signature
@@ -308,13 +307,5 @@ def MCA_MAPPER_CONV2D(
                             pbar.update(1)
     
     logger.debug(f"mapper generated {len(op_sig.tiled_ops)} in total")
-    
-    # o_tile_sig_inclusion_flag = {coords: False for coords, _ in op_sig.tiles["ofm"].items()}
-    # for tiled_op in op_sig.tiled_ops:
-    #     if o_tile_sig_inclusion_flag[tiled_op.o_tile.coords]:
-    #         logger.error(f"Duplicate tiled op for OFM tile idx {tiled_op.o_tile.coords} detected in CONV2D mapping!")
-    #     o_tile_sig_inclusion_flag[tiled_op.o_tile.coords] = True
-        
-    # input()
                             
     return op_sig

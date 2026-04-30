@@ -33,10 +33,14 @@ def MCA_OP_LINEAR(
         kernel_template=common_kernel_lib.MCA_KERNEL_TILED_LINEAR()
     )
     
-    op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("wgt",  wgt,  is_param=True)
-    op_sig.add_buffer("bias", bias, is_param=True)
-    op_sig.add_buffer("ofm",  ofm,  is_output=True)
+    m_tile = ifm.mem_space.device.mxu_config.m_tile
+    k_tile = ifm.mem_space.device.mxu_config.k_tile
+    n_tile = ofm.mem_space.device.mxu_config.n_tile
+    
+    op_sig.add_buffer("ifm",  ifm.tiling((m_tile, k_tile)),  is_input=True)
+    op_sig.add_buffer("wgt",  wgt.tiling((n_tile, k_tile)),  is_param=True)
+    op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
     
     return common_mapping_lib.MCA_MAPPER_LINEAR(op_sig)
 
@@ -51,8 +55,11 @@ def MCA_OP_RELU(
         kernel_template=common_kernel_lib.MCA_KERNEL_TILED_RELU()
     )
     
-    op_sig.add_buffer("ifm", ifm, is_input=True)
-    op_sig.add_buffer("ofm", ofm, is_output=True)
+    m_tile = ofm.mem_space.device.mxu_config.m_tile
+    n_tile = ofm.mem_space.device.mxu_config.n_tile
+    
+    op_sig.add_buffer("ifm", ifm.tiling((m_tile, n_tile)), is_input=True)
+    op_sig.add_buffer("ofm", ofm.tiling((m_tile, n_tile)), is_output=True)
     
     return common_mapping_lib.MCA_MAPPER_UNARY(op_sig)
 
@@ -69,10 +76,14 @@ def MCA_OP_LINEAR_RELU(
         kernel_template=common_kernel_lib.MCA_KERNEL_MERGED_LINEAR_RELU()
     )
     
-    op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("wgt",  wgt,  is_param=True)
-    op_sig.add_buffer("bias", bias, is_param=True)
-    op_sig.add_buffer("ofm",  ofm,  is_output=True)
+    m_tile = ifm.mem_space.device.mxu_config.m_tile
+    k_tile = ifm.mem_space.device.mxu_config.k_tile
+    n_tile = ofm.mem_space.device.mxu_config.n_tile
+    
+    op_sig.add_buffer("ifm",  ifm.tiling((m_tile, k_tile)),  is_input=True)
+    op_sig.add_buffer("wgt",  wgt.tiling((n_tile, k_tile)),  is_param=True)
+    op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
     
     return common_mapping_lib.MCA_MAPPER_LINEAR(op_sig)
 
@@ -94,10 +105,14 @@ def MCA_OP_CONV2D(
         kernel_template=common_kernel_lib.MCA_KERNEL_TILED_CONV2D()
     )
     
-    op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("wgt",  wgt,  is_param=True)
-    op_sig.add_buffer("bias", bias, is_param=True)
-    op_sig.add_buffer("ofm",  ofm,  is_output=True)
+    m_tile = ifm.mem_space.device.mxu_config.m_tile
+    k_tile = ifm.mem_space.device.mxu_config.k_tile
+    n_tile = ofm.mem_space.device.mxu_config.n_tile
+    
+    op_sig.add_buffer("ifm",  ifm.tiling((m_tile, k_tile)),  is_input=True)
+    op_sig.add_buffer("wgt",  wgt.tiling((n_tile, k_tile)),  is_param=True)
+    op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
     
     op_sig.global_kwargs["stride"] = (stride, stride) if isinstance(stride, int) else stride
     op_sig.global_kwargs["padding"] = (padding, padding) if isinstance(padding, int) else padding
@@ -125,8 +140,11 @@ def MCA_OP_MAXPOOL2D(
         kernel_template=common_kernel_lib.MCA_KERNEL_TILED_MAXPOOL2D(),
     )
     
-    op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("ofm",  ofm,  is_output=True)
+    m_tile = ifm.mem_space.device.mxu_config.m_tile
+    n_tile = ofm.mem_space.device.mxu_config.n_tile
+    
+    op_sig.add_buffer("ifm",  ifm.tiling((m_tile, n_tile)),  is_input=True)
+    op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
     
     op_sig.global_kwargs["window"] = (window, window) if isinstance(window, int) else window
     op_sig.global_kwargs["stride"] = (stride, stride) if isinstance(stride, int) else stride
@@ -154,8 +172,11 @@ def MCA_OP_AVGPOOL2D(
         kernel_template=common_kernel_lib.MCA_KERNEL_TILED_AVGPOOL2D(),
     )
     
-    op_sig.add_buffer("ifm",  ifm,  is_input=True)
-    op_sig.add_buffer("ofm",  ofm,  is_output=True)
+    m_tile = ifm.mem_space.device.mxu_config.m_tile
+    n_tile = ofm.mem_space.device.mxu_config.n_tile
+    
+    op_sig.add_buffer("ifm",  ifm.tiling((m_tile, n_tile)),  is_input=True)
+    op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
     
     op_sig.global_kwargs["window"] = (window, window) if isinstance(window, int) else window
     op_sig.global_kwargs["stride"] = (stride, stride) if isinstance(stride, int) else stride

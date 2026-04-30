@@ -291,7 +291,7 @@ class NetworkGraphEntryCompileTarget:
         
         def __init__(
             self, 
-            shape: Sequence[int], dtype: torch.dtype, shard_shape: Sequence[int], tile_shape: Sequence[int], blocked_mapping: bool=False, 
+            shape: Sequence[int], dtype: torch.dtype, shard_shape: Sequence[int], blocked_mapping: bool=False, 
             orig_dtype: torch.dtype=None, 
             preprocessings: List['NetworkGraphEntryCompileTarget.TensorProcessing']=None,
             postprocessings: List['NetworkGraphEntryCompileTarget.TensorProcessing']=None,
@@ -300,7 +300,6 @@ class NetworkGraphEntryCompileTarget:
             self.shape = shape
             self.dtype = dtype
             self.shard_shape = shard_shape
-            self.tile_shape = tile_shape
             self.blocked_mapping = blocked_mapping
             self.orig_dtype = orig_dtype if orig_dtype is not None else dtype
             self.preprocessings = preprocessings if preprocessings is not None else []
@@ -407,7 +406,7 @@ class NetworkGraphEntryCompileTarget:
                 dtype=self.dtype, 
                 shard_shape=self.shard_shape, 
                 blocked_mapping=self.blocked_mapping,
-            ).tiling(tile_shape=self.tile_shape)
+            )
             
             cur_src_buf_name = f"BUFFER_SOURCED_FROM::{self.src_name}" if self.has_src else None
             cur_dst_buf_name = f"BUFFER_DESTINED_TO::{self.dst_name}" if self.has_dst else None

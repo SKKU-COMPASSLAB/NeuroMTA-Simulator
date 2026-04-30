@@ -57,7 +57,6 @@ class TenstorrentConfig(dict):
         
         n_main_mem_instances = 8
         n_main_mem_channel_per_instance = 1
-        n_main_mem_cmd_q_per_instance = 3
 
         main_mem_config = MainMemoryConfig(
             # STATIC MEMORY CONFIG
@@ -65,7 +64,6 @@ class TenstorrentConfig(dict):
             n_instance=n_main_mem_instances,
             channel_size=main_mem_channel_size,
             n_channel_per_instance=n_main_mem_channel_per_instance,
-            n_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
             
             # DRAMSIM CONFIG
             dramsim3_enable=PYDRAMSIM3_AVAILABLE,
@@ -109,12 +107,20 @@ class TenstorrentConfig(dict):
         dma_cmap_col = [0, 8]
         npu_core_to_coord_map: dict[int, tuple[int, int]] = {}
         
-        for main_mem_inst_idx in range(n_main_mem_instances):
-            c = dma_cmap_col[main_mem_inst_idx % 2]
-            for main_mem_cmd_q_idx in range(n_main_mem_cmd_q_per_instance):
-                r = main_mem_inst_idx // 2 * n_main_mem_cmd_q_per_instance + main_mem_cmd_q_idx
-                d = global_config.dma_core_ids[main_mem_inst_idx * n_main_mem_cmd_q_per_instance + main_mem_cmd_q_idx]
-                dma_core_to_coord_map[d] = (r, c)
+        n_dma_core_per_inst = n_dma_core // n_main_mem_instances
+        for di, d in enumerate(global_config.dma_core_ids):
+            inst_id = di // n_dma_core_per_inst
+            cc = dma_cmap_col[inst_id % 2]
+            rr = (inst_id // 2) * n_dma_core_per_inst + (di % n_dma_core_per_inst)
+            dma_core_to_coord_map[d] = (rr, cc)
+            
+        # for main_mem_inst_idx in range(n_main_mem_instances):
+        #     c = dma_cmap_col[main_mem_inst_idx % 2]
+            
+        #     # for main_mem_cmd_q_idx in range(n_main_mem_cmd_q_per_instance):
+        #     #     r = main_mem_inst_idx // 2 * n_main_mem_cmd_q_per_instance + main_mem_cmd_q_idx
+        #     #     d = global_config.dma_core_ids[main_mem_inst_idx * n_main_mem_cmd_q_per_instance + main_mem_cmd_q_idx]
+        #     #     dma_core_to_coord_map[d] = (r, c)
         
         cnt = 0
         for r in range(icnt_shape[0]):

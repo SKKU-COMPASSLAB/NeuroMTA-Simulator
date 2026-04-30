@@ -64,8 +64,8 @@ if __name__ == "__main__":
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype,  shard_shape=(W,  Cs)).tiling((32, 32)).allocate().update(ifm)
-    ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype,  shard_shape=(OW, Cs)).tiling((32, 32)).allocate()
+    ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype).allocate().update(ifm)
+    ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype).allocate()
     
     operator = MCA_OP_MAXPOOL2D(
         ifm_b, ofm_b, 
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     profiler_saver.add_profilers(*profilers)
     
     if args.monitor:
-        with MonitoringWindow(device, core_group, profilers) as monitor:
+        with MonitoringWindow(device, core_group) as monitor:
             st = time.time()
             device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()

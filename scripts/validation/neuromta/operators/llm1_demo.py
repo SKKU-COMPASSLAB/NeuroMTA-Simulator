@@ -92,7 +92,7 @@ if __name__ == "__main__":
     profiler_saver.add_profilers(*profilers)
     
     if args.monitor:
-        with MonitoringWindow(device, core_group, profilers) as monitor:
+        with MonitoringWindow(device, core_group) as monitor:
             st = time.time()
             device.run_kernels(max_timestamp=args.max_timestamp)
             ed = time.time()

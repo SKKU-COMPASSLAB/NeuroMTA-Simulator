@@ -8,17 +8,44 @@ __all__ = ["VariableHandle", "FIFOBufferHandle"]
 
 class VariableHandle:
     class ActionCondition:
-        def __init__(self, condition: Callable[[int], bool]):
-            self.condition = condition
-            self.action_id = condition.__condition_method_name if hasattr(condition, "__condition_method_name") else id(condition)
-
+        EQ = "equals_to"
+        GE = "greater_equal"
+        LE = "less_equal"
+        GT = "greater_than"
+        LT = "less_than"
+        
+        def __init__(self, condition: Callable[[int], bool] | str, *args):
+            if isinstance(condition, str):
+                if condition == self.EQ:
+                    self.condition = lambda x: x == args[0].value if isinstance(args[0], VariableHandle) else x == args[0]
+                    self.action_id = f"equals_to_{args[0]}"
+                elif condition == self.GE:
+                    self.condition = lambda x: x >= args[0].value if isinstance(args[0], VariableHandle) else x >= args[0]
+                    self.action_id = f"greater_equal_{args[0]}"
+                elif condition == self.LE:
+                    self.condition = lambda x: x <= args[0].value if isinstance(args[0], VariableHandle) else x <= args[0]
+                    self.action_id = f"less_equal_{args[0]}"
+                elif condition == self.GT:
+                    self.condition = lambda x: x > args[0].value if isinstance(args[0], VariableHandle) else x > args[0]
+                    self.action_id = f"greater_than_{args[0]}"
+                elif condition == self.LT:
+                    self.condition = lambda x: x < args[0].value if isinstance(args[0], VariableHandle) else x < args[0]
+                    self.action_id = f"less_than_{args[0]}"
+                else:
+                    raise Exception(f"Unsupported condition string '{condition}' for ActionCondition. Supported conditions are: '{self.EQ}', '{self.GE}', '{self.LE}', '{self.GT}', and '{self.LT}'.")
+            elif callable(condition):
+                self.condition = condition
+                self.action_id = condition.__name__ if hasattr(condition, "__name__") else id(condition)
+            else:
+                raise Exception(f"Condition for ActionCondition must be either a supported condition string or a callable function, but got {type(condition).__name__}.")
+            
         def __call__(self, x: int):
             if isinstance(x, VariableHandle):
                 x = x.value
             return self.condition(x)
         
         @property
-        def signature(self):
+        def signature(self) -> str:
             return self.action_id
 
         def __repr__(self):
@@ -102,29 +129,39 @@ class VariableHandle:
         return cls(handle_name="tmp", initial_value=initial_value)
     
     def equals_to(self, value: int) -> 'VariableHandle.ActionCondition':
-        method = lambda x: x == (value.value if isinstance(value, VariableHandle) else value)
-        method.__condition_method_name = f"equals_to_{value}"
-        return self.ActionCondition(method)
+        # method = lambda x: x == (value.value if isinstance(value, VariableHandle) else value)
+        # # method.__condition_method_name = f"equals_to_{value}"
+        # setattr(method, "__condition_method_name", f"equals_to_{value}")
+        # return self.ActionCondition(method)
+        return self.ActionCondition(self.ActionCondition.EQ, value)
     
     def greater_equal(self, value: int) -> 'VariableHandle.ActionCondition':
-        method = lambda x: x >= (value.value if isinstance(value, VariableHandle) else value)
-        method.__condition_method_name = f"greater_equal_{value}"
-        return self.ActionCondition(method)
+        # method = lambda x: x >= (value.value if isinstance(value, VariableHandle) else value)
+        # # method.__condition_method_name = f"greater_equal_{value}"
+        # setattr(method, "__condition_method_name", f"greater_equal_{value}")
+        # return self.ActionCondition(method)
+        return self.ActionCondition(self.ActionCondition.GE, value)
 
     def less_equal(self, value: int) -> 'VariableHandle.ActionCondition':
-        method = lambda x: x <= (value.value if isinstance(value, VariableHandle) else value)
-        method.__condition_method_name = f"less_equal_{value}"
-        return self.ActionCondition(method)
+        # method = lambda x: x <= (value.value if isinstance(value, VariableHandle) else value)
+        # # method.__condition_method_name = f"less_equal_{value}"
+        # setattr(method, "__condition_method_name", f"less_equal_{value}")
+        # return self.ActionCondition(method)
+        return self.ActionCondition(self.ActionCondition.LE, value)
 
     def greater_than(self, value: int) -> 'VariableHandle.ActionCondition':
-        method = lambda x: x > (value.value if isinstance(value, VariableHandle) else value)
-        method.__condition_method_name = f"greater_than_{value}"
-        return self.ActionCondition(method)
+        # method = lambda x: x > (value.value if isinstance(value, VariableHandle) else value)
+        # # method.__condition_method_name = f"greater_than_{value}"
+        # setattr(method, "__condition_method_name", f"greater_than_{value}")
+        # return self.ActionCondition(method)
+        return self.ActionCondition(self.ActionCondition.GT, value)
 
     def less_than(self, value: int) -> 'VariableHandle.ActionCondition':
-        method = lambda x: x < (value.value if isinstance(value, VariableHandle) else value)
-        method.__condition_method_name = f"less_than_{value}"
-        return self.ActionCondition(method)
+        # method = lambda x: x < (value.value if isinstance(value, VariableHandle) else value)
+        # # method.__condition_method_name = f"less_than_{value}"
+        # setattr(method, "__condition_method_name", f"less_than_{value}")
+        # return self.ActionCondition(method)
+        return self.ActionCondition(self.ActionCondition.LT, value)
     
     
 class FIFOBufferHandle:
@@ -136,8 +173,6 @@ class FIFOBufferHandle:
         
         self._ref_counts: list[VariableHandle] = [VariableHandle(f"{handle_name}_ref_counter_{i}", initial_value=0) for i in range(depth)]
         self._global_counter: VariableHandle = VariableHandle(f"{handle_name}_global_counter", initial_value=0)
-        # Track which absolute entry_id currently occupies each ring-buffer slot.
-        # This prevents aliasing bugs when different generations map to the same slot.
         self._slot_entry_tags: list[int] = [-1 for _ in range(depth)]
         
         self._entry_vacant_action_methods: dict[int, list[Callable]] = {}
@@ -158,6 +193,8 @@ class FIFOBufferHandle:
             
     @staticmethod
     def _entry_vacant_condition(buf: 'FIFOBufferHandle', entry_id: int) -> bool:
+        if entry_id != buf._global_counter.value:
+            return False
         entry_idx = entry_id % buf.depth
         return buf._ref_counts[entry_idx].value == 0
     
@@ -229,5 +266,6 @@ class FIFOBufferHandle:
         return self._ref_counts[entry_id]
     
     def __repr__(self):
-        valid_slots = [i for i in range(self.depth) if self._ref_counts[i].value > 0]
-        return f"FIFOBufferHandle(name={self.handle_name}, depth={self.depth}, entry_size={self.entry_size}, valid_slots={valid_slots})"
+        # valid_slots = [i for i in range(self.depth) if self._ref_counts[i].value > 0]
+        slot_info = [f"slot[{i}]: (ref_count={self._ref_counts[i].value}, tag={self._slot_entry_tags[i]})" for i in range(self.depth)]
+        return f"FIFOBufferHandle(name={self.handle_name}, depth={self.depth}, entry_size={self.entry_size}, slot_info=[{', '.join(slot_info)}])"

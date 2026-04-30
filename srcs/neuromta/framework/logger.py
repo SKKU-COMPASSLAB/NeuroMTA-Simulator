@@ -74,7 +74,7 @@ class logger:
             _global_current_monitor_log_level = monitor_log_level
 
     @classmethod
-    def log(cls, message: str, level: LogLevel = LogLevel.INFO):
+    def log(cls, message: str, level: LogLevel = LogLevel.INFO, end: str = "\n"):
         global _global_current_log_level
         global _global_monitoring_window
 
@@ -85,7 +85,7 @@ class logger:
         
         if level.value >= _global_current_log_level.value:
             header = f"[{level.name}] "
-            sys.stdout.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + "\n")
+            sys.stdout.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + end)
             sys.stdout.flush()   # ensure the log is printed immediately
                 
         if level.value >= _global_current_monitor_log_level.value:
@@ -94,25 +94,25 @@ class logger:
                     _global_monitoring_window.add_log(message, level)   # also print to monitoring window for better visibility when log level is high enough
 
     @classmethod
-    def debug(cls, message: str):
-        cls.log(message, LogLevel.DEBUG)
-    
-    @classmethod
-    def info(cls, message: str):
-        cls.log(message, LogLevel.INFO)
+    def debug(cls, message: str, end: str = "\n"):
+        cls.log(message, LogLevel.DEBUG, end=end)
 
     @classmethod
-    def warning(cls, message: str):
-        cls.log(message, LogLevel.WARNING)
+    def info(cls, message: str, end: str = "\n"):
+        cls.log(message, LogLevel.INFO, end=end)
 
     @classmethod
-    def error(cls, message: str):
-        cls.log(message, LogLevel.ERROR)
+    def warning(cls, message: str, end: str = "\n"):
+        cls.log(message, LogLevel.WARNING, end=end)
 
     @classmethod
-    def critical(cls, message: str):
-        cls.log(message, LogLevel.CRITICAL)
-    
+    def error(cls, message: str, end: str = "\n"):
+        cls.log(message, LogLevel.ERROR, end=end)
+
+    @classmethod
+    def critical(cls, message: str, end: str = "\n"):
+        cls.log(message, LogLevel.CRITICAL, end=end)
+
     @classmethod
     def get_current_log_level(cls) -> LogLevel:
         global _global_current_log_level

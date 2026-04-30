@@ -38,7 +38,7 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_groups = device.get_npu_core_group((0, 0), (8, 8)).split(shape=(1, 1))
+    core_groups = device.get_npu_core_group((0, 0), (12, 14)).split(shape=(2, 2))
     
     dtype = torch.int16
     acc_dtype = torch.int16
@@ -69,12 +69,12 @@ if __name__ == "__main__":
     
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    x_b           = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_x_shape,           dtype=x.dtype,           shard_shape=(56, 3 )).tiling((32, 32)).allocate().update(x.permute(0, 2, 3, 1))  # NCHW -> NHWC
-    conv_wgt_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_wgt_shape,    dtype=conv_wgt.dtype,    shard_shape=(32, 3 )).tiling((32, 32)).allocate().update(conv_wgt.permute(2, 3, 0, 1))  # OIHW -> OHWI
-    conv_bias_b   = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_bias_shape,   dtype=conv_bias.dtype,   shard_shape=(1,  32)).tiling((1,  32)).allocate().update(conv_bias.unsqueeze(0))
-    conv_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space,   shape=nmta_conv_ofm_shape,    dtype=conv_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
-    relu_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space,   shape=nmta_relu_ofm_shape,    dtype=relu_ofm.dtype,    shard_shape=(55, 32)).tiling((32, 32)).allocate()
-    maxpool_ofm_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_maxpool_ofm_shape, dtype=maxpool_ofm.dtype, shard_shape=(27, 32)).tiling((32, 32)).allocate()
+    x_b           = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_x_shape,           dtype=x.dtype          ).allocate().update(x.permute(0, 2, 3, 1))  # NCHW -> NHWC
+    conv_wgt_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_wgt_shape,    dtype=conv_wgt.dtype   ).allocate().update(conv_wgt.permute(2, 3, 0, 1))  # OIHW -> OHWI
+    conv_bias_b   = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_bias_shape,   dtype=conv_bias.dtype  ).allocate().update(conv_bias.unsqueeze(0))
+    conv_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_conv_ofm_shape,    dtype=conv_ofm.dtype   ).allocate()
+    relu_ofm_b    = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_relu_ofm_shape,    dtype=relu_ofm.dtype   ).allocate()
+    maxpool_ofm_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=nmta_maxpool_ofm_shape, dtype=maxpool_ofm.dtype).allocate()
     
     operator1 = MCA_OP_CONV2D(x_b, conv_wgt_b, conv_bias_b, conv_ofm_b, stride=(4, 4), padding=(2, 2))
     operator2 = MCA_OP_RELU(conv_ofm_b, relu_ofm_b)
@@ -88,7 +88,7 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=core_groups,
-        spad_space_size_per_core=parse_mem_cap_str("512KB"),
+        spad_space_size_per_core=parse_mem_cap_str("1MB"),
         pipeline_granularity=args.pipeline_gran,
         broadcast_optimize_queue_depth=args.bcast_queue_depth,
         operator_pipelining=False,

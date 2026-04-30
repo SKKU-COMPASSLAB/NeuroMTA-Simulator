@@ -14,6 +14,11 @@ __all__ = [
 
 
 class MCA_TensorBuffer:
+    AUTO = "AUTO"
+    AUTO_IFM = "AUTO_IFM"
+    AUTO_OFM = "AUTO_OFM"
+    AUTO_WGT = "AUTO_WGT"
+    
     def __init__(
         self, 
         
@@ -21,7 +26,7 @@ class MCA_TensorBuffer:
         shape: Sequence[int],    # shape of the tensor
         dtype: torch.dtype,      # data type of the tensor
         
-        shard_shape: Sequence[int]=None,  # (shard_height, shard_width)
+        shard_shape: Sequence[int] | str=AUTO,  # (shard_height, shard_width)
         
         blocked_mapping: bool=False,    # whether to use blocked mapping for height and width shards (only if the buffer is L1 memory and mem_ids are provided as MTA_CoreGrid)
     ):
@@ -31,9 +36,27 @@ class MCA_TensorBuffer:
         self._dtype = dtype
         
         # Sharding Factors
-        if shard_shape is None:
-            shard_shape = (self._shape[-2], self._shape[-1])  # no sharding by default
-        elif isinstance(shard_shape, int):
+        if isinstance(shard_shape, str):
+            if shard_shape not in [self.AUTO, self.AUTO_IFM, self.AUTO_OFM, self.AUTO_WGT]:
+                raise ValueError(f"Invalid auto shard shape mode: {shard_shape}. Supported modes are: {self.AUTO}, {self.AUTO_IFM}, {self.AUTO_OFM}, {self.AUTO_WGT}.")
+            
+            if shard_shape == self.AUTO:
+                mxu_tile_shape = self._mem_space.device.mxu_ifm_tile_shape
+                if not (mxu_tile_shape == self._mem_space.device.mxu_ofm_tile_shape == self._mem_space.device.mxu_wgt_tile_shape):
+                    raise Exception("Automatic shard shape is only supported when all MXU tile shapes are the same. Please specify shard_shape manually or use a specific auto mode.")
+            elif shard_shape == self.AUTO_IFM:
+                mxu_tile_shape = self._mem_space.device.mxu_ifm_tile_shape
+            elif shard_shape == self.AUTO_OFM:
+                mxu_tile_shape = self._mem_space.device.mxu_ofm_tile_shape
+            elif shard_shape == self.AUTO_WGT:
+                mxu_tile_shape = self._mem_space.device.mxu_wgt_tile_shape
+                
+            shard_shape = (
+                self._find_smallest_divisor_above(self._shape[-2], mxu_tile_shape[-2]) if self._shape[-2] >= mxu_tile_shape[-2] else self._shape[-2],
+                self._find_smallest_divisor_above(self._shape[-1], mxu_tile_shape[-1]) if self._shape[-1] >= mxu_tile_shape[-1] else self._shape[-1],
+            )
+        
+        if isinstance(shard_shape, int):
             shard_shape = (shard_shape, shard_shape)
         elif len(shard_shape) != 2:
             raise ValueError("shard_shape must be a sequence of two integers: (shard_height, shard_width).")
@@ -74,6 +97,13 @@ class MCA_TensorBuffer:
             for _ in range(self._n_y_shards)]
         
         self._is_allocated = False
+    
+    @staticmethod
+    def _find_smallest_divisor_above(num: int, threshold: int) -> int:
+        for i in range(threshold, num + 1):
+            if num % i == 0:
+                return i
+        return num
         
     def reshape(self, *new_shape: int) -> "MCA_TensorBuffer":
         if new_shape[-1] != self._shape[-1]:

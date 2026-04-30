@@ -77,16 +77,18 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         
         M, K = ifm.shape
         N, K = wgt.shape
+        
+        mxu_config = self.compiler_recipe.device.mxu_config
 
-        M_SHARD = 32 if (M % 32 == 0) else _find_smallest_divisor_above(M, 32)
-        N_SHARD = 32 if (N % 32 == 0) else _find_smallest_divisor_above(N, 32)
-        K_SHARD = 32 if (K % 32 == 0) else _find_smallest_divisor_above(K, 32)
+        M_SHARD = mxu_config.m_tile if (M % mxu_config.m_tile == 0) else _find_smallest_divisor_above(M, mxu_config.m_tile)
+        N_SHARD = mxu_config.n_tile if (N % mxu_config.n_tile == 0) else _find_smallest_divisor_above(N, mxu_config.n_tile)
+        K_SHARD = mxu_config.k_tile if (K % mxu_config.k_tile == 0) else _find_smallest_divisor_above(K, mxu_config.k_tile)
         
         buf_sigs = [
-            NetworkGraphEntryCompileTarget.BufferSignature((M, K),  self.dtype,     (M_SHARD, K_SHARD), (32, 32), False, ifm.dtype).load_from(node.inputsAt(1), CONTEXT),
-            NetworkGraphEntryCompileTarget.BufferSignature((N, K),  self.dtype,     (N_SHARD, K_SHARD), (32, 32), False, wgt.dtype).load_from("weight", submodule),            
-            NetworkGraphEntryCompileTarget.BufferSignature((1, N,), self.acc_dtype, (1, N_SHARD),       ( 1, 32), False, ofm_dtype).load_from("bias", submodule),
-            NetworkGraphEntryCompileTarget.BufferSignature((M, N),  self.acc_dtype, (M_SHARD, N_SHARD), (32, 32), False, ofm_dtype).store_to(node.outputsAt(0), CONTEXT),
+            NetworkGraphEntryCompileTarget.BufferSignature((M, K),  self.dtype,     (M_SHARD, K_SHARD), False, ifm.dtype).load_from(node.inputsAt(1), CONTEXT),
+            NetworkGraphEntryCompileTarget.BufferSignature((N, K),  self.dtype,     (N_SHARD, K_SHARD), False, wgt.dtype).load_from("weight", submodule),            
+            NetworkGraphEntryCompileTarget.BufferSignature((1, N,), self.acc_dtype, (1, N_SHARD),       False, ofm_dtype).load_from("bias", submodule),
+            NetworkGraphEntryCompileTarget.BufferSignature((M, N),  self.acc_dtype, (M_SHARD, N_SHARD), False, ofm_dtype).store_to(node.outputsAt(0), CONTEXT),
         ]
         
         op_kwargs = {}
@@ -125,22 +127,24 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         OH = (H + 2 * padding[0] - dilation[0] * (FH - 1) - 1) // stride[0] + 1
         OW = (W + 2 * padding[1] - dilation[1] * (FW - 1) - 1) // stride[1] + 1
         
-        W_SHARD  = 32 if (W  % 32 == 0) else _find_smallest_divisor_above(W, 32)
-        OW_SHARD = 32 if (OW % 32 == 0) else _find_smallest_divisor_above(OW, 32)
-        C_SHARD  = 32 if (C  % 32 == 0) else _find_smallest_divisor_above(C, 32)
-        K_SHARD  = 32 if (K  % 32 == 0) else _find_smallest_divisor_above(K, 32)
+        mxu_config = self.compiler_recipe.device.mxu_config
+        
+        W_SHARD  = mxu_config.m_tile if (W  % mxu_config.m_tile == 0) else _find_smallest_divisor_above(W, mxu_config.m_tile)
+        OW_SHARD = mxu_config.m_tile if (OW % mxu_config.m_tile == 0) else _find_smallest_divisor_above(OW, mxu_config.m_tile)
+        C_SHARD  = mxu_config.k_tile if (C  % mxu_config.k_tile == 0) else _find_smallest_divisor_above(C, mxu_config.k_tile)
+        K_SHARD  = mxu_config.n_tile if (K  % mxu_config.n_tile == 0) else _find_smallest_divisor_above(K, mxu_config.n_tile)
         
         buf_sigs = [
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD), (32, 32),   False, ifm.dtype, 
+                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD),   False, ifm.dtype, 
                 preprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 2, 3, 1)]).load_from(node.inputsAt(1), CONTEXT),
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (FH, FW, K, C), self.dtype,     (K_SHARD, C_SHARD), (32, 32),   False, wgt.dtype, 
+                (FH, FW, K, C), self.dtype,     (K_SHARD, C_SHARD),   False, wgt.dtype, 
                 preprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(2, 3, 0, 1)]).load_from("weight", submodule),
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (1, K,),        self.acc_dtype, (1, K_SHARD), (1, 32),         False, ofm_dtype).load_from("bias", submodule),
+                (1, K,),        self.acc_dtype, (1, K_SHARD),         False, ofm_dtype).load_from("bias", submodule),
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, OH, OW, K), self.acc_dtype, (OW_SHARD, K_SHARD), (32, 32),  False, ofm_dtype, 
+                (N, OH, OW, K), self.acc_dtype, (OW_SHARD, K_SHARD),  False, ofm_dtype, 
                 postprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 3, 1, 2)]).store_to(node.outputsAt(0), CONTEXT),
         ]
         
@@ -169,12 +173,14 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
     def ReLU(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.ReLU) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
         
+        mxu_config = self.compiler_recipe.device.mxu_config
+        
         if len(ifm.shape) == 2:
             M = ifm.shape[-2]
             N = ifm.shape[-1]
             
-            M_SHARD = 32 if (M % 32 == 0) else _find_smallest_divisor_above(M, 32)
-            N_SHARD = 32 if (N % 32 == 0) else _find_smallest_divisor_above(N, 32)
+            M_SHARD = mxu_config.m_tile if (M % mxu_config.m_tile == 0) else _find_smallest_divisor_above(M, mxu_config.m_tile)
+            N_SHARD = mxu_config.n_tile if (N % mxu_config.n_tile == 0) else _find_smallest_divisor_above(N, mxu_config.n_tile)
             
             buffer_shape = (M, N)
             shard_shape = (M_SHARD, N_SHARD)
@@ -183,8 +189,8 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         elif len(ifm.shape) == 4:
             N, C, H, W = ifm.shape
             
-            W_SHARD  = 32 if (W  % 32 == 0) else _find_smallest_divisor_above(W, 32)
-            C_SHARD  = 32 if (C  % 32 == 0) else _find_smallest_divisor_above(C, 32)
+            W_SHARD  = mxu_config.m_tile if (W  % mxu_config.m_tile == 0) else _find_smallest_divisor_above(W, mxu_config.m_tile)
+            C_SHARD  = mxu_config.n_tile if (C  % mxu_config.n_tile == 0) else _find_smallest_divisor_above(C, mxu_config.n_tile)
             
             buffer_shape = (N, H, W, C)
             shard_shape = (W_SHARD, C_SHARD)
@@ -195,11 +201,11 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         
         buf_sigs = [
             NetworkGraphEntryCompileTarget.BufferSignature(
-                buffer_shape, self.dtype, shard_shape, (32, 32), False, ifm.dtype,
+                buffer_shape, self.dtype, shard_shape, False, ifm.dtype,
                 preprocessings=preprocessing,
             ).load_from(node.inputsAt(1), CONTEXT),
             NetworkGraphEntryCompileTarget.BufferSignature(
-                buffer_shape, self.dtype, shard_shape, (32, 32), False, ifm.dtype,
+                buffer_shape, self.dtype, shard_shape, False, ifm.dtype,
                 postprocessings=postprocessing,
             ).store_to(node.outputsAt(0), CONTEXT),
         ]
@@ -223,7 +229,6 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
     @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
     def MaxPool2d(self, graph_context: NetworkGraphContext, node: torch.Node, submodule: torch.nn.MaxPool2d) -> NetworkGraphEntryCompileTarget:
         ifm: torch.Tensor = graph_context[node.inputsAt(1).debugName()]
-        
         ofm_dtype = ifm.dtype
         
         N, C, H, W = ifm.shape
@@ -235,16 +240,18 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         OH = (H + 2 * padding[0] - dilation[0] * (FH - 1) - 1) // stride[0] + 1
         OW = (W + 2 * padding[1] - dilation[1] * (FW - 1) - 1) // stride[1] + 1
         
-        W_SHARD  = 32 if (W  % 32 == 0) else _find_smallest_divisor_above(W, 32)
-        OW_SHARD = 32 if (OW % 32 == 0) else _find_smallest_divisor_above(OW, 32)
-        C_SHARD  = 32 if (C  % 32 == 0) else _find_smallest_divisor_above(C, 32)
+        mxu_config = self.compiler_recipe.device.mxu_config
+        
+        W_SHARD  = mxu_config.m_tile if (W  % mxu_config.m_tile == 0) else _find_smallest_divisor_above(W, mxu_config.m_tile)
+        OW_SHARD = mxu_config.m_tile if (OW % mxu_config.m_tile == 0) else _find_smallest_divisor_above(OW, mxu_config.m_tile)
+        C_SHARD  = mxu_config.n_tile if (C  % mxu_config.n_tile == 0) else _find_smallest_divisor_above(C, mxu_config.n_tile)
         
         buf_sigs = [
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD), (32, 32),   False, ifm.dtype, 
+                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD),   False, ifm.dtype, 
                 preprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 2, 3, 1)]).load_from(node.inputsAt(1), CONTEXT),
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, OH, OW, C), self.acc_dtype, (OW_SHARD, C_SHARD), (32, 32),  False, ofm_dtype, 
+                (N, OH, OW, C), self.acc_dtype, (OW_SHARD, C_SHARD),  False, ofm_dtype, 
                 postprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 3, 1, 2)]).store_to(node.outputsAt(0), CONTEXT),
         ]
         
@@ -283,16 +290,18 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         OH = (H + 2 * padding[0] - dilation[0] * (FH - 1) - 1) // stride[0] + 1
         OW = (W + 2 * padding[1] - dilation[1] * (FW - 1) - 1) // stride[1] + 1
         
-        W_SHARD  = 32 if (W  % 32 == 0) else _find_smallest_divisor_above(W, 32)
-        OW_SHARD = 32 if (OW % 32 == 0) else _find_smallest_divisor_above(OW, 32)
-        C_SHARD  = 32 if (C  % 32 == 0) else _find_smallest_divisor_above(C, 32)
+        mxu_config = self.compiler_recipe.device.mxu_config
+        
+        W_SHARD  = mxu_config.m_tile if (W  % mxu_config.m_tile == 0) else _find_smallest_divisor_above(W, mxu_config.m_tile)
+        OW_SHARD = mxu_config.m_tile if (OW % mxu_config.m_tile == 0) else _find_smallest_divisor_above(OW, mxu_config.m_tile)
+        C_SHARD  = mxu_config.n_tile if (C  % mxu_config.n_tile == 0) else _find_smallest_divisor_above(C, mxu_config.n_tile)
         
         buf_sigs = [
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD), (32, 32),   False, ifm.dtype, 
+                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD),   False, ifm.dtype, 
                 preprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 2, 3, 1)]).load_from(node.inputsAt(1), CONTEXT),
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, OH, OW, C), self.acc_dtype, (OW_SHARD, C_SHARD), (32, 32),  False, ofm_dtype, 
+                (N, OH, OW, C), self.acc_dtype, (OW_SHARD, C_SHARD),  False, ofm_dtype, 
                 postprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 3, 1, 2)]).store_to(node.outputsAt(0), CONTEXT),
         ]
         
@@ -330,16 +339,18 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         padding = (0, 0)
         dilation = (1, 1)
         
-        W_SHARD  = 32 if (W  % 32 == 0) else _find_smallest_divisor_above(W, 32)
-        OW_SHARD = 32 if (OW % 32 == 0) else _find_smallest_divisor_above(OW, 32)
-        C_SHARD  = 32 if (C  % 32 == 0) else _find_smallest_divisor_above(C, 32)
+        mxu_config = self.compiler_recipe.device.mxu_config
+        
+        W_SHARD  = mxu_config.m_tile if (W  % mxu_config.m_tile == 0) else _find_smallest_divisor_above(W, mxu_config.m_tile)
+        OW_SHARD = mxu_config.m_tile if (OW % mxu_config.m_tile == 0) else _find_smallest_divisor_above(OW, mxu_config.m_tile)
+        C_SHARD  = mxu_config.n_tile if (C  % mxu_config.n_tile == 0) else _find_smallest_divisor_above(C, mxu_config.n_tile)
         
         buf_sigs = [
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD), (32, 32),   False, ifm.dtype, 
+                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD),   False, ifm.dtype, 
                 preprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 2, 3, 1)]).load_from(node.inputsAt(1), CONTEXT),
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, OH, OW, C), self.acc_dtype, (OW_SHARD, C_SHARD), (32, 32),  False, ofm_dtype, 
+                (N, OH, OW, C), self.acc_dtype, (OW_SHARD, C_SHARD),  False, ofm_dtype, 
                 postprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 3, 1, 2)]).store_to(node.outputsAt(0), CONTEXT),
         ]
         
@@ -377,16 +388,18 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         padding = (0, 0)
         dilation = (1, 1)
         
-        W_SHARD  = 32 if (W  % 32 == 0) else _find_smallest_divisor_above(W, 32)
-        OW_SHARD = 32 if (OW % 32 == 0) else _find_smallest_divisor_above(OW, 32)
-        C_SHARD  = 32 if (C  % 32 == 0) else _find_smallest_divisor_above(C, 32)
+        mxu_config = self.compiler_recipe.device.mxu_config
+        
+        W_SHARD  = mxu_config.m_tile if (W  % mxu_config.m_tile == 0) else _find_smallest_divisor_above(W, mxu_config.m_tile)
+        OW_SHARD = mxu_config.m_tile if (OW % mxu_config.m_tile == 0) else _find_smallest_divisor_above(OW, mxu_config.m_tile)
+        C_SHARD  = mxu_config.n_tile if (C  % mxu_config.n_tile == 0) else _find_smallest_divisor_above(C, mxu_config.n_tile)
         
         buf_sigs = [
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD), (32, 32),   False, ifm.dtype, 
+                (N, H, W, C),   self.dtype,     (W_SHARD, C_SHARD),   False, ifm.dtype, 
                 preprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 2, 3, 1)]).load_from(node.inputsAt(1), CONTEXT),
             NetworkGraphEntryCompileTarget.BufferSignature(
-                (N, OH, OW, C), self.acc_dtype, (OW_SHARD, C_SHARD), (32, 32),  False, ofm_dtype, 
+                (N, OH, OW, C), self.acc_dtype, (OW_SHARD, C_SHARD),  False, ofm_dtype, 
                 postprocessings=[NetworkGraphEntryCompileTarget.TensorProcessing.permute(0, 3, 1, 2)]).store_to(node.outputsAt(0), CONTEXT),
         ]
         

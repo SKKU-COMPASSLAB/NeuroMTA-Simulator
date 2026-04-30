@@ -127,10 +127,11 @@ class Device:
         
         for core_id, core in self.initialized_cores.items():
             core.rpc_update_routine()
-            
+        
         self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
 
         for core_id, core in self.initialized_cores.items():
+            # with print_log_execution_time(desc=f"  - CORE {core_id:<3d}" if core.core_id != self.companion_core.core_id else f"  - COMPANION", disable=core.core_id != 24):
             if core.is_idle:
                 core._timestamp += remaining_cycles
             else:
@@ -162,9 +163,10 @@ class Device:
 
         # while not all(self.initialized_cores[core_id].is_idle for core_id in core_ids):
         while True:
-            # with print_log_execution_time(desc=f"Step {step_cnt}"):
+            # with print_log_execution_time(desc=f"STEP {step_cnt:<4d}"):
             self.run_single_step(cycle_resolution=cycle_resolution)
             
+            # with print_log_execution_time(desc=f"POST {step_cnt:<4d}"):
             # break condition: step count  
             step_cnt += 1
             if step_cnt >= max_steps > 0:

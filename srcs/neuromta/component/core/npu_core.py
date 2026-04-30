@@ -37,7 +37,8 @@ class NPUCore(Core):
         self.mem_info   = self.core_info.owned_mem_info  # Assume that each NPU core owns only one memory
         self.set_mem_handle(mem_handle=self.mem_info.mem_handle)
         
-        self._dma_engine_idx = self.core_id % self.global_context.n_dma_engine_per_channel  # Assume that each NPU core is connected to one DMA engine in a round-robin manner
+        r, _ = self.icnt_context.core_id_to_coord(self.core_id)
+        self._dma_engine_idx = r % self.global_context.n_dma_engine_per_instance  # Assume that each NPU core is connected to one DMA engine in a round-robin manner based on the row coordinate of the core in the NoC topology
     
     def get_buffer_owner(self, ptr: Pointer | int) -> int:
         if isinstance(ptr, Pointer):

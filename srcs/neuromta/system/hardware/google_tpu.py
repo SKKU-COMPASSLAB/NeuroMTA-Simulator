@@ -65,7 +65,6 @@ class GoogleTPUConfig(dict):
             n_instance=n_main_mem_instances,
             channel_size=main_mem_channel_size,
             n_channel_per_instance=n_main_mem_channel_per_instance,
-            n_cmd_q_per_instance=n_main_mem_cmd_q_per_instance,
             
             # DRAMSIM CONFIG
             dramsim3_enable=PYDRAMSIM3_AVAILABLE,

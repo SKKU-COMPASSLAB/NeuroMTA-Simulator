@@ -359,7 +359,7 @@ class Command:
 
     def run_behavioral_model(self, core: 'Core', kernel: 'Kernel'):
         with new_global_context(GlobalContextMode.EXECUTE, core, kernel):
-            # with print_log_execution_time(f"COMMAND {self.cmd_id}", disable=kernel.slot_id!="LD"):
+            # with print_log_execution_time(f"COMMAND {self.cmd_id}", disable=core.core_id != 24 or kernel.slot_id != "LD"):
             model = core.get_behavioral_model(self.cmd_id)
             try:
                 self._is_behavioral_model_called = True
@@ -451,7 +451,10 @@ class ThreadGroup(list['Kernel']):
             kernel.update_cycle_time(core, cycle_time)
     
     def is_finished(self, core: 'Core') -> bool:
-        return all(kernel.is_finished(core) for kernel in self)
+        for kernel in self:
+            if not kernel.is_finished(core):
+                return False
+        return True
     
     
 class KernelPrototype:
@@ -599,6 +602,7 @@ class Kernel:
         return cycle
 
     def update_cycle_time(self, core: 'Core', cycle_time: int):
+        # with print_log_execution_time(f"  - PREPROC  for {type(self).__name__} '{self.callstack}'", disable=core.core_id != 24 or self.slot_id != "LD"):
         if self._issue_time is None:
             self._issue_time = core.timestamp
         
@@ -606,9 +610,18 @@ class Kernel:
             return
         if self.is_blocked:
             return
-        
+    
         step = self.current_step(core)
+        
+        step_id = "undefined"
+        if isinstance(step, Command):
+            step_id = step.cmd_id
+        elif isinstance(step, ThreadGroup):
+            step_id = f"ThreadGroup[{len(step)} kernels]"
+        elif isinstance(step, Kernel):
+            step_id = f"Kernel[{step.kernel_id}] {step.is_blocked}"
 
+        # with print_log_execution_time(f"  - UPDATING for {type(self).__name__} '{self.callstack}' (step: {type(step).__name__}({step_id}))", disable=core.core_id != 24 or self.slot_id != "LD"):
         if isinstance(step, Command):
             step.update_cycle_time(core, self, cycle_time)
             if step.is_finished(core, self):
@@ -617,7 +630,8 @@ class Kernel:
             step.update_cycle_time(core, cycle_time)
             if step.is_finished(core):
                 self._execution_cursor += 1
-    
+        
+        # with print_log_execution_time(f"  - FINAL    for {type(self).__name__} '{self.callstack}' (step: {type(step).__name__}({step_id}))", disable=core.core_id != 24 or self.slot_id != "LD" or self.kernel_id != "LD_THREAD"):
         if self._commit_time is None and self.is_finished(core):
             self._commit_time = core.timestamp + cycle_time
             core.run_kernel_debug_hook(self)
@@ -627,50 +641,18 @@ class Kernel:
             return None
         
         if isinstance(self._execution_steps[self._execution_cursor], KernelPrototype):
+            # if core.core_id == 24 and self.slot_id == "LD":
+            #     logger.debug(f"== KernelPrototype detected. compiling ...")
             kernel_step = self._execution_steps[self._execution_cursor].compile()
             kernel_step.root_kernel = self
             self._execution_steps[self._execution_cursor] = kernel_step
         
         return self._execution_steps[self._execution_cursor]
     
-    def recursive_current_commands(self, core: 'Core') -> list[Command]:
-        if self.is_finished(core):
-            return []
-        
-        commands = []
-        step = self._execution_steps[self._execution_cursor]
-        
-        if isinstance(step, Command):
-            commands.append(step)
-        elif isinstance(step, Kernel):
-            commands = step.recursive_current_commands(core)
-        elif isinstance(step, ThreadGroup):
-            for k in step:
-                commands.extend(k.recursive_current_commands(core))
-                
-        return commands
-    
     def is_finished(self, core: 'Core') -> bool:
-        for step in self._execution_steps:
-            if isinstance(step, KernelPrototype):
-                try:
-                    step = step.compile()
-                    step.root_kernel = self
-                except Exception as e:
-                    logger.error(f"Exception occurred while compiling kernel prototype '{step.compiled_kernel_id}' in kernel '{self.kernel_id}': {e}")
-                    logger.error(f"  - callstack: {self.callstack}")
-                    raise e
-            
-            if isinstance(step, Command):
-                if not step.is_finished(core, self):
-                    return False
-            elif isinstance(step, Kernel):
-                if not step.is_finished(core) or step.is_blocked:
-                    return False
-            elif isinstance(step, ThreadGroup) or step.is_blocked:
-                if not step.is_finished(core):
-                    return False
-        return (self._execution_cursor >= len(self._execution_steps)) and (not self.is_blocked)
+        if self.current_step(core) is not None:
+            return False
+        return True
     
     @property
     def root_callstack(self) -> str | None:
@@ -881,12 +863,11 @@ class Core:
         self._rpc_rsp_msg_receive_routine()      # receive RPC response message and register them as suspended
         
     def update_cycle_time(self, cycle_time: int):
-        ############## SLOW POINT ##############
+        # with print_log_execution_time(f"  - CORE {self.core_id} TOP", disable=self.core_id != 24):
         main_kernel_slot_ids = list(self._dispatched_main_kernels.keys())
         
         for slot_id in main_kernel_slot_ids:
-            # with print_log_execution_time(f"UPDATE CYCLE TIME FOR MAIN KERNEL '{self.core_id}::{slot_id}'", disable=slot_id!="LD"):
-            #     with print_log_execution_time(f"BREAKDOWN 1", disable=slot_id!="LD"):
+            # with print_log_execution_time(f"CORE {self.core_id} MAIN UPDATE SLOT {slot_id}", disable=self.core_id != 24 or self.timestamp < 15000):
             kernel = self._dispatched_main_kernels[slot_id]
             kernel.update_cycle_time(self, cycle_time)
 
@@ -900,7 +881,6 @@ class Core:
                             suspended_kernel = suspended_kernel.compile()
                         suspended_kernel.root_kernel_id = f"MAIN<{slot_id}>"
                         self._dispatched_main_kernels[slot_id] = suspended_kernel  # TODO: directly dispatch the suspended kernel without going through the dispatch_main_kernel() method
-        ########################################
         
         rpc_kernel_slot_ids  = list(self._dispatched_rpc_kernels.keys())
         
@@ -911,7 +891,7 @@ class Core:
             if kernel.is_finished(self):
                 self._rpc_req_kernel_remove_and_rsp_send_routine(slot_id)  # generate RPC response if the current ongoing RPC message is properly handled
 
-        self._timestamp += cycle_time
+            self._timestamp += cycle_time
         
     def check_all_blocked(self) -> bool:
         for kernel in self._dispatched_main_kernels.values():
@@ -1215,20 +1195,37 @@ class Core:
             mem_row_stride = row_size
         if cont_row_stride is None:
             cont_row_stride = row_size
-        if row_pattern is None:
-            row_pattern = {i: i for i in range(row_num)}
             
         if container.is_mem_segment:
             container.data = container.data.flatten().view(torch.uint8).reshape(-1, cont_row_stride)
         else:
             container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
-        
+
+        row_slice = slice(cont_row_offset, cont_row_offset + row_size)
+        zero_slice = slice(cont_row_offset + row_size, cont_row_offset + row_size + cont_row_zero_pad)
+        base_ptr = ptr
+
+        if row_pattern is None:
+            # Fast path: contiguous row copy can be served by a single get_data call.
+            if mem_row_stride == row_size and row_num > 0:
+                bulk_size = row_num * row_size
+                src_data = self.mem_handle.get_data(base_ptr, size=bulk_size, dtype=torch.uint8).reshape(row_num, row_size)
+                container.data[:row_num, row_slice] = src_data
+            else:
+                for r in range(row_num):
+                    src_data = self.mem_handle.get_data(base_ptr + (r * mem_row_stride), size=row_size, dtype=torch.uint8)
+                    container.data[r, row_slice] = src_data
+
+            if cont_row_zero_pad > 0 and row_num > 0:
+                container.data[:row_num, zero_slice] = 0
+            return
+
         for d, s in row_pattern.items():
-            src_data = self.mem_handle.get_data(ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
-            container.data[d, cont_row_offset:cont_row_offset+row_size] = src_data
-            
+            src_data = self.mem_handle.get_data(base_ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
+            container.data[d, row_slice] = src_data
+
             if cont_row_zero_pad > 0:
-                container.data[d, cont_row_offset+row_size:cont_row_offset+row_size+cont_row_zero_pad] = 0
+                container.data[d, zero_slice] = 0
         
     @core_command_method
     def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
@@ -1239,17 +1236,73 @@ class Core:
             mem_row_stride = row_size
         if cont_row_stride is None:
             cont_row_stride = row_size
-        if row_pattern is None:
-            row_pattern = {i: i for i in range(row_num)}
 
         if not container.is_mem_segment:
             raise ValueError("container.data must be a Tensor for local_mem_page_write.")
 
         cont_data = container.data.flatten().view(torch.uint8)[:row_num * cont_row_stride].reshape(row_num, cont_row_stride)
-        
+        row_slice = slice(cont_row_offset, cont_row_offset + row_size)
+        base_ptr = ptr
+
+        if row_pattern is None:
+            # Fast path: contiguous rows can be committed with a single set_data call.
+            if mem_row_stride == row_size and row_num > 0:
+                bulk_data = cont_data[:row_num, row_slice].reshape(-1)
+                self.mem_handle.set_data(base_ptr, size=row_num * row_size, data=bulk_data)
+            else:
+                for r in range(row_num):
+                    dst_data = cont_data[r, row_slice]
+                    self.mem_handle.set_data(base_ptr + (r * mem_row_stride), size=row_size, data=dst_data)
+            return
+
         for d, s in row_pattern.items():
-            dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
-            self.mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
+            dst_data = cont_data[d, row_slice]
+            self.mem_handle.set_data(base_ptr + (s * mem_row_stride), size=row_size, data=dst_data)
+    
+    # @core_command_method
+    # def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
+    #     if not self.check_ptr_belonging(ptr):
+    #         raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_read' method.")
+        
+    #     if mem_row_stride is None:
+    #         mem_row_stride = row_size
+    #     if cont_row_stride is None:
+    #         cont_row_stride = row_size
+    #     if row_pattern is None:
+    #         row_pattern = {i: i for i in range(row_num)}
+            
+    #     if container.is_mem_segment:
+    #         container.data = container.data.flatten().view(torch.uint8).reshape(-1, cont_row_stride)
+    #     else:
+    #         container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
+        
+    #     for d, s in row_pattern.items():
+    #         src_data = self.mem_handle.get_data(ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
+    #         container.data[d, cont_row_offset:cont_row_offset+row_size] = src_data
+            
+    #         if cont_row_zero_pad > 0:
+    #             container.data[d, cont_row_offset+row_size:cont_row_offset+row_size+cont_row_zero_pad] = 0
+        
+    # @core_command_method
+    # def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
+    #     if not self.check_ptr_belonging(ptr):
+    #         raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_write' method.")
+
+    #     if mem_row_stride is None:
+    #         mem_row_stride = row_size
+    #     if cont_row_stride is None:
+    #         cont_row_stride = row_size
+    #     if row_pattern is None:
+    #         row_pattern = {i: i for i in range(row_num)}
+
+    #     if not container.is_mem_segment:
+    #         raise ValueError("container.data must be a Tensor for local_mem_page_write.")
+
+    #     cont_data = container.data.flatten().view(torch.uint8)[:row_num * cont_row_stride].reshape(row_num, cont_row_stride)
+        
+    #     for d, s in row_pattern.items():
+    #         dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
+    #         self.mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
 
     ###########################################################################
     # Static Memory Space Management
