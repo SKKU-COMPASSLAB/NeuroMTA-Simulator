@@ -19,7 +19,7 @@ class print_log_execution_time:
         if self.disable:
             return
         elapsed_time_ns = time.perf_counter_ns() - self.st_time_ns
-        logger.debug(f"{self.desc} \tExecution time: {elapsed_time_ns} ns")
+        logger.debug(f"{self.desc} \tExecution time: {elapsed_time_ns:,} ns")
         
     def get(self):
         if self.disable:

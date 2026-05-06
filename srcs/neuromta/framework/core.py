@@ -891,7 +891,7 @@ class Core:
             if kernel.is_finished(self):
                 self._rpc_req_kernel_remove_and_rsp_send_routine(slot_id)  # generate RPC response if the current ongoing RPC message is properly handled
 
-            self._timestamp += cycle_time
+        self._timestamp += cycle_time
         
     def check_all_blocked(self) -> bool:
         for kernel in self._dispatched_main_kernels.values():

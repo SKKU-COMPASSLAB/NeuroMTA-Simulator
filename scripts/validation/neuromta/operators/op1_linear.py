@@ -40,9 +40,9 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = device.get_npu_core_group((0, 0), (12, 14))
+    core_group = device.get_npu_core_group((0, 0), (4, 4))
     
-    M, N, K = 2048, 4096, 4096
+    M, N, K = 1024, 1024, 1024
     dtype = torch.int16
     acc_dtype = torch.int16
     
@@ -77,8 +77,9 @@ if __name__ == "__main__":
         context_buffer_slot_num=4,
         ld_ex_buffer_slot_num=16,
         ex_st_buffer_slot_num=16,
-        concurrent_load_num=32,
-        reuse_priority="TEMPORAL",
+        concurrent_load_num=8,
+        temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,     # weight/bias temporal reuse
+        spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
     )
     
     compiled_ops = compiler.compile(global_recipe)

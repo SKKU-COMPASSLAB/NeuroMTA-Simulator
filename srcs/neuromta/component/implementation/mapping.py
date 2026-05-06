@@ -45,7 +45,8 @@ class TileSignature:
         return self.signature
     
 class TiledOperatorSignature:
-    def __init__(self):
+    def __init__(self, tiled_op_id: int):
+        self.tiled_op_id: int = tiled_op_id
         self.i_tiles:   list[list[TileSignature]]   = []
         self.o_tile:    TileSignature               = None
         self.op_kwargs: list[dict[str, Any]]        = []

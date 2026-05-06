@@ -83,7 +83,7 @@ def plot_correlation(data: dict[str, tuple[float, float]], save_path: str, show_
 
     pearson_corr = np.corrcoef(sim_perfs, ref_perfs)[0, 1] if len(sim_perfs) > 1 else float("nan")
 
-    fig, ax = plt.subplots(figsize=(8, 7))
+    fig, ax = plt.subplots(figsize=(5, 5))
     group_colors = {
         "LN": "tab:blue",
         "CV": "tab:orange",
@@ -123,15 +123,15 @@ def plot_correlation(data: dict[str, tuple[float, float]], save_path: str, show_
     ax.set_xscale("log")
     ax.set_yscale("log")
 
-    ax.set_title("Simulation vs Hardware Performance Correlation", fontsize=14, pad=10)
+    # ax.set_title("Simulation vs Hardware Correlation", fontsize=14, pad=10)
     ax.set_xlabel("Simulation Performance (Ops/Cycle)", fontsize=12)
     ax.set_ylabel("Hardware Performance (Ops/Cycle)", fontsize=12)
     ax.grid(True, linestyle=":", alpha=0.4)
-    ax.legend(loc="lower right", fontsize=9)
+    ax.legend(loc="lower right", fontsize=11)
     
     fig.text(
-        0.14,
-        0.93,
+        0.16,
+        0.96,
         f"Pearson Correlation = {pearson_corr:.6f}",
         ha="left",
         va="top",
@@ -139,7 +139,7 @@ def plot_correlation(data: dict[str, tuple[float, float]], save_path: str, show_
         fontweight="bold",
     )
 
-    plt.tight_layout()
+    plt.tight_layout(pad=0.5)
     plt.savefig(save_path, dpi=200)
     print(f"Saved correlation plot: {save_path}")
     print(f"Pearson correlation: {pearson_corr:.6f}")

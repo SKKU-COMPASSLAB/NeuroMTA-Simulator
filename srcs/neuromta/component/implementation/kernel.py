@@ -128,7 +128,7 @@ class MCA_KernelTemplate:
                         for dst in ir.dsts:
                             cls.write_to_ref(core, env, container, dst)
                         core.var_atomic_init(ir_lock, ir.ir_idx + 1)  # release the next waiting IR (if any)
-                        core.debug_core_with_ambiguous_func(lambda core, thread_id, ir: logger.debug(f"LOAD CORE: {core.core_id:<3d} thread_id: {thread_id} ir: {ir.signature()}"), core, thread_id, ir)
+                        # core.debug_core_with_ambiguous_func(lambda core, thread_id, ir: logger.debug(f"LOAD TIMESTAMP: {core.timestamp:<8d} CORE: {core.core_id:<3d} thread_id: {thread_id:<2d} ir: {ir.signature()}"), core, thread_id, ir)
                     else:
                         raise Exception(f"Unsupported IR type '{type(ir).__name__}' in LD_THREAD kernel.")
                 

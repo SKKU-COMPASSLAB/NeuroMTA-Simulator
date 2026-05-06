@@ -44,7 +44,7 @@ def _shade_from_base_color(base_color, index: int, total: int):
 
 
 def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_path: str, img_path: str, img_title: str):
-    ai_x = np.logspace(-1, 6, 500)
+    ai_x = np.logspace(1, 5, 500)
 
     workloads = {}
     df = pd.read_csv(src_path)
@@ -75,7 +75,7 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
             for n_cores in n_cores_list
         }
 
-    plt.figure(figsize=(8, 5.5))
+    plt.figure(figsize=(7, 5))
 
     n_cores_to_color = {
         n_cores: CORE_COLOR_SCHEME[i % len(CORE_COLOR_SCHEME)]
@@ -155,16 +155,16 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
         )
 
     # Final plot adjustments
-    plt.title(img_title, fontsize=11)
-    plt.xlabel('Arithmetic Intensity (OPs/Byte) - $\\log$ scale', fontsize=10)
-    plt.ylabel('Performance (OPs/Cycle or GFLOP/s) - $\\log$ scale', fontsize=10)
+    # plt.title(img_title, fontsize=11)
+    plt.xlabel('Arithmetic Intensity (OPs/Byte) - log scale', fontsize=12)
+    plt.ylabel('Performance (OPs/Cycle) - log scale', fontsize=12)
     plt.grid(True, which="both", ls="--", linewidth=0.5)
 
     plt.xlim(ai_x.min(), ai_x.max())
     plt.ylim(min(y_min_candidates) * 0.1, max(y_max_candidates) * 2.5)
 
-    plt.legend(loc='lower right', fontsize=6)
-    plt.tight_layout(pad=0.8)
+    plt.legend(loc='lower right', fontsize=6.4)
+    plt.tight_layout(pad=0.5)
     plt.savefig(img_path, dpi=500)
     
     print(f"Roofline graph saved to '{img_path}'")
