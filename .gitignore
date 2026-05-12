@@ -219,3 +219,4 @@ scripts/*experiments/*/.archive/
 scripts/*experiment/*/.logs*
 .data/
 build/
+.logs*
