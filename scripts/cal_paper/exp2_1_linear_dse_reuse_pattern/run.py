@@ -1,4 +1,5 @@
 import os
+import abc
 import json
 import argparse
 import multiprocessing as mp
@@ -29,44 +30,34 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
-def _find_smallest_divisor_above(num: int, threshold: int) -> int:
-    for i in range(threshold, num + 1):
-        if num % i == 0:
-            return i
-    return num
-
-def _get_shard_shape_from_tensor_shape(tensor_shape: tuple[int]) -> tuple[int]:
-    hh = tensor_shape[-2]
-    ww = tensor_shape[-1]
+class Benchmark(abc.ABC):
+    @property
+    def signature(self) -> str:
+        return f"UnknownBenchmark({id(self):016x})"
     
-    return _find_smallest_divisor_above(hh, 32), _find_smallest_divisor_above(ww, 32)
-
-
-class Benchmark:
+    @abc.abstractmethod
+    def run(self, device: TenstorrentDevice) -> bool:
+        pass
+    
+    
+class LinearBenchmark(Benchmark):
     def __init__(
         self,
-        signature: str,
-        core_group_offset: tuple[int, int],
-        core_group_shape: tuple[int, int], 
-        M:  int, N:  int, K:  int,
-        dtype:     torch.dtype,
-        acc_dtype: torch.dtype,
+        temporal_reuse_type: MCA_OperatorGraphCompiler.CompileRecipe.ReuseType,
+        spatial_reuse_type:  MCA_OperatorGraphCompiler.CompileRecipe.ReuseType,
     ):
-        self.signature = signature
-        self.core_group_offset: tuple[int, int] = core_group_offset
-        self.core_group_shape:  tuple[int, int] = core_group_shape
+        self.temporal_reuse_type = temporal_reuse_type
+        self.spatial_reuse_type = spatial_reuse_type
         
-        self.M: int = M
-        self.N: int = N
-        self.K: int = K
+        self.core_group_offset = (0, 0)
+        self.core_group_shape = (8, 8)  # 64 cores
         
-        self.dtype:     torch.dtype = dtype
-        self.acc_dtype: torch.dtype = acc_dtype
+        self.M = 1024
+        self.N = 1024
+        self.K = 1024
         
-        self._timestamp:    int = 0
-        self._l1_traffic:   int = 0
-        self._main_traffic: int = 0
-        self._total_ops:    int = (self.M * self.N * self.K) * 2 + (self.M * self.N)  # MACs + Bias Add
+        self.dtype = torch.bfloat16
+        self.acc_dtype = torch.bfloat16
         
     @property
     def ifm_shape(self) -> tuple[int]:
@@ -82,22 +73,6 @@ class Benchmark:
     @property
     def ofm_shape(self) -> tuple[int]:
         return (self.M, self.N)
-    
-    @property
-    def ifm_shard_shape(self) -> tuple[int]:
-        return _get_shard_shape_from_tensor_shape(self.ifm_shape)
-    
-    @property
-    def wgt_shard_shape(self) -> tuple[int]:
-        return _get_shard_shape_from_tensor_shape(self.wgt_shape)
-    
-    @property
-    def bias_shard_shape(self) -> tuple[int]:
-        return _get_shard_shape_from_tensor_shape(self.bias_shape)
-    
-    @property
-    def ofm_shard_shape(self) -> tuple[int]:
-        return _get_shard_shape_from_tensor_shape(self.ofm_shape)
     
     @property
     def ifm_total_size(self) -> int:
@@ -131,17 +106,11 @@ class Benchmark:
         try:
             l1_data_mem_space = device.create_l1_mem_space(_l1_data_size_per_core, core_group=core_group)
             main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("32GB"))
-
-            if "prefill" in self.signature:
-                ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.ifm_shape,  dtype=self.dtype).allocate()
-                wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=self.dtype).allocate()
-                bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=self.dtype).allocate()
-                ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.ofm_shape,  dtype=self.acc_dtype).allocate()
-            else:
-                ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ifm_shape,  dtype=self.dtype).allocate()
-                wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=self.dtype).allocate()
-                bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=self.dtype).allocate()
-                ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ofm_shape,  dtype=self.acc_dtype).allocate()
+            
+            ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ifm_shape,  dtype=self.dtype,     ).allocate()
+            wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.wgt_shape,  dtype=self.dtype,     ).allocate()
+            bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=self.bias_shape, dtype=self.dtype,     ).allocate()
+            ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space,   shape=self.ofm_shape,  dtype=self.acc_dtype, ).allocate()
             
             self._l1_traffic:   int = 0
             self._main_traffic: int = 0
@@ -163,12 +132,15 @@ class Benchmark:
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                broadcast_optimize_queue_depth=32,
+                broadcast_optimize_queue_depth=8,
+                broadcast_optimize_max_ref_cnt=16,
                 context_buffer_slot_num=4,
                 ld_ex_buffer_slot_num=16,
-                ex_st_buffer_slot_num=16,
+                ex_st_buffer_slot_num=8,
                 concurrent_load_num=8,
-                reuse_priority="TEMPORAL",
+                temporal_reuse_type=self.temporal_reuse_type,
+                spatial_reuse_type=self.spatial_reuse_type,
+                greedy_temporal_reuse=False,        # turn off greedy temporal reuse to strictly follow the specified temporal reuse type
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -184,6 +156,12 @@ class Benchmark:
             os.makedirs(benchmark_summary_dir, exist_ok=True)
             os.makedirs(compilation_summary_dir, exist_ok=True)
             os.makedirs(profiler_summary_dir, exist_ok=True)
+            
+            for op_id, summary in compiled_ops.summary().items():
+                tmp_output_path = os.path.join(compilation_summary_dir, f"op_summary_{op_id}.json")
+                with open(tmp_output_path, "w") as f:
+                    json.dump(summary, f, indent=4)
+                    logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
                 
             if args.skip_execution:
                 import pandas as pd
@@ -203,7 +181,6 @@ class Benchmark:
                     device.run_kernels()
                     
                 self._timestamp = device.timestamp
-                
                 device.reset_simulation()
                 
         except Exception as e:
@@ -221,20 +198,14 @@ class Benchmark:
         return self._timestamp
     
     @property
-    def total_ops(self) -> int:
-        return self._total_ops
-    
-    @property
-    def l1_traffic(self) -> int:
-        return self._l1_traffic
-    
-    @property
-    def main_traffic(self) -> int:
-        return self._main_traffic    
+    def signature(self) -> str:
+        temporal_reuse_str = self.temporal_reuse_type.name if self.temporal_reuse_type is not None else "None"
+        spatial_reuse_str = self.spatial_reuse_type.name if self.spatial_reuse_type is not None else "None"
+        return f"LN_C{self.n_cores}_{self.M}x{self.N}x{self.K}_TR{temporal_reuse_str}_SR{spatial_reuse_str}"
     
     
 class BenchmarkProcess(mp.Process):
-    def __init__(self, benchmark: Benchmark, device_config: TenstorrentConfig, return_dict: dict, worker_sem):
+    def __init__(self, benchmark: LinearBenchmark, device_config: TenstorrentConfig, return_dict: dict, worker_sem):
         super().__init__()
         self.benchmark = benchmark
         self.device_config = device_config
@@ -249,34 +220,38 @@ class BenchmarkProcess(mp.Process):
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
         
-        # core_group = device.get_npu_core_group(self.core_group_offset, self.core_group_shape)
-        
         flag = self.benchmark.run(device)
         if not flag:
             return
         
         self.return_dict[self.benchmark.signature] = {
             "timestamp":    self.benchmark.timestamp,
-            "total_ops":    self.benchmark.total_ops,
-            "l1_traffic":   self.benchmark.l1_traffic,
-            "main_traffic": self.benchmark.main_traffic,
             "n_cores":      self.benchmark.n_cores,
+            "temporal_reuse": self.benchmark.temporal_reuse_type.name if self.benchmark.temporal_reuse_type is not None else "None",
+            "spatial_reuse": self.benchmark.spatial_reuse_type.name if self.benchmark.spatial_reuse_type is not None else "None",
         }
         
         self.worker_sem.release()
         logger.info(f"process finished for {self.benchmark.signature}")
-        
+
+temporal_reuse_types = [
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.IGNORE,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_L1,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_L1,
+]
+
+spatial_reuse_types = [
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.IGNORE,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_L1,
+]
 
 benchmarks = [
-    Benchmark("qkv_proj (prefill)",  (0, 0), (12, 14), M=2048, N=4096,  K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("up_proj (prefill)",   (0, 0), (12, 14), M=2048, N=11008, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("down_proj (prefill)", (0, 0), (12, 14), M=2048, N=4096,  K=11008, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("lm_head (prefill)",   (0, 0), (12, 14), M=2048, N=32000, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    
-    Benchmark("qkv_proj (decode)",   (0, 0), (12, 14), M=1,    N=4096,  K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("up_proj (decode)",    (0, 0), (12, 14), M=1,    N=11008, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("down_proj (decode)",  (0, 0), (12, 14), M=1,    N=4096,  K=11008, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    Benchmark("lm_head (decode)",    (0, 0), (12, 14), M=1,    N=32000, K=4096,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark(temporal_reuse_type=temporal, spatial_reuse_type=spatial)
+    for temporal in temporal_reuse_types
+    for spatial in spatial_reuse_types
 ]
 
 if __name__ == "__main__":
@@ -287,9 +262,11 @@ if __name__ == "__main__":
         sys.path.append(os.path.abspath(os.path.dirname(__file__)))
         
         import visualize
+        import visualize_heatmap
     except ImportError as e:
         logger.error("Error importing visualize module:", e)
         visualize = None
+        visualize_heatmap = None
     
     manager = mp.Manager()
     return_dict = manager.dict()
@@ -308,7 +285,7 @@ if __name__ == "__main__":
         p.join()
     
     with open(output_path, "w") as f:
-        f.write("Benchmark,Number of Cores,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
+        f.write("Benchmark,Number of Cores,Timestamp (cycles),Temporal Reuse,Spatial Reuse\n")
         for benchmark in benchmarks:
             if benchmark.signature not in return_dict:
                 logger.error(f"Missing results for benchmark {benchmark.signature}")
@@ -317,18 +294,11 @@ if __name__ == "__main__":
             result = return_dict[benchmark.signature]
             
             timestamp    = result["timestamp"]
-            total_ops    = result["total_ops"]
-            l1_traffic   = result["l1_traffic"]
-            main_traffic = result["main_traffic"]
             n_cores      = result["n_cores"]
+            temporal_reuse = result["temporal_reuse"]
+            spatial_reuse = result["spatial_reuse"]
             
-            ops_per_cycle   = total_ops / timestamp
-            l1_bandwidth    = l1_traffic / timestamp
-            main_bandwidth  = main_traffic / timestamp
-            total_bandwidth = l1_bandwidth + main_bandwidth
-            arith_intensity = (total_ops / (main_traffic + l1_traffic)) if (main_traffic + l1_traffic) != 0 else 0
-            
-            f.write(f"{benchmark.signature},{n_cores},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
+            f.write(f"{benchmark.signature},{n_cores},{timestamp},{temporal_reuse},{spatial_reuse}\n")
     
     print(f"Benchmark results saved to '{output_path}'.")
     
@@ -338,14 +308,13 @@ if __name__ == "__main__":
         mxu_config: MXUConfig = config["mxu_config"]
         dramsim_config = global_context_config.main_mem_config.dramsim3_config
         booksim_config = icnt_config.booksim2_config
-        img_path = os.path.join(OUTPUT_DIR, f"{FILE_NAME}.png")
+        img_path = os.path.join(OUTPUT_DIR, f"exp2_1_linear_dse_reuse_pattern.png")
         
         mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
         noc_bisection_bw = booksim_config.peak_bisection_bandwidth() / 1e9  # in GB/s
         
         print(f"=== DRAMSim3 Configuration ===")
         print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
-        print(f"number of cmd q per instance: {dramsim_config.n_cmd_q_per_instance}")
         print(f"number of instances: {dramsim_config.n_instance}")
         
         print(f"=== BookSim2 Configuration ===")
@@ -354,12 +323,24 @@ if __name__ == "__main__":
         print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
-            peak_perf_per_core=mxu_config.peak_op_per_cycle,
-            peak_mem_bw = mem_peak_bw,
-            peak_noc_bw = noc_bisection_bw,
             src_path=output_path,
             img_path=img_path,
-            img_title=f"{type(config).__name__} Roofline Analysis - {FILE_NAME}"
         )
         
         print(f"Roofline visualization saved to '{img_path}'.")
+        
+    if visualize_heatmap is not None:
+        img_path = os.path.join(OUTPUT_DIR, f"exp2_1_linear_dse_reuse_pattern_heatmap.png")
+        category_img_path = os.path.join(OUTPUT_DIR, f"exp2_1_linear_dse_reuse_pattern_categories.png")
+        
+        visualize_heatmap.draw(
+            src_path=output_path,
+            img_path=img_path,
+        )
+        
+        visualize_heatmap.draw_category_table(
+            img_path=category_img_path,
+        )
+        
+        print(f"Heatmap visualization saved to '{img_path}'.")
+        print(f"Category table saved to '{category_img_path}'.")

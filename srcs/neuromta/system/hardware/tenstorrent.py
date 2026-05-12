@@ -69,7 +69,7 @@ class TenstorrentConfig(dict):
             dramsim3_enable=PYDRAMSIM3_AVAILABLE,
             dramsim3_src_config_path="GDDR6_8Gb_x16.ini",
             dramsim3_dst_config_path=TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name),
-            dramsim3_max_issue_per_cmd_q_per_cycle=4,
+            dramsim3_max_issue_per_cmd_q_per_cycle=32,
         )
         
         icnt_config = IcntConfig(                       # INTERCONNECT CONFIG

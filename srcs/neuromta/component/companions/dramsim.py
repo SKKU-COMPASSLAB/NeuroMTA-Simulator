@@ -34,22 +34,40 @@ if PYDRAMSIM3_AVAILABLE:
             channel_size: int,
             n_channel_per_instance: int,
             max_issue_per_cmd_q_per_cycle: int = 1,
+            system_params: dict[str, Any] = None,
+            dram_structure_params: dict[str, Any]=None,
         ):  
             if not os.path.isfile(src_config_path):
                 src_config_path = pydramsim3.PYDRAMSIM_MSYS_CONFIG_PATH(src_config_path)
             if not os.path.isfile(src_config_path):
                 raise FileNotFoundError(f"DRAMSim3 config file '{src_config_path}' not found.")
             
+            system_params = system_params or {}
+            dram_structure_params = dram_structure_params or {}
+            
+            # system_params.setdefault("channel_size", channel_size // (1024 * 1024))  # GB -> MB
+            # system_params.setdefault("channels", n_channel_per_instance)
+            # dram_structure_params.setdefault("bankgroups", 1)  # TODO: more authentic way of doing this..?
+            
             pydramsim3.create_new_dramsim_config_file(
                 src_config_path=src_config_path,
                 new_config_path=dst_config_path,
+                dram_structure_params={
+                    "bankgroups": 1,
+                    # "banks_per_group": 1,
+                    # "rows": 8192,
+                    # "bankgroups": 1,
+                    # "banks_per_group": 8,
+                    # "bankgroup_enable": "true",
+                },
                 system_params={
                     "channel_size": channel_size // (1024 * 1024),  # GB -> MB
+                    # "channel_size": 8092,  # FIX: override channel size to 8GB to match the original config, since pydramsim3's bandwidth calculation relies on this value
                     "channels": n_channel_per_instance,
+                    "cmd_queue_size": 8,
+                    "trans_queue_size": 32,
+                    "row_buf_policy": "OPEN_PAGE",
                 },
-                dram_structure_params={
-                    "bankgroups": 1  # TODO: more authentic way of doing this..?
-                }
             )
 
             self.config_path = dst_config_path

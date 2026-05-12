@@ -126,8 +126,10 @@ class VariableHandle:
     
     @classmethod
     def tmp(cls, initial_value: int=0) -> "VariableHandle":
-        return cls(handle_name="tmp", initial_value=initial_value)
-    
+        var = cls(handle_name="undefined", initial_value=initial_value)
+        var.handle_name = f"var({id(var):08x})"
+        return var
+
     def equals_to(self, value: int) -> 'VariableHandle.ActionCondition':
         # method = lambda x: x == (value.value if isinstance(value, VariableHandle) else value)
         # # method.__condition_method_name = f"equals_to_{value}"

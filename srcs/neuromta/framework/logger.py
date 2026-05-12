@@ -85,8 +85,12 @@ class logger:
         
         if level.value >= _global_current_log_level.value:
             header = f"[{level.name}] "
-            sys.stdout.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + end)
-            sys.stdout.flush()   # ensure the log is printed immediately
+            if level.value >= LogLevel.ERROR.value:
+                sys.stderr.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + end)
+                sys.stderr.flush()   # ensure the log is printed immediately
+            else:
+                sys.stdout.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + end)
+                sys.stdout.flush()   # ensure the log is printed immediately
                 
         if level.value >= _global_current_monitor_log_level.value:
             if _global_monitoring_window is not None:

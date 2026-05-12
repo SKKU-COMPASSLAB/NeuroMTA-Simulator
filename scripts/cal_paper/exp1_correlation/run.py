@@ -137,12 +137,13 @@ class LinearBenchmark(Benchmark):
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                broadcast_optimize_queue_depth=32,
+                broadcast_optimize_queue_depth=8,
+                broadcast_optimize_max_ref_cnt=16,
                 context_buffer_slot_num=4,
                 ld_ex_buffer_slot_num=16,
-                ex_st_buffer_slot_num=16,
+                ex_st_buffer_slot_num=8,
                 concurrent_load_num=8,
-                temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,     # weight/bias temporal reuse
+                temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,  # weight/bias temporal reuse
                 spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
             )
             
@@ -332,12 +333,13 @@ class Conv2dBenchmark(Benchmark):
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                broadcast_optimize_queue_depth=32,
+                broadcast_optimize_queue_depth=8,
+                broadcast_optimize_max_ref_cnt=16,
                 context_buffer_slot_num=8,
                 ld_ex_buffer_slot_num=16,
-                ex_st_buffer_slot_num=16,
-                concurrent_load_num=8,
-                temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,       # ifm temporal reuse
+                ex_st_buffer_slot_num=8,
+                concurrent_load_num=2,
+                temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,    # ifm temporal reuse
                 spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast
             )
             
@@ -497,39 +499,39 @@ if __name__ == "__main__":
     n_workers = min(args.n_workers, len(benchmarks))
     worker_sem = mp.Semaphore(n_workers)
     
-    # processes: list[BenchmarkProcess] = []
-    # for benchmark in benchmarks:
-    #     p = BenchmarkProcess(benchmark, config, return_dict, worker_sem)
-    #     p.start()
-    #     processes.append(p)
+    processes: list[BenchmarkProcess] = []
+    for benchmark in benchmarks:
+        p = BenchmarkProcess(benchmark, config, return_dict, worker_sem)
+        p.start()
+        processes.append(p)
         
-    # for p in processes:
-    #     p.join()
+    for p in processes:
+        p.join()
     
-    # with open(output_path, "w") as f:
-    #     f.write("Benchmark,Number of Cores,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
-    #     for benchmark in benchmarks:
-    #         if benchmark.signature not in return_dict:
-    #             logger.error(f"Missing results for benchmark {benchmark.signature}")
-    #             continue
+    with open(output_path, "w") as f:
+        f.write("Benchmark,Number of Cores,Timestamp (cycles),Total OPs,L1 Memory Traffic (Bytes),Main Memory Traffic (Bytes),Performance (OPs/cycle),Arithmetic Intensity (OPs/Byte),L1 Bandwidth (Byte/cycle),Main Bandwidth (Byte/cycle),Total Bandwidth (Byte/cycle)\n")
+        for benchmark in benchmarks:
+            if benchmark.signature not in return_dict:
+                logger.error(f"Missing results for benchmark {benchmark.signature}")
+                continue
             
-    #         result = return_dict[benchmark.signature]
+            result = return_dict[benchmark.signature]
             
-    #         timestamp    = result["timestamp"]
-    #         total_ops    = result["total_ops"]
-    #         l1_traffic   = result["l1_traffic"]
-    #         main_traffic = result["main_traffic"]
-    #         n_cores      = result["n_cores"]
+            timestamp    = result["timestamp"]
+            total_ops    = result["total_ops"]
+            l1_traffic   = result["l1_traffic"]
+            main_traffic = result["main_traffic"]
+            n_cores      = result["n_cores"]
             
-    #         ops_per_cycle   = total_ops / timestamp
-    #         l1_bandwidth    = l1_traffic / timestamp
-    #         main_bandwidth  = main_traffic / timestamp
-    #         total_bandwidth = l1_bandwidth + main_bandwidth
-    #         arith_intensity = (total_ops / (main_traffic + l1_traffic)) if (main_traffic + l1_traffic) != 0 else 0
+            ops_per_cycle   = total_ops / timestamp
+            l1_bandwidth    = l1_traffic / timestamp
+            main_bandwidth  = main_traffic / timestamp
+            total_bandwidth = l1_bandwidth + main_bandwidth
+            arith_intensity = (total_ops / (main_traffic + l1_traffic)) if (main_traffic + l1_traffic) != 0 else 0
             
-    #         f.write(f"{benchmark.signature},{n_cores},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
+            f.write(f"{benchmark.signature},{n_cores},{timestamp},{total_ops},{l1_traffic},{main_traffic},{ops_per_cycle:.2f},{arith_intensity:.2f},{l1_bandwidth:.2f},{main_bandwidth:.2f},{total_bandwidth:.2f}\n")
     
-    # print(f"Benchmark results saved to '{output_path}'.")
+    print(f"Benchmark results saved to '{output_path}'.")
     
     if visualize is not None:
         global_context_config: GlobalContextConfig = config["global_config"]
@@ -537,7 +539,7 @@ if __name__ == "__main__":
         mxu_config: MXUConfig = config["mxu_config"]
         dramsim_config = global_context_config.main_mem_config.dramsim3_config
         booksim_config = icnt_config.booksim2_config
-        img_path = os.path.join(OUTPUT_DIR, f"{FILE_NAME}.png")
+        img_path = os.path.join(OUTPUT_DIR, f"exp1_1_validation_roofline.png")
         
         mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
         noc_bisection_bw = booksim_config.peak_bisection_bandwidth() / 1e9  # in GB/s

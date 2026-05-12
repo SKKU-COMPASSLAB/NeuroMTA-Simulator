@@ -40,10 +40,16 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
         l1_data_mem_space_size_per_core: int,
         spad_mem_space_size_per_core: int,
         
-        pipeline_granularity: int=8,
         broadcast_optimize_queue_depth: int=32,
+        broadcast_optimize_max_ref_cnt: int=8,
         operator_pipelining: bool=False,
         context_buffer_slot_num: int=4,
+        ld_ex_buffer_slot_num: int=16,
+        ex_st_buffer_slot_num: int=16,
+        concurrent_load_num: int=8,
+        temporal_reuse_type: MCA_OperatorGraphCompiler.CompileRecipe.ReuseType=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,
+        spatial_reuse_type: MCA_OperatorGraphCompiler.CompileRecipe.ReuseType=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,
+        greedy_temporal_reuse: bool=True,
         
         dtype: torch.dtype=torch.float16,
         acc_dtype: torch.dtype=torch.float16,
@@ -56,10 +62,16 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
             l1_data_mem_space_size_per_core, 
             spad_mem_space_size_per_core, 
             
-            pipeline_granularity, 
-            broadcast_optimize_queue_depth, 
-            operator_pipelining, 
-            context_buffer_slot_num
+            broadcast_optimize_queue_depth=broadcast_optimize_queue_depth,
+            broadcast_optimize_max_ref_cnt=broadcast_optimize_max_ref_cnt,
+            operator_pipelining=operator_pipelining,
+            context_buffer_slot_num=context_buffer_slot_num,
+            ld_ex_buffer_slot_num=ld_ex_buffer_slot_num,
+            ex_st_buffer_slot_num=ex_st_buffer_slot_num,
+            concurrent_load_num=concurrent_load_num,
+            temporal_reuse_type=temporal_reuse_type,
+            spatial_reuse_type=spatial_reuse_type,
+            greedy_temporal_reuse=greedy_temporal_reuse,
         )
         
         self.dtype = dtype
@@ -104,7 +116,7 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
-            max_n_cores=buf_sigs[-1].n_tiles
+            max_n_cores=sum([len(core_group.core_ids) for core_group in self.compiler_recipe.core_groups])
         )
         
     
@@ -166,7 +178,7 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
-            max_n_cores=buf_sigs[-1].n_tiles
+            max_n_cores=sum([len(core_group.core_ids) for core_group in self.compiler_recipe.core_groups])
         )
     
     @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
@@ -223,7 +235,7 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
-            max_n_cores=buf_sigs[-1].n_tiles
+            max_n_cores=sum([len(core_group.core_ids) for core_group in self.compiler_recipe.core_groups])
         )
         
     @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
@@ -272,7 +284,7 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=_total_ops / _total_buf_bytes,
-            max_n_cores=buf_sigs[-1].n_tiles
+            max_n_cores=sum([len(core_group.core_ids) for core_group in self.compiler_recipe.core_groups])
         )
         
     @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
@@ -323,7 +335,7 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
-            max_n_cores=buf_sigs[-1].n_tiles
+            max_n_cores=sum([len(core_group.core_ids) for core_group in self.compiler_recipe.core_groups])
         )
         
     @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
@@ -372,7 +384,7 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
-            max_n_cores=buf_sigs[-1].n_tiles
+            max_n_cores=sum([len(core_group.core_ids) for core_group in self.compiler_recipe.core_groups])
         )
         
     @MCA_CompiledNetworkGraph.NetworkRecipe.recipe
@@ -421,5 +433,5 @@ class MCA_NetworkRecipe(MCA_CompiledNetworkGraph.NetworkRecipe):
             buf_sigs=buf_sigs,
             op_kwargs=op_kwargs,
             arith_intensity=arith_intensity,
-            max_n_cores=buf_sigs[-1].n_tiles
+            max_n_cores=sum([len(core_group.core_ids) for core_group in self.compiler_recipe.core_groups])
         )

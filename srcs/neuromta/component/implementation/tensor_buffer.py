@@ -29,6 +29,7 @@ class MCA_TensorBuffer:
         shard_shape: Sequence[int] | str=AUTO,  # (shard_height, shard_width)
         
         blocked_mapping: bool=False,    # whether to use blocked mapping for height and width shards (only if the buffer is L1 memory and mem_ids are provided as MTA_CoreGrid)
+        contiguous_mapping: bool=False,   # whether to use contiguous mapping for shards (if False, shards will be mapped in a round-robin manner across mem_ids)
     ):
         # Tensor Information
         self._mem_space = mem_space
@@ -89,6 +90,7 @@ class MCA_TensorBuffer:
         self._blocked_mapping = blocked_mapping
         if self._blocked_mapping and not isinstance(self.owner_ids, MTA_CoreGrid):
             self._blocked_mapping = False  # fallback to non-blocked mapping if mem_ids is not MTA_CoreGrid
+        self._contiguous_mapping = contiguous_mapping
         
         self._shard_size = self._shard_y * self._shard_x * self._dtype.itemsize
         self._shard_ptrs: list[list[Pointer]] = [[
@@ -195,27 +197,39 @@ class MCA_TensorBuffer:
             if not isinstance(self.owner_ids, MTA_CoreGrid):
                 self._blocked_mapping = False
                 logger.warning(f"Unable to use blocked mapping: blocked mapping requires mem_ids to be of type MTA_CoreGrid.")
-            if self._n_y_shards % self.owner_ids.shape[0] != 0:
-                self._blocked_mapping = False
-                logger.warning(f"Unable to use blocked mapping: number of height shards {self._n_y_shards} is not divisible by core grid height {self.owner_ids.shape[0]}.")
-            if self._n_x_shards % self.owner_ids.shape[1] != 0:
-                self._blocked_mapping = False
-                logger.warning(f"Unable to use blocked mapping: number of width shards {self._n_x_shards} is not divisible by core grid width {self.owner_ids.shape[1]}.")
+            # if self._n_y_shards % self.owner_ids.shape[0] != 0:
+            #     self._blocked_mapping = False
+            #     logger.warning(f"Unable to use blocked mapping: number of height shards {self._n_y_shards} is not divisible by core grid height {self.owner_ids.shape[0]}.")
+            # if self._n_x_shards % self.owner_ids.shape[1] != 0:
+            #     self._blocked_mapping = False
+            #     logger.warning(f"Unable to use blocked mapping: number of width shards {self._n_x_shards} is not divisible by core grid width {self.owner_ids.shape[1]}.")
         
         if self._blocked_mapping:
-            h_block_size = self._n_y_shards // self.owner_ids.shape[0]
-            w_block_size = self._n_x_shards // self.owner_ids.shape[1]
+            # h_block_size = math.ceil(self._n_y_shards / self.owner_ids.shape[0])
+            # w_block_size = math.ceil(self._n_x_shards / self.owner_ids.shape[1])
             
             for h in range(self._n_y_shards):
                 for w in range(self._n_x_shards):
-                    core_grid_y = h // h_block_size
-                    core_grid_x = w // w_block_size
+                    core_grid_y = h % self.owner_ids.shape[0]
+                    core_grid_x = w % self.owner_ids.shape[1]
                     core_id = self.owner_ids.core_ids[core_grid_y * self.owner_ids.shape[1] + core_grid_x]
                     
                     ptr = self._mem_space.allocate(
                         core_id,
                         size=self._shard_size
                     )
+                    self._shard_ptrs[h][w] = ptr
+        elif self._contiguous_mapping:
+            shards_per_mem_id = math.ceil(self._n_y_shards * self._n_x_shards / len(self.owner_ids))
+            for h in range(self._n_y_shards):
+                for w in range(self._n_x_shards):
+                    mem_id_index = (h * self._n_x_shards + w) // shards_per_mem_id
+                    
+                    ptr = self._mem_space.allocate(
+                        self.owner_ids[mem_id_index],
+                        size=self._shard_size
+                    )
+                    
                     self._shard_ptrs[h][w] = ptr
         else:
             for h in range(self._n_y_shards):

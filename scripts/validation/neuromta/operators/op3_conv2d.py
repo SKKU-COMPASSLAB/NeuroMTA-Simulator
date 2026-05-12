@@ -47,15 +47,15 @@ if __name__ == "__main__":
     # N, H, W, C = 1, 14, 14, 256
     # FH, FW, K = 3, 3, 512
     # STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
-    # N, H, W, C = 1, 56, 56, 64
-    # FH, FW, K = 3, 3, 128
-    # STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
+    N, H, W, C = 1, 56, 56, 64
+    FH, FW, K = 3, 3, 64
+    STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
     # N, H, W, C = 1, 224, 224, 3
     # FH, FW, K = 11, 11, 96
     # STRIDE, PADDING, DILATION = (4, 4), (2, 2), (1, 1)
-    N, H, W, C = 1, 224, 224, 3
-    FH, FW, K = 7, 7, 64
-    STRIDE, PADDING, DILATION = (2, 2), (3, 3), (1, 1)
+    # N, H, W, C = 1, 224, 224, 3
+    # FH, FW, K = 7, 7, 64
+    # STRIDE, PADDING, DILATION = (2, 2), (3, 3), (1, 1)
     OH = (H + 2 * PADDING[0] - DILATION[0] * (FH - 1) - 1) // STRIDE[0] + 1
     OW = (W + 2 * PADDING[1] - DILATION[1] * (FW - 1) - 1) // STRIDE[1] + 1
     
@@ -92,13 +92,16 @@ if __name__ == "__main__":
         device=device,
         core_groups=[core_group],
         spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
-        broadcast_optimize_queue_depth=args.bcast_queue_depth,
+        broadcast_optimize_queue_depth=4,
+        broadcast_optimize_max_ref_cnt=16,
         context_buffer_slot_num=8,
-        ld_ex_buffer_slot_num=16,
-        ex_st_buffer_slot_num=16,
-        concurrent_load_num=8,
+        ld_ex_buffer_slot_num=8,
+        ex_st_buffer_slot_num=4,
+        concurrent_load_num=2,
         temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,       # ifm temporal reuse
         spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast
+        # temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_L1,       # ifm temporal reuse
+        # spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()

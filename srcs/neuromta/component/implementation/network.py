@@ -503,14 +503,14 @@ class NetworkGraphEntryCompileTarget:
                 return False
             return self.mem_space.mem_type == GlobalContextMemType.MAIN
         
-        @property
-        def n_tiles(self) -> int:
-            remaining_dims = functools.reduce(lambda x, y: x * y, self.shape[:-2], 1)
-            n_height_shards = self.shape[-2] // self.shard_shape[0]
-            n_width_shards = self.shape[-1] // self.shard_shape[1]
-            n_height_tiles_per_shard = (self.shard_shape[0] + self.tile_shape[0] - 1) // self.tile_shape[0]
-            n_width_tiles_per_shard = (self.shard_shape[1] + self.tile_shape[1] - 1) // self.tile_shape[1]
-            return remaining_dims * n_height_shards * n_width_shards * n_height_tiles_per_shard * n_width_tiles_per_shard
+        # @property
+        # def n_tiles(self) -> int:
+        #     remaining_dims = functools.reduce(lambda x, y: x * y, self.shape[:-2], 1)
+        #     n_height_shards = self.shape[-2] // self.shard_shape[0]
+        #     n_width_shards = self.shape[-1] // self.shard_shape[1]
+        #     n_height_tiles_per_shard = (self.shard_shape[0] + self.tile_shape[0] - 1) // self.tile_shape[0]
+        #     n_width_tiles_per_shard = (self.shard_shape[1] + self.tile_shape[1] - 1) // self.tile_shape[1]
+        #     return remaining_dims * n_height_shards * n_width_shards * n_height_tiles_per_shard * n_width_tiles_per_shard
         
         def compare_layout(self, other: 'NetworkGraphEntryCompileTarget.BufferSignature') -> bool:
             return self.shape == other.shape and self.dtype == other.dtype and self.shard_shape == other.shard_shape and self.blocked_mapping == other.blocked_mapping and self.tile_shape == other.tile_shape
@@ -666,10 +666,16 @@ class MCA_CompiledNetworkGraph:
             l1_data_mem_space_size_per_core: int,
             spad_mem_space_size_per_core: int,
             
-            pipeline_granularity: int=8,
             broadcast_optimize_queue_depth: int=32,
+            broadcast_optimize_max_ref_cnt: int=8,
             operator_pipelining: bool=False,
             context_buffer_slot_num: int=4,
+            ld_ex_buffer_slot_num: int=16,
+            ex_st_buffer_slot_num: int=16,
+            concurrent_load_num: int=8,
+            temporal_reuse_type: MCA_OperatorGraphCompiler.CompileRecipe.ReuseType=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,
+            spatial_reuse_type: MCA_OperatorGraphCompiler.CompileRecipe.ReuseType=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,
+            greedy_temporal_reuse: bool=True,
         ):
             self.main_data_mem_space_size_per_channel = main_data_mem_space_size_per_channel
             self.l1_data_mem_space_size_per_core = l1_data_mem_space_size_per_core
@@ -679,10 +685,16 @@ class MCA_CompiledNetworkGraph:
                 device=device,
                 core_groups=core_groups,
                 spad_space_size_per_core=spad_mem_space_size_per_core,
-                pipeline_granularity=pipeline_granularity,
                 broadcast_optimize_queue_depth=broadcast_optimize_queue_depth,
+                broadcast_optimize_max_ref_cnt=broadcast_optimize_max_ref_cnt,
                 operator_pipelining=operator_pipelining,
                 context_buffer_slot_num=context_buffer_slot_num,
+                ld_ex_buffer_slot_num=ld_ex_buffer_slot_num,
+                ex_st_buffer_slot_num=ex_st_buffer_slot_num,
+                concurrent_load_num=concurrent_load_num,
+                temporal_reuse_type=temporal_reuse_type,
+                spatial_reuse_type=spatial_reuse_type,
+                greedy_temporal_reuse=greedy_temporal_reuse,
             )
             
         def supports(self, module_type: type | str) -> bool:

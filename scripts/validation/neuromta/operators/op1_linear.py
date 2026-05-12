@@ -29,6 +29,8 @@ if __name__ == "__main__":
     parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
     parser.add_argument('--spad-size', type=str, default="1MB", help="The size of the scratchpad memory per core (e.g., '256KB')", dest="spad_size")
     parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
+    parser.add_argument('--save-profile', action="store_true", help="Whether to save profiler data to files", dest="save_profile")
+    parser.add_argument('--save-compile-summary', action="store_true", help="Whether to save compilation summary to files", dest="save_compile_summary")
     args = parser.parse_args()
     
     torch.set_printoptions(linewidth=1024)
@@ -40,9 +42,10 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = device.get_npu_core_group((0, 0), (4, 4))
+    core_group = device.get_npu_core_group((0, 0), (8, 8))
     
     M, N, K = 1024, 1024, 1024
+    # M, N, K = 256, 256, 256
     dtype = torch.int16
     acc_dtype = torch.int16
     
@@ -69,16 +72,30 @@ if __name__ == "__main__":
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
     
+    # global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
+    #     device=device,
+    #     core_groups=[core_group],
+    #     spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
+    #     broadcast_optimize_queue_depth=args.bcast_queue_depth,
+    #     context_buffer_slot_num=4,
+    #     ld_ex_buffer_slot_num=16,
+    #     ex_st_buffer_slot_num=16,
+    #     concurrent_load_num=8,
+    #     temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,     # weight/bias temporal reuse
+    #     spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
+    # )
+    
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=[core_group],
         spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
-        broadcast_optimize_queue_depth=args.bcast_queue_depth,
+        broadcast_optimize_queue_depth=8,
+        broadcast_optimize_max_ref_cnt=16,
         context_buffer_slot_num=4,
         ld_ex_buffer_slot_num=16,
-        ex_st_buffer_slot_num=16,
+        ex_st_buffer_slot_num=8,
         concurrent_load_num=8,
-        temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,     # weight/bias temporal reuse
+        temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,  # weight/bias temporal reuse
         spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
     )
     
@@ -89,22 +106,24 @@ if __name__ == "__main__":
     
     compiled_ops.dispatch()
     
-    for op_id, summary in compiled_ops.summary().items():
-        tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
-        with open(tmp_output_path, "w") as f:
-            json.dump(summary, f, indent=4)
-            logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
+    if args.save_compile_summary:
+        for op_id, summary in compiled_ops.summary().items():
+            tmp_output_path = os.path.join(SUMMARY_DIR, f"op_summary_{op_id}.json")
+            with open(tmp_output_path, "w") as f:
+                json.dump(summary, f, indent=4)
+                logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
     
-    profilers = [
-        DRAMBandwidthProfiler(device, record_type="BOTH"),
-        InterconnectBandwidthProfiler(device),
-        ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
-        ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
-        ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
-    ]
-    
-    profiler_saver = ProfilerFileSaverHub(output_dir=os.path.join(SUMMARY_DIR, "profiles"))
-    profiler_saver.add_profilers(*profilers)
+    if args.save_profile:
+        profilers = [
+            DRAMBandwidthProfiler(device, record_type="BOTH"),
+            InterconnectBandwidthProfiler(device),
+            ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
+            ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
+            ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
+        ]
+        
+        profiler_saver = ProfilerFileSaverHub(output_dir=os.path.join(SUMMARY_DIR, "profiles"))
+        profiler_saver.add_profilers(*profilers)
     
     if args.monitor:
         with MonitoringWindow(device, core_group) as monitor:
@@ -115,11 +134,12 @@ if __name__ == "__main__":
         st = time.time()
         device.run_kernels(max_timestamp=args.max_timestamp)
         ed = time.time()
-        
-    profiler_saver.close()
     
-    for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
-        logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
+    if args.save_profile:
+        profiler_saver.close()
+    
+        for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
+            logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
         
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

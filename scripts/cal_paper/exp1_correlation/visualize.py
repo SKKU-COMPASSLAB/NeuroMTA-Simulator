@@ -4,6 +4,7 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.colors as mcolors
+from matplotlib.lines import Line2D
 
 PEAK_PERFORMANCE   = 2 * (4 * 4) * (32 * 32)  # 4x4 Core Grid | 32x32 MXU | MAC = 2 OPs 
 PEAK_BANDWIDTH = 387.88  # theoretical peak bandwidth in GB/cycle
@@ -75,7 +76,7 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
             for n_cores in n_cores_list
         }
 
-    plt.figure(figsize=(7, 5))
+    plt.figure(figsize=(8, 4))
 
     n_cores_to_color = {
         n_cores: CORE_COLOR_SCHEME[i % len(CORE_COLOR_SCHEME)]
@@ -84,6 +85,7 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
 
     y_min_candidates = []
     y_max_candidates = []
+    roofline_handles = []
 
     for n_cores in n_cores_list:
         peak_perf = n_cores_to_peak_perf[n_cores]
@@ -94,22 +96,23 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
         noc_roofline = np.minimum(noc_bw_limit, compute_limit)
 
         color = n_cores_to_color[n_cores]
-        plt.loglog(
+        mem_line = plt.loglog(
             ai_x,
             mem_roofline,
             color=color,
             linewidth=0.9,
             linestyle='-',
             label=f'{n_cores} Cores Mem Roofline'
-        )
-        plt.loglog(
+        )[0]
+        noc_line = plt.loglog(
             ai_x,
             noc_roofline,
             color=color,
             linewidth=0.9,
             linestyle='--',
             label=f'{n_cores} Cores NoC Roofline'
-        )
+        )[0]
+        roofline_handles.extend([mem_line, noc_line])
 
         mem_ai_balance = peak_perf / peak_mem_bw
         plt.vlines(mem_ai_balance, mem_roofline.min() * 0.1, peak_perf, color=color, linestyle=':', alpha=0.8)
@@ -148,11 +151,10 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
             data['PERF'], 
             marker=marker, 
             color=color, 
-            markersize=6, 
+            markersize=10, 
             mec='black',
-            linestyle='', 
-            label=rename_benchmark(name)
-        )
+            linestyle='')
+        
 
     # Final plot adjustments
     # plt.title(img_title, fontsize=11)
@@ -163,8 +165,23 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
     plt.xlim(ai_x.min(), ai_x.max())
     plt.ylim(min(y_min_candidates) * 0.1, max(y_max_candidates) * 2.5)
 
-    plt.legend(loc='lower right', fontsize=6.4)
-    plt.tight_layout(pad=0.5)
+    # Build compact legend: one entry per core count using the darkest shade as marker
+    core_handles = []
+    core_labels = []
+    for n_cores in n_cores_list:
+        names = workloads_by_core.get(n_cores, [])
+        base_color = n_cores_to_color[n_cores]
+        darkest = _shade_from_base_color(base_color, 0, len(names) if names else 1)
+        handle = Line2D([0], [0], marker='o', color='w', markerfacecolor=darkest, markeredgecolor='black', markersize=10, linestyle='')
+        core_handles.append(handle)
+        core_labels.append(f"{n_cores} Cores")
+
+    ax = plt.gca()
+    # Combine roofline handles (per-core mem/NoC lines) with core-count marker handles into one legend
+    combined_handles = roofline_handles + core_handles
+    combined_labels = [h.get_label() for h in roofline_handles] + core_labels
+    ax.legend(handles=combined_handles, labels=combined_labels, loc='lower right', fontsize=11)
+    plt.tight_layout(pad=0.1)
     plt.savefig(img_path, dpi=500)
     
     print(f"Roofline graph saved to '{img_path}'")
