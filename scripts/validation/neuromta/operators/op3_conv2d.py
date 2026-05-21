@@ -20,13 +20,13 @@ os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Validate OP3 Conv2D operator on Tenstorrent hardware.")
+    parser = argparse.ArgumentParser(description="Validate OP1 Linear operator on Tenstorrent hardware.")
     parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
     parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
-    parser.add_argument('--bcast-queue-depth', type=int, default=32, help="The depth of the broadcast queue", dest="bcast_queue_depth")
-    parser.add_argument('--spad-size', type=str, default="1MB", help="The size of the scratchpad memory per core (e.g., '256KB')", dest="spad_size")
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
     parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
+    parser.add_argument('--save-profile', action="store_true", help="Whether to save profiler data to files", dest="save_profile")
+    parser.add_argument('--save-compile-summary', action="store_true", help="Whether to save compilation summary to files", dest="save_compile_summary")
     args = parser.parse_args()
 
     torch.set_printoptions(profile="full", linewidth=2048)
@@ -47,12 +47,12 @@ if __name__ == "__main__":
     # N, H, W, C = 1, 14, 14, 256
     # FH, FW, K = 3, 3, 512
     # STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
-    N, H, W, C = 1, 56, 56, 64
-    FH, FW, K = 3, 3, 64
-    STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
-    # N, H, W, C = 1, 224, 224, 3
-    # FH, FW, K = 11, 11, 96
-    # STRIDE, PADDING, DILATION = (4, 4), (2, 2), (1, 1)
+    # N, H, W, C = 1, 56, 56, 64
+    # FH, FW, K = 3, 3, 64
+    # STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
+    N, H, W, C = 1, 224, 224, 3
+    FH, FW, K = 11, 11, 96
+    STRIDE, PADDING, DILATION = (4, 4), (2, 2), (1, 1)
     # N, H, W, C = 1, 224, 224, 3
     # FH, FW, K = 7, 7, 64
     # STRIDE, PADDING, DILATION = (2, 2), (3, 3), (1, 1)
@@ -75,10 +75,10 @@ if __name__ == "__main__":
     l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
-    ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype).allocate().update(ifm)
+    ifm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype).allocate().update(ifm)
     wgt_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=wgt.shape,  dtype=wgt.dtype).allocate().update(wgt)
     bias_b = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=bias.shape, dtype=bias.dtype).allocate().update(bias)
-    ofm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype).allocate()
+    ofm_b  = MCA_TensorBuffer(mem_space=main_data_mem_space, shape=ofm.shape,  dtype=ofm.dtype).allocate()
     
     operator = MCA_OP_CONV2D(
         ifm_b, wgt_b, bias_b, ofm_b, 
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=[core_group],
-        spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
+        spad_space_size_per_core=parse_mem_cap_str("1MB"),
         broadcast_optimize_queue_depth=4,
         broadcast_optimize_max_ref_cnt=16,
         context_buffer_slot_num=8,
@@ -112,16 +112,17 @@ if __name__ == "__main__":
             json.dump(summary, f, indent=4)
             logger.info(f"Mapping summary saved to '{tmp_output_path}'.")
     
-    profilers = [
-        DRAMBandwidthProfiler(device, record_type="BOTH"),
-        InterconnectBandwidthProfiler(device),
-        ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
-        ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
-        ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
-    ]
-    
-    profiler_saver = ProfilerFileSaverHub(output_dir=os.path.join(SUMMARY_DIR, "profiles"))
-    profiler_saver.add_profilers(*profilers)
+    if args.save_profile:
+        profilers = [
+            DRAMBandwidthProfiler(device, record_type="BOTH"),
+            InterconnectBandwidthProfiler(device),
+            ThreadUtilizationProfiler(device, core_group, slot_id="LD"),
+            ThreadUtilizationProfiler(device, core_group, slot_id="EX"),
+            ThreadUtilizationProfiler(device, core_group, slot_id="ST"),
+        ]
+        
+        profiler_saver = ProfilerFileSaverHub(output_dir=os.path.join(SUMMARY_DIR, "profiles"))
+        profiler_saver.add_profilers(*profilers)
     
     if args.monitor:
         with MonitoringWindow(device, core_group) as monitor:
@@ -132,8 +133,9 @@ if __name__ == "__main__":
         st = time.time()
         device.run_kernels(max_timestamp=args.max_timestamp)
         ed = time.time()
-        
-    profiler_saver.close()
+    
+    if args.save_profile:
+        profiler_saver.close()
     
     for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
         logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
@@ -155,8 +157,6 @@ if __name__ == "__main__":
         dilation=DILATION
     ).permute(0, 2, 3, 1)
     
-    # print(f"simulated:\n{simulated}")
-    # print(f"reference:\n{reference}")
     total_elements = ofm.numel()
     num_mismatches = (simulated != reference).sum().item()
     print(f"total elements: {total_elements}, mismatches: {num_mismatches}")

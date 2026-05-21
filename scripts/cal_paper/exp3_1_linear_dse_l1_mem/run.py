@@ -55,7 +55,7 @@ class LinearBenchmark(Benchmark):
         self.core_group_offset = (0, 0)
         self.core_group_shape = (8, 8)  # 64 cores
         
-        self.M = 1024
+        self.M = 256
         self.N = 1024
         self.K = 1024
         
@@ -137,12 +137,12 @@ class LinearBenchmark(Benchmark):
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
                 broadcast_optimize_queue_depth=self.bcast_optimize_queue_depth,
-                broadcast_optimize_max_ref_cnt=16,
+                broadcast_optimize_max_ref_cnt=4,
                 context_buffer_slot_num=_context_buffer_slot_num,  # no context switching
                 ld_ex_buffer_slot_num=self.ld_ex_buffer_slot_num,
                 ex_st_buffer_slot_num=self.ex_st_buffer_slot_num,
-                concurrent_load_num=8,
-                temporal_reuse_type="ALL_MAIN",
+                concurrent_load_num=1,
+                temporal_reuse_type="ALL",
                 spatial_reuse_type="SINGLE_MAIN",
             )
             
@@ -253,26 +253,6 @@ class BenchmarkProcess(mp.Process):
         self.worker_sem.release()
         logger.info(f"process finished for {self.benchmark.signature}")
 
-# total_n_slots = 512
-# ld_ex_st_buffer_slot_nums   = [3, 6, 12, 24, 48, 96, 192, 384]
-
-# def bcast_queue_depth(ld_ex_st_buffer_slot_num: int) -> int:
-#     if ld_ex_st_buffer_slot_num > 48:
-#         return 16
-#     return (ld_ex_st_buffer_slot_num // 3) * 2
-
-# def cache_slot_num(ld_ex_st_buffer_slot_num: int) -> int:
-#     return total_n_slots - ld_ex_st_buffer_slot_num - bcast_queue_depth(ld_ex_st_buffer_slot_num)
-
-# benchmarks = [
-#     LinearBenchmark(
-#         ld_ex_st_buffer_slot_num=ld_ex_st_buffer_slot_num, 
-#         bcast_optimize_queue_depth=bcast_queue_depth(ld_ex_st_buffer_slot_num), 
-#         cache_slot_num=cache_slot_num(ld_ex_st_buffer_slot_num)
-#     )
-#     for ld_ex_st_buffer_slot_num in ld_ex_st_buffer_slot_nums
-# ]
-
 cache_buffer_slot_nums = [1, 2, 4, 8, 16, 32, 64, 128, 256]
 
 benchmarks = [
@@ -303,34 +283,34 @@ if __name__ == "__main__":
     n_workers = min(args.n_workers, len(benchmarks))
     worker_sem = mp.Semaphore(n_workers)
     
-    # processes: list[BenchmarkProcess] = []
-    # for benchmark in benchmarks:
-    #     p = BenchmarkProcess(benchmark, config, return_dict, worker_sem)
-    #     p.start()
-    #     processes.append(p)
+    processes: list[BenchmarkProcess] = []
+    for benchmark in benchmarks:
+        p = BenchmarkProcess(benchmark, config, return_dict, worker_sem)
+        p.start()
+        processes.append(p)
         
-    # for p in processes:
-    #     p.join()
+    for p in processes:
+        p.join()
     
-    # with open(output_path, "w") as f:
-    #     f.write("Benchmark,Number of Cores,Timestamp (cycles),LD/EX Buffer Size (KB),EX/ST Buffer Size (KB),Broadcast Buffer Size (KB),Cache Buffer Size (KB)\n")
-    #     for benchmark in benchmarks:
-    #         if benchmark.signature not in return_dict:
-    #             logger.error(f"Missing results for benchmark {benchmark.signature}")
-    #             continue
+    with open(output_path, "w") as f:
+        f.write("Benchmark,Number of Cores,Timestamp (cycles),LD/EX Buffer Size (KB),EX/ST Buffer Size (KB),Broadcast Buffer Size (KB),Cache Buffer Size (KB)\n")
+        for benchmark in benchmarks:
+            if benchmark.signature not in return_dict:
+                logger.error(f"Missing results for benchmark {benchmark.signature}")
+                continue
             
-    #         result = return_dict[benchmark.signature]
+            result = return_dict[benchmark.signature]
             
-    #         timestamp    = result["timestamp"]
-    #         n_cores      = result["n_cores"]
-    #         ld_ex_buffer_size = result["ld_ex_buffer_size"]
-    #         ex_st_buffer_size = result["ex_st_buffer_size"]
-    #         bcast_buffer_size = result["bcast_buffer_size"]
-    #         cache_buffer_size = result["cache_buffer_size"]
+            timestamp    = result["timestamp"]
+            n_cores      = result["n_cores"]
+            ld_ex_buffer_size = result["ld_ex_buffer_size"]
+            ex_st_buffer_size = result["ex_st_buffer_size"]
+            bcast_buffer_size = result["bcast_buffer_size"]
+            cache_buffer_size = result["cache_buffer_size"]
 
-    #         f.write(f"{benchmark.signature},{n_cores},{timestamp},{ld_ex_buffer_size},{ex_st_buffer_size},{bcast_buffer_size},{cache_buffer_size}\n")
+            f.write(f"{benchmark.signature},{n_cores},{timestamp},{ld_ex_buffer_size},{ex_st_buffer_size},{bcast_buffer_size},{cache_buffer_size}\n")
 
-    # print(f"Benchmark results saved to '{output_path}'.")
+    print(f"Benchmark results saved to '{output_path}'.")
     
     if visualize is not None:
         global_context_config: GlobalContextConfig = config["global_config"]

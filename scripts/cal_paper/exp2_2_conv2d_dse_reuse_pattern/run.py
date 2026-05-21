@@ -114,7 +114,7 @@ class Conv2dBenchmark(Benchmark):
             return False
         
         _l1_total_per_core     = parse_mem_cap_str("1.5MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
-        _spad_size_per_core    = parse_mem_cap_str("1MB")
+        _spad_size_per_core    = parse_mem_cap_str("512KB")
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
         logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
@@ -152,11 +152,11 @@ class Conv2dBenchmark(Benchmark):
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
                 broadcast_optimize_queue_depth=8,
-                broadcast_optimize_max_ref_cnt=16,
-                context_buffer_slot_num=8,
+                broadcast_optimize_max_ref_cnt=4,
+                context_buffer_slot_num=16,
                 ld_ex_buffer_slot_num=16,
                 ex_st_buffer_slot_num=8,
-                concurrent_load_num=2,
+                concurrent_load_num=1,
                 temporal_reuse_type=self.temporal_reuse_type,
                 spatial_reuse_type=self.spatial_reuse_type,
                 greedy_temporal_reuse=False,        # turn off greedy temporal reuse to strictly follow the specified temporal reuse type

@@ -71,6 +71,8 @@ class VariableHandle:
                 del self._value_conditional_action_methods[signature]
 
     def atomic_update(self, value: int):
+        if isinstance(value, VariableHandle):
+            value = value.value
         self._value = value
         self._run_actions()
     

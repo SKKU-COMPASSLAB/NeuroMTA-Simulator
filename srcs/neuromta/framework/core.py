@@ -771,6 +771,10 @@ class Core:
 
         self._timestamp = 0
         
+        # ticket lock for local memory read/write operations, ensuring mutual exclusion
+        self._mem_handle_curr_lock   = VariableHandle(f"core_{core_id}_mem_handle_lock",   initial_value=0)  # binary lock for memory handle access
+        self._mem_handle_curr_ticket = VariableHandle(f"core_{core_id}_mem_handle_ticket", initial_value=0)  # ticket for memory handle access
+        
     def set_mem_handle(self, mem_handle):
         self.mem_handle = mem_handle
 
@@ -1178,6 +1182,10 @@ class Core:
         
     @core_command_method
     def local_mem_init(self, ptr: Pointer, size: int, init_data: torch.Tensor=None):
+        tmp_lock = VariableHandle.tmp(initial_value=0)
+        self.var_atomic_copy_and_increment(tmp_lock, self._mem_handle_curr_ticket, 1)
+        self.var_conditional_wait(self._mem_handle_curr_lock, self._mem_handle_curr_lock.equals_to(tmp_lock))
+        
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_init' method.")
         
@@ -1186,8 +1194,14 @@ class Core:
         
         self.mem_handle.set_data(ptr, size=size, data=init_data)
         
+        self.var_atomic_increase(self._mem_handle_curr_lock, 1)
+        
     @core_command_method
     def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
+        tmp_lock = VariableHandle.tmp(initial_value=0)
+        self.var_atomic_copy_and_increment(tmp_lock, self._mem_handle_curr_ticket, 1)
+        self.var_conditional_wait(self._mem_handle_curr_lock, self._mem_handle_curr_lock.equals_to(tmp_lock))
+        
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_read' method.")
         
@@ -1218,17 +1232,22 @@ class Core:
 
             if cont_row_zero_pad > 0 and row_num > 0:
                 container.data[:row_num, zero_slice] = 0
-            return
+        else:
+            for d, s in row_pattern.items():
+                src_data = self.mem_handle.get_data(base_ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
+                container.data[d, row_slice] = src_data
 
-        for d, s in row_pattern.items():
-            src_data = self.mem_handle.get_data(base_ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
-            container.data[d, row_slice] = src_data
-
-            if cont_row_zero_pad > 0:
-                container.data[d, zero_slice] = 0
+                if cont_row_zero_pad > 0:
+                    container.data[d, zero_slice] = 0
+                    
+        self.var_atomic_increase(self._mem_handle_curr_lock, 1)
         
     @core_command_method
     def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
+        tmp_lock = VariableHandle.tmp(initial_value=0)
+        self.var_atomic_copy_and_increment(tmp_lock, self._mem_handle_curr_ticket, 1)
+        self.var_conditional_wait(self._mem_handle_curr_lock, self._mem_handle_curr_lock.equals_to(tmp_lock))
+        
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_write' method.")
 
@@ -1253,56 +1272,12 @@ class Core:
                 for r in range(row_num):
                     dst_data = cont_data[r, row_slice]
                     self.mem_handle.set_data(base_ptr + (r * mem_row_stride), size=row_size, data=dst_data)
-            return
-
-        for d, s in row_pattern.items():
-            dst_data = cont_data[d, row_slice]
-            self.mem_handle.set_data(base_ptr + (s * mem_row_stride), size=row_size, data=dst_data)
-    
-    # @core_command_method
-    # def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
-    #     if not self.check_ptr_belonging(ptr):
-    #         raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_read' method.")
-        
-    #     if mem_row_stride is None:
-    #         mem_row_stride = row_size
-    #     if cont_row_stride is None:
-    #         cont_row_stride = row_size
-    #     if row_pattern is None:
-    #         row_pattern = {i: i for i in range(row_num)}
-            
-    #     if container.is_mem_segment:
-    #         container.data = container.data.flatten().view(torch.uint8).reshape(-1, cont_row_stride)
-    #     else:
-    #         container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
-        
-    #     for d, s in row_pattern.items():
-    #         src_data = self.mem_handle.get_data(ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
-    #         container.data[d, cont_row_offset:cont_row_offset+row_size] = src_data
-            
-    #         if cont_row_zero_pad > 0:
-    #             container.data[d, cont_row_offset+row_size:cont_row_offset+row_size+cont_row_zero_pad] = 0
-        
-    # @core_command_method
-    # def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
-    #     if not self.check_ptr_belonging(ptr):
-    #         raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_write' method.")
-
-    #     if mem_row_stride is None:
-    #         mem_row_stride = row_size
-    #     if cont_row_stride is None:
-    #         cont_row_stride = row_size
-    #     if row_pattern is None:
-    #         row_pattern = {i: i for i in range(row_num)}
-
-    #     if not container.is_mem_segment:
-    #         raise ValueError("container.data must be a Tensor for local_mem_page_write.")
-
-    #     cont_data = container.data.flatten().view(torch.uint8)[:row_num * cont_row_stride].reshape(row_num, cont_row_stride)
-        
-    #     for d, s in row_pattern.items():
-    #         dst_data = cont_data[d, cont_row_offset:cont_row_offset+row_size]
-    #         self.mem_handle.set_data(ptr + (s * mem_row_stride), size=row_size, data=dst_data)
+        else:
+            for d, s in row_pattern.items():
+                dst_data = cont_data[d, row_slice]
+                self.mem_handle.set_data(base_ptr + (s * mem_row_stride), size=row_size, data=dst_data)
+                
+        self.var_atomic_increase(self._mem_handle_curr_lock, 1)
 
     ###########################################################################
     # Static Memory Space Management
@@ -1345,6 +1320,13 @@ class Core:
         context = get_global_kernel_context()
         context.set_blocked(self, True)
         var.atomic_compare_and_swap(cmp_value, new_value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+        
+    @core_command_method
+    def var_atomic_copy_and_increment(self, dst: VariableHandle, src: VariableHandle, increment: int=1) -> int:
+        context = get_global_kernel_context()
+        context.set_blocked(self, True)
+        dst.atomic_update(src.value)  # copy
+        src.atomic_increase(increment, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
         
     @core_command_method
     def var_conditional_wait(self, var: VariableHandle, condition: 'VariableHandle.ActionCondition'):

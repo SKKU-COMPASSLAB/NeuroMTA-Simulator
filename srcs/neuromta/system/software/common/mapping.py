@@ -130,9 +130,6 @@ def MCA_MAPPER_CONV2D(
     OH = (H + 2 * padding[0] - dilation[0] * (FH - 1) - 1) // stride[0] + 1
     OW = (W + 2 * padding[1] - dilation[1] * (FW - 1) - 1) // stride[1] + 1
     
-    # if is_conv2d:
-    #     print(ifm.shape, wgt.shape)
-    
     if is_conv2d:
         if C != ifm.shape[3]:
             raise Exception(f"Input channel mismatch between IFM and WGT: {ifm.shape[3]} != {C}")

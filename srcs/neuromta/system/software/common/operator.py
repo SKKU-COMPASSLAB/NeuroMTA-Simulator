@@ -18,6 +18,8 @@ __all__ = [
     "MCA_OP_CONV2D",
     "MCA_OP_MAXPOOL2D",
     "MCA_OP_AVGPOOL2D",
+    "MCA_OP_ADAPTIVE_MAXPOOL2D",
+    "MCA_OP_ADAPTIVE_AVGPOOL2D",
 ]
 
 
@@ -171,6 +173,76 @@ def MCA_OP_AVGPOOL2D(
         op_type="AVGPOOL2D",
         kernel_template=common_kernel_lib.MCA_KERNEL_TILED_AVGPOOL2D(),
     )
+    
+    m_tile = ifm.mem_space.device.mxu_config.m_tile
+    n_tile = ofm.mem_space.device.mxu_config.n_tile
+    
+    op_sig.add_buffer("ifm",  ifm.tiling((m_tile, n_tile)),  is_input=True)
+    op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
+    
+    op_sig.global_kwargs["window"] = (window, window) if isinstance(window, int) else window
+    op_sig.global_kwargs["stride"] = (stride, stride) if isinstance(stride, int) else stride
+    op_sig.global_kwargs["padding"] = (padding, padding) if isinstance(padding, int) else padding
+    op_sig.global_kwargs["dilation"] = (dilation, dilation) if isinstance(dilation, int) else dilation
+    
+    return common_mapping_lib.MCA_MAPPER_CONV2D(
+        op_sig,
+        is_conv2d=False,
+    )
+    
+
+@mca_operator_method
+def MCA_OP_ADAPTIVE_MAXPOOL2D(
+    ifm:  MCA_TensorBuffer,
+    ofm:  MCA_TensorBuffer,
+) -> MCA_OperatorSignature:
+    op_sig = MCA_OperatorSignature(
+        op_type="ADAPTIVE_MAXPOOL2D",
+        kernel_template=common_kernel_lib.MCA_KERNEL_TILED_MAXPOOL2D(),
+    )
+    
+    N, H, W, C = ifm.shape
+    N, OH, OW, C = ofm.shape
+    
+    window = (H // OH, W // OW)
+    stride = window
+    padding = (0, 0)
+    dilation = (1, 1)
+    
+    m_tile = ifm.mem_space.device.mxu_config.m_tile
+    n_tile = ofm.mem_space.device.mxu_config.n_tile
+    
+    op_sig.add_buffer("ifm",  ifm.tiling((m_tile, n_tile)),  is_input=True)
+    op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
+    
+    op_sig.global_kwargs["window"] = (window, window) if isinstance(window, int) else window
+    op_sig.global_kwargs["stride"] = (stride, stride) if isinstance(stride, int) else stride
+    op_sig.global_kwargs["padding"] = (padding, padding) if isinstance(padding, int) else padding
+    op_sig.global_kwargs["dilation"] = (dilation, dilation) if isinstance(dilation, int) else dilation
+    
+    return common_mapping_lib.MCA_MAPPER_CONV2D(
+        op_sig,
+        is_conv2d=False,
+    )
+    
+    
+@mca_operator_method
+def MCA_OP_ADAPTIVE_AVGPOOL2D(
+    ifm:  MCA_TensorBuffer,
+    ofm:  MCA_TensorBuffer,
+) -> MCA_OperatorSignature:
+    op_sig = MCA_OperatorSignature(
+        op_type="ADAPTIVE_AVGPOOL2D",
+        kernel_template=common_kernel_lib.MCA_KERNEL_TILED_AVGPOOL2D(),
+    )
+    
+    N, H, W, C = ifm.shape
+    N, OH, OW, C = ofm.shape
+    
+    window = (H // OH, W // OW)
+    stride = window
+    padding = (0, 0)
+    dilation = (1, 1)
     
     m_tile = ifm.mem_space.device.mxu_config.m_tile
     n_tile = ofm.mem_space.device.mxu_config.n_tile

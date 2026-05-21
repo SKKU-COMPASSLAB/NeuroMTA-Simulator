@@ -103,7 +103,7 @@ class LinearBenchmark(Benchmark):
             return False
         
         _l1_total_per_core     = parse_mem_cap_str("1.5MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
-        _spad_size_per_core    = parse_mem_cap_str("1MB")
+        _spad_size_per_core    = parse_mem_cap_str("512KB")
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
         logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
@@ -138,12 +138,12 @@ class LinearBenchmark(Benchmark):
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
                 broadcast_optimize_queue_depth=8,
-                broadcast_optimize_max_ref_cnt=16,
-                context_buffer_slot_num=4,
+                broadcast_optimize_max_ref_cnt=4,
+                context_buffer_slot_num=16,
                 ld_ex_buffer_slot_num=16,
                 ex_st_buffer_slot_num=8,
-                concurrent_load_num=8,
-                temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,  # weight/bias temporal reuse
+                concurrent_load_num=1,
+                temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,  # weight/bias temporal reuse
                 spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
             )
             
@@ -296,7 +296,7 @@ class Conv2dBenchmark(Benchmark):
             return False
         
         _l1_total_per_core     = parse_mem_cap_str("1.5MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
-        _spad_size_per_core    = parse_mem_cap_str("1MB")
+        _spad_size_per_core    = parse_mem_cap_str("512KB")
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
         logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
@@ -334,11 +334,11 @@ class Conv2dBenchmark(Benchmark):
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
                 broadcast_optimize_queue_depth=8,
-                broadcast_optimize_max_ref_cnt=16,
-                context_buffer_slot_num=8,
+                broadcast_optimize_max_ref_cnt=4,
+                context_buffer_slot_num=16,
                 ld_ex_buffer_slot_num=16,
                 ex_st_buffer_slot_num=8,
-                concurrent_load_num=2,
+                concurrent_load_num=1,
                 temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,    # ifm temporal reuse
                 spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast
             )
@@ -469,15 +469,15 @@ benchmarks = [
     Conv2dBenchmark((0, 0), (12, 14), N=1, H=7,   W=7,   C=512, FH=3,  FW=3,  K=512, stride=(1, 1), padding=(1, 1), dilation=(1, 1), dtype=torch.int16, acc_dtype=torch.int16),
     
     # Benchmarks: Square Matrices with Varying Sizes
-    LinearBenchmark((0, 0), (8, 8), M=1024, N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    LinearBenchmark((0, 0), (8, 8), M=512,  N=512,  K=512,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     LinearBenchmark((0, 0), (8, 8), M=256,  N=256,  K=256,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     LinearBenchmark((0, 0), (4, 4), M=128,  N=128,  K=128,  dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
-    
-    # Benchmarks: Rectangular Matrices with Skewed Dimensions (Arithmetic Intensity Variation)
     LinearBenchmark((0, 0), (8, 8), M=512,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     LinearBenchmark((0, 0), (8, 8), M=256,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
     LinearBenchmark((0, 0), (8, 4), M=128,  N=1024, K=1024, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (8, 8), M=256,  N=2048, K=2048, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (8, 8), M=128,  N=2048, K=2048, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (8, 8), M=256,  N=4096, K=4096, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
+    LinearBenchmark((0, 0), (8, 8), M=128,  N=4096, K=4096, dtype=torch.bfloat16, acc_dtype=torch.bfloat16),
 ]
 
 if __name__ == "__main__":

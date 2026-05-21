@@ -68,9 +68,12 @@ def parse_args() -> argparse.Namespace:
         help="Whether to show real-time monitoring window during simulation.",
         dest="monitor",
     )
-    parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
-    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
-    parser.add_argument('--pipeline-gran', type=int, default=8, help="The number of micro-operations per pipeline stage", dest="pipeline_gran")
+    parser.add_argument(
+        '--report-mismatch', 
+        action="store_true", 
+        help="Whether to generate mismatch report when validation fails", 
+        dest="report_mismatch"
+    )
     return parser.parse_args()
 
 
@@ -106,8 +109,7 @@ if __name__ == "__main__":
             cmd.append("--monitor")
         if args.report_mismatch:
             cmd.append("--report-mismatch")
-        cmd.extend(["--bcast-queue-depth", str(args.bcast_queue_depth)])
-        cmd.extend(["--pipeline-gran", str(args.pipeline_gran)])
+        cmd.append("--save-profile")
 
         tasks.append(
             {

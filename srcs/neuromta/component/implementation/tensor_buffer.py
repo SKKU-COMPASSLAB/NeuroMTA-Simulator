@@ -2,6 +2,7 @@ import math
 import torch
 import functools
 from typing import Sequence
+from collections import defaultdict
 
 from neuromta.framework import *
 from neuromta.component.context.global_context import *
@@ -36,33 +37,7 @@ class MCA_TensorBuffer:
         self._shape = shape if len(shape) >= 2 else (1, *shape)
         self._dtype = dtype
         
-        # Sharding Factors
-        if isinstance(shard_shape, str):
-            if shard_shape not in [self.AUTO, self.AUTO_IFM, self.AUTO_OFM, self.AUTO_WGT]:
-                raise ValueError(f"Invalid auto shard shape mode: {shard_shape}. Supported modes are: {self.AUTO}, {self.AUTO_IFM}, {self.AUTO_OFM}, {self.AUTO_WGT}.")
-            
-            if shard_shape == self.AUTO:
-                mxu_tile_shape = self._mem_space.device.mxu_ifm_tile_shape
-                if not (mxu_tile_shape == self._mem_space.device.mxu_ofm_tile_shape == self._mem_space.device.mxu_wgt_tile_shape):
-                    raise Exception("Automatic shard shape is only supported when all MXU tile shapes are the same. Please specify shard_shape manually or use a specific auto mode.")
-            elif shard_shape == self.AUTO_IFM:
-                mxu_tile_shape = self._mem_space.device.mxu_ifm_tile_shape
-            elif shard_shape == self.AUTO_OFM:
-                mxu_tile_shape = self._mem_space.device.mxu_ofm_tile_shape
-            elif shard_shape == self.AUTO_WGT:
-                mxu_tile_shape = self._mem_space.device.mxu_wgt_tile_shape
-                
-            shard_shape = (
-                self._find_smallest_divisor_above(self._shape[-2], mxu_tile_shape[-2]) if self._shape[-2] >= mxu_tile_shape[-2] else self._shape[-2],
-                self._find_smallest_divisor_above(self._shape[-1], mxu_tile_shape[-1]) if self._shape[-1] >= mxu_tile_shape[-1] else self._shape[-1],
-            )
-        
-        if isinstance(shard_shape, int):
-            shard_shape = (shard_shape, shard_shape)
-        elif len(shard_shape) != 2:
-            raise ValueError("shard_shape must be a sequence of two integers: (shard_height, shard_width).")
-        else:
-            shard_shape = tuple(shard_shape)
+        shard_shape = self._get_shard_shape(mem_space, self._shape, shard_shape)
         
         self._shard_y = shard_shape[0]
         self._shard_x = shard_shape[1]
@@ -100,6 +75,87 @@ class MCA_TensorBuffer:
         
         self._is_allocated = False
     
+    @staticmethod
+    def _get_shard_shape(mem_space: MCA_MemorySpace, shape: Sequence[int], shard_shape: Sequence[int] | str) -> tuple[int, int]:
+        # Sharding Factors
+        if isinstance(shard_shape, str):
+            if shard_shape not in [MCA_TensorBuffer.AUTO, MCA_TensorBuffer.AUTO_IFM, MCA_TensorBuffer.AUTO_OFM, MCA_TensorBuffer.AUTO_WGT]:
+                raise ValueError(f"Invalid auto shard shape mode: {shard_shape}. Supported modes are: {MCA_TensorBuffer.AUTO}, {MCA_TensorBuffer.AUTO_IFM}, {MCA_TensorBuffer.AUTO_OFM}, {MCA_TensorBuffer.AUTO_WGT}.")
+            
+            if shard_shape == MCA_TensorBuffer.AUTO:
+                mxu_tile_shape = mem_space.device.mxu_ifm_tile_shape
+                if not (mxu_tile_shape == mem_space.device.mxu_ofm_tile_shape == mem_space.device.mxu_wgt_tile_shape):
+                    raise Exception("Automatic shard shape is only supported when all MXU tile shapes are the same. Please specify shard_shape manually or use a specific auto mode.")
+            elif shard_shape == MCA_TensorBuffer.AUTO_IFM:
+                mxu_tile_shape = mem_space.device.mxu_ifm_tile_shape
+            elif shard_shape == MCA_TensorBuffer.AUTO_OFM:
+                mxu_tile_shape = mem_space.device.mxu_ofm_tile_shape
+            elif shard_shape == MCA_TensorBuffer.AUTO_WGT:
+                mxu_tile_shape = mem_space.device.mxu_wgt_tile_shape
+                
+            shard_shape = (
+                MCA_TensorBuffer._find_smallest_divisor_above(shape[-2], mxu_tile_shape[-2]) if shape[-2] >= mxu_tile_shape[-2] else shape[-2],
+                MCA_TensorBuffer._find_smallest_divisor_above(shape[-1], mxu_tile_shape[-1]) if shape[-1] >= mxu_tile_shape[-1] else shape[-1],
+            )
+        
+        if isinstance(shard_shape, int):
+            shard_shape = (shard_shape, shard_shape)
+        elif len(shard_shape) != 2:
+            raise ValueError("shard_shape must be a sequence of two integers: (shard_height, shard_width).")
+        else:
+            shard_shape = tuple(shard_shape)
+        return shard_shape
+        
+    @staticmethod
+    def check_memory_requirement(
+        mem_space: MCA_MemorySpace,
+        shape: Sequence[int],
+        dtype: torch.dtype,
+        
+        shard_shape: Sequence[int] | str=AUTO,
+        
+        blocked_mapping: bool=False,
+        contiguous_mapping: bool=False,
+    ) -> bool:
+        shard_shape = MCA_TensorBuffer._get_shard_shape(mem_space, shape, shard_shape)
+        
+        n_y_shards = math.ceil(shape[-2] / shard_shape[0])
+        n_x_shards = math.ceil(shape[-1] / shard_shape[1])
+        
+        shard_size = shard_shape[0] * shard_shape[1] * dtype.itemsize
+        n_total_shards = n_y_shards * n_x_shards
+        
+        if blocked_mapping:
+            if mem_space.mem_type != GlobalContextMemType.L1:
+                logger.warning(f"Unable to use blocked mapping: blocked mapping is only supported for L1 memory type. Falling back to non-blocked mapping.")
+                blocked_mapping = False
+            elif not isinstance(mem_space.owner_ids, MTA_CoreGrid):
+                logger.warning(f"Unable to use blocked mapping: blocked mapping requires mem_ids to be of type MTA_CoreGrid. Falling back to non-blocked mapping.")
+                blocked_mapping = False
+        
+        if blocked_mapping:
+            mem_requirement_per_grid = defaultdict(int)
+            for h in range(n_y_shards):
+                for w in range(n_x_shards):
+                    core_grid_y = h % mem_space.owner_ids.shape[0]
+                    core_grid_x = w % mem_space.owner_ids.shape[1]
+                    mem_requirement_per_grid[(core_grid_y, core_grid_x)] += shard_size
+                    
+            for (core_grid_y, core_grid_x), mem_requirement in mem_requirement_per_grid.items():
+                mem_id = mem_space.owner_ids.core_ids[core_grid_y * mem_space.owner_ids.shape[1] + core_grid_x]
+                available_size = mem_space.empty_space(mem_id)
+                if mem_requirement > available_size:
+                    return False
+        else:
+            n_shards_per_mem_id = math.ceil(n_total_shards / len(mem_space.owner_ids))
+            required_size_per_mem_id = n_shards_per_mem_id * shard_size
+            for mem_id in mem_space.owner_ids:
+                available_size = mem_space.empty_space(mem_id)
+                if required_size_per_mem_id > available_size:
+                    return False
+        
+        return True
+        
     @staticmethod
     def _find_smallest_divisor_above(num: int, threshold: int) -> int:
         for i in range(threshold, num + 1):
@@ -197,17 +253,8 @@ class MCA_TensorBuffer:
             if not isinstance(self.owner_ids, MTA_CoreGrid):
                 self._blocked_mapping = False
                 logger.warning(f"Unable to use blocked mapping: blocked mapping requires mem_ids to be of type MTA_CoreGrid.")
-            # if self._n_y_shards % self.owner_ids.shape[0] != 0:
-            #     self._blocked_mapping = False
-            #     logger.warning(f"Unable to use blocked mapping: number of height shards {self._n_y_shards} is not divisible by core grid height {self.owner_ids.shape[0]}.")
-            # if self._n_x_shards % self.owner_ids.shape[1] != 0:
-            #     self._blocked_mapping = False
-            #     logger.warning(f"Unable to use blocked mapping: number of width shards {self._n_x_shards} is not divisible by core grid width {self.owner_ids.shape[1]}.")
         
         if self._blocked_mapping:
-            # h_block_size = math.ceil(self._n_y_shards / self.owner_ids.shape[0])
-            # w_block_size = math.ceil(self._n_x_shards / self.owner_ids.shape[1])
-            
             for h in range(self._n_y_shards):
                 for w in range(self._n_x_shards):
                     core_grid_y = h % self.owner_ids.shape[0]
@@ -262,7 +309,6 @@ class MCA_TensorBuffer:
                 shard_data = tensor[h, w].contiguous().flatten()
                 ptr = self._shard_ptrs[h][w]
                 self.device.mem_set_data(ptr, size=self._shard_size, data=shard_data)
-                
         return self
                 
     def restore(self) -> torch.Tensor:

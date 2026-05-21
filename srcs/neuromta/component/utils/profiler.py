@@ -9,15 +9,15 @@ from neuromta.component.utils.profiler_base import GroupedProfilerBase, Profiler
 
 
 __all__ = [
-    "_ProfilerTemplate",
-    "_GroupedProfilerTemplate",
+    "ProfilerTemplate",
+    "GroupedProfilerTemplate",
     "DRAMBandwidthProfiler",
     "InterconnectBandwidthProfiler",
     "ThreadUtilizationProfiler",
 ]
 
 
-class _ProfilerTemplate(ProfilerBase):
+class ProfilerTemplate(ProfilerBase):
     def __init__(self, device: MCA_DeviceBase, target_core_ids: list[int], metric_name: str, metric_unit: str, n_max_entries: int, profiler_type: ProfilerBase.Type):
         if isinstance(target_core_ids, (int, str)):
             target_core_ids = [target_core_ids]
@@ -40,7 +40,7 @@ class _ProfilerTemplate(ProfilerBase):
         raise NotImplementedError("command_debug_hook must be implemented by subclasses of _ProfilerTemplate")
 
 
-class _GroupedProfilerTemplate(GroupedProfilerBase):
+class GroupedProfilerTemplate(GroupedProfilerBase):
     def __init__(self, device: MCA_DeviceBase, target_core_ids: list[int], metric_name: str, metric_unit: str, n_max_entries: int, profiler_type: ProfilerBase.Type):
         if isinstance(target_core_ids, (int, str)):
             target_core_ids = [target_core_ids]
@@ -63,13 +63,8 @@ class _GroupedProfilerTemplate(GroupedProfilerBase):
     def command_debug_hook(self, core: Core, kernel: Kernel, command: Command, issue_time: int, commit_time: int):
         raise NotImplementedError("command_debug_hook must be implemented by subclasses of _GroupedProfilerTemplate")
     
-    
-class ProfilerFileSaver:
-    def __init__(self):
-        pass
 
-
-class DRAMBandwidthProfiler(_ProfilerTemplate):
+class DRAMBandwidthProfiler(ProfilerTemplate):
     class RecordType(enum.Enum):
         READ  = 0
         WRITE = 1
@@ -134,7 +129,7 @@ class DRAMBandwidthProfiler(_ProfilerTemplate):
             self.add_entry(issue_time, commit_time, size)
     
     
-class InterconnectBandwidthProfiler(_ProfilerTemplate):
+class InterconnectBandwidthProfiler(ProfilerTemplate):
     def __init__(self, device: MCA_DeviceBase, n_max_entries: int=512):
         super().__init__(
             device=device,
@@ -181,7 +176,7 @@ class InterconnectBandwidthProfiler(_ProfilerTemplate):
         self.add_entry(issue_time, commit_time, n_flits)
         
 
-class ThreadUtilizationProfiler(_GroupedProfilerTemplate):
+class ThreadUtilizationProfiler(GroupedProfilerTemplate):
     ALL_COMMANDS = lambda x: True
     NO_VAR_WAIT = lambda cmd: cmd.cmd_id not in ["var_atomic_barrier", "var_conditional_wait", "var_atomic_wait", "var_atomic_compare_and_swap"]
 

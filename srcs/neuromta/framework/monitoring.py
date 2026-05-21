@@ -28,7 +28,8 @@ class MonitoringWindow(MonitorClient):
         host: str=DEFAULT_HOST, 
         port: int=DEFAULT_PORT, 
         freq: float=DEFAULT_FREQ, 
-        timeout: float=DEFAULT_TIMEOUT
+        timeout: float=DEFAULT_TIMEOUT,
+        disable: bool=False,
     ):  
         self._device = device
         self._binded_core_ids: set[int] = set()
@@ -37,6 +38,7 @@ class MonitoringWindow(MonitorClient):
         self._kernel_debug_hook_handles: dict[int, list[int]] = {}
         self._core_trackers: dict[int, CoreTrackerBase] = {}
         self._profilers = profilers if profilers is not None else []
+        self._disable = disable
         
         if core_groups is None:
             raise ValueError("core_groups cannot be None.")
@@ -156,6 +158,9 @@ class MonitoringWindow(MonitorClient):
         self._binded_core_ids.clear()
         
     def initialize(self):
+        if self._disable:
+            return self
+        
         set_global_monitoring_window(self)
         
         super().initialize(per_core_queue_limit=2, per_core_queue_resume=1)

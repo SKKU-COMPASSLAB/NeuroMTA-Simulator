@@ -24,8 +24,14 @@ __all__ = [
     "MCA_CompiledOperator",
     "MCA_OperatorGraphCompiler",
     "mca_operator_method",
+    "mca_operator_method_check",
 ]
 
+
+def mca_operator_method_check(func: Callable) -> bool:
+    if not hasattr(func, "_is_mca_operator_method"):
+        return False
+    return func._is_mca_operator_method
 
 def mca_operator_method(func: Callable):
     @functools.wraps(func)
@@ -34,6 +40,7 @@ def mca_operator_method(func: Callable):
         if not isinstance(op_sig, MCA_OperatorSignature):
             raise TypeError("The decorated function must return an instance of MCA_OperatorSignature.")
         return op_sig
+    _mca_mapper_method_wrapper._is_mca_operator_method = True
     return _mca_mapper_method_wrapper
 
 
@@ -480,22 +487,30 @@ class MCA_CompiledOperator:
         
         self._mappings = _mappings
         
-    def dispatch(self, device: MCA_DeviceBase):
+    def dispatch(self, device: MCA_DeviceBase, gb_barrier: tuple[str, str, int]=None, gb_core_ids: list[int]=None, postsync_globals: bool=False):
         self.freeze()
         
-        gb_barrier = (
+        op_barrier = (
             self._env.add_variable(f"{self._op_id}_barrier_arrival_cnt", 0).handle_name,
             self._env.add_variable(f"{self._op_id}_barrier_blocking", 0).handle_name,
             len(self.mappings.keys()) * 3,
         )
         
         # PRESYNC BARRIER
+        # if presync_globals:
+        #     for core_id in gb_core_ids:
+        #         core = device.get_npu_core(core_id)
+                
+        #         self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("LD")
+        #         self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("EX")
+        #         self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("ST")
+        # else:
         for core_id in self.mappings.keys():
             core = device.get_npu_core(core_id)
             
-            self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("LD")
-            self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("EX")
-            self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("ST")
+            self._kernel_template.get_barrier_kernel(core, self._env, barrier=op_barrier).dispatch("LD")
+            self._kernel_template.get_barrier_kernel(core, self._env, barrier=op_barrier).dispatch("EX")
+            self._kernel_template.get_barrier_kernel(core, self._env, barrier=op_barrier).dispatch("ST")
             
         # LD/EX/ST THREAD
         for core_id in self.mappings.keys():
@@ -512,12 +527,20 @@ class MCA_CompiledOperator:
                 self._kernel_template.get_st_thread_kernel(core, self._env, stage.stores).dispatch("ST")
         
         # POSTSYNC BARRIER
-        for core_id in self.mappings.keys():
-            core = device.get_npu_core(core_id)
-            
-            self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("LD")
-            self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("EX")
-            self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("ST")
+        if postsync_globals:
+            for core_id in gb_core_ids:
+                core = device.get_npu_core(core_id)
+                
+                self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("LD")
+                self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("EX")
+                self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("ST")
+        else:
+            for core_id in self.mappings.keys():
+                core = device.get_npu_core(core_id)
+                
+                self._kernel_template.get_barrier_kernel(core, self._env, barrier=op_barrier).dispatch("LD")
+                self._kernel_template.get_barrier_kernel(core, self._env, barrier=op_barrier).dispatch("EX")
+                self._kernel_template.get_barrier_kernel(core, self._env, barrier=op_barrier).dispatch("ST")
         
     @property
     def mappings(self):
@@ -531,14 +554,22 @@ class MCA_CompiledOperator:
 
 
 class MCA_CompiledProgram:
-    def __init__(self, device: MCA_DeviceBase, compiled_ops: dict[str, MCA_CompiledOperator]):
-        self._device = device
+    def __init__(self, env: 'MCA_OperatorGraphCompiler.Environment', compiled_ops: dict[str, MCA_CompiledOperator]):
+        self._env = env
         self._compiled_ops = compiled_ops
-        
+
     def dispatch(self):
-        for op_id, compiled_op in self._compiled_ops.items():
-            compiled_op.dispatch(self._device)
+        global_core_ids = self._env.recipe.global_core_group.core_ids
+        global_barrier = self._env.global_barrier
+                
+        for i, op_id in enumerate(self._env.target_op_order):
+            compiled_op = self._compiled_ops[op_id]
+            compiled_op.dispatch(self._env.recipe.device, gb_barrier=global_barrier, gb_core_ids=global_core_ids, postsync_globals=(i==len(self._env.target_op_order)-1))
         return self
+    
+    @property
+    def device(self) -> MCA_DeviceBase:
+        return self._env.recipe.device
             
     def summary(self) -> dict:
         return {op_id: compiled_op.summary() for op_id, compiled_op in self._compiled_ops.items()}
@@ -563,13 +594,12 @@ class MCA_OperatorGraphCompiler:
             device: MCA_DeviceBase,
             core_groups: list[MCA_CoreGroup],
             spad_space_size_per_core: int,
-            broadcast_optimize_queue_depth: int=32,
-            broadcast_optimize_max_ref_cnt: int=8,
-            operator_pipelining: bool=False,
-            context_buffer_slot_num: int=4,
+            broadcast_optimize_queue_depth: int=8,
+            broadcast_optimize_max_ref_cnt: int=4,
+            context_buffer_slot_num: int=16,
             ld_ex_buffer_slot_num: int=16,
-            ex_st_buffer_slot_num: int=16,
-            concurrent_load_num: int=8,
+            ex_st_buffer_slot_num: int=8,
+            concurrent_load_num: int=1,
             temporal_reuse_type: ReuseType=ReuseType.ALL,
             spatial_reuse_type: ReuseType=ReuseType.SINGLE_MAIN,
             greedy_temporal_reuse: bool=True,
@@ -584,7 +614,6 @@ class MCA_OperatorGraphCompiler:
             self.spad_space_size_per_core       = spad_space_size_per_core
             self.broadcast_optimize_queue_depth = broadcast_optimize_queue_depth
             self.broadcast_optimize_max_ref_cnt = broadcast_optimize_max_ref_cnt
-            self.operator_pipelining            = operator_pipelining
             self.context_buffer_slot_num        = context_buffer_slot_num
             self.ld_ex_buffer_slot_num          = ld_ex_buffer_slot_num
             self.ex_st_buffer_slot_num          = ex_st_buffer_slot_num
@@ -708,8 +737,6 @@ class MCA_OperatorGraphCompiler:
             self.bcast_fifo_slot_size = max(buf.tile_size for buf_name, buf in op_sig.buffers.items() if buf_name in op_sig.input_buffer_names)
             self.bcast_fifo_size      = recipe.broadcast_optimize_queue_depth * self.bcast_fifo_slot_size
             
-            self.opp_fifo_slot_size   = op_sig.buffers[op_sig.output_buffer_name].tile_size
-            
             self.ctx_buffer_slot_size = self.op_sig.buffers[op_sig.output_buffer_name].tile_size  # conservatively reserve the same size as output tile buffer for context store (for tile-level pipelining)
             self.ctx_buffer_size      = recipe.context_buffer_slot_num * self.ctx_buffer_slot_size
             
@@ -763,9 +790,7 @@ class MCA_OperatorGraphCompiler:
             self.greedy_temporal_reuse = recipe.greedy_temporal_reuse
 
             # Initialized after freezing the operator metadata
-            self.opp_fifo_size = 0    # operator pipelining buffer size (operator pipelining FIFO)
             self.cache_buffer_size = 0 # cache buffer size for tile-level reuse (cache buffer)
-            
             self.thread_mapping: dict[int, MCA_OperatorGraphCompiler.Thread] = {}
             
             self.o_tile_store = op_sig.buffers[op_sig.output_buffer_name].is_allocated  # if the output buffer is allocated, the computation result should be updated to the buffer
@@ -895,12 +920,7 @@ class MCA_OperatorGraphCompiler:
                 ]
                 for i, core_id in enumerate(self.op_sig.core_group.core_ids)
             }
-            
-            # # DEBUG
-            # for core_id, tiled_ops in tiled_op_mapping.items():
-            #     print(f"CORE: {core_id:<3d}  # of tiled ops: {len(tiled_ops)}")
-            # input("Press Enter to continue...")
-            
+
             return tiled_op_mapping
         
         @staticmethod
@@ -1047,7 +1067,7 @@ class MCA_OperatorGraphCompiler:
                 sequential_ctx_length = compute_sequential_ctx_length()
                 
                 if sequential_ctx_length is not None:
-                    logger.info(f"Chosen sequential context length: {sequential_ctx_length} current temporal reuse targets: {actual_temporal_reuse_targets}")
+                    logger.info(f"Chosen sequential context length: {sequential_ctx_length} | Current temporal reuse targets: {actual_temporal_reuse_targets}")
                     break
                 
                 if len(actual_temporal_reuse_targets) <= 1:
@@ -1219,7 +1239,6 @@ class MCA_OperatorGraphCompiler:
             return thread_mapping
         
         def unfreeze(self):
-            self.opp_fifo_size = 0
             self.cache_buffer_size = 0
             self.thread_mapping = {}
             
@@ -1229,7 +1248,7 @@ class MCA_OperatorGraphCompiler:
             self._is_frozen = False
             
         def freeze(self, tiled_op_mapping: dict[int, list[TiledOperatorSignature]]=None) -> bool:
-            self.cache_buffer_size = self.spad_space_size_per_core - (self.ctx_buffer_size + self.bcast_fifo_size + self.opp_fifo_size + self.ld_ex_fifo_size + self.ex_st_fifo_size)
+            self.cache_buffer_size = self.spad_space_size_per_core - (self.ctx_buffer_size + self.bcast_fifo_size + self.ld_ex_fifo_size + self.ex_st_fifo_size)
             if self.cache_buffer_size <= 0:
                 self.unfreeze()
                 return False
@@ -1257,89 +1276,6 @@ class MCA_OperatorGraphCompiler:
             
             self._is_frozen = True
             return True
-        
-        @staticmethod
-        def establish_dependency(env: 'MCA_OperatorGraphCompiler.Environment', op_ids: list[str]) -> list[str]:
-            for op_id in op_ids:
-                op_meta = env.op_meta[op_id]
-                
-                for dst_op_id, dst_op_meta in env.op_meta.items():
-                    if dst_op_id == op_id:
-                        continue
-                    if op_meta.op_sig.output_buffer_name in dst_op_meta.op_sig.input_buffer_names:
-                        op_meta.o_tile_sharers.add(dst_op_id)
-                        dst_op_meta.i_buf_src[op_meta.op_sig.output_buffer_name] = MCA_OperatorGraphCompiler.OperatorMetadata.SrcType.TILE_SHARED(op_id)
-                        
-            return env.topological_sort_grouped_target_ops(op_ids)
-
-        @staticmethod
-        def check_dependency_and_freeze(env: 'MCA_OperatorGraphCompiler.Environment', op_ids: list[str]) -> bool:
-            dept_candidates: list[str] = []
-            
-            for op_id in reversed(op_ids):
-                op_meta = env.op_meta[op_id]
-                
-                tiled_op_mapping = op_meta._create_tiled_op_mapping()
-                max_shared_area_per_core: dict[int, int] = {core_id: 0 for core_id in tiled_op_mapping.keys()}  # {core_id: shared_area_size}
-                
-                for dst_op_id in dept_candidates:
-                    dst_op_meta  = env.op_meta[dst_op_id]
-                    
-                    if op_meta.op_sig.output_buffer_name not in dst_op_meta.op_sig.input_buffer_names:
-                        continue
-                    
-                    dst_tile_access_orders: dict[int, list[TileSignature]] = {core_id: [] for core_id in dst_op_meta.op_sig.core_group.core_ids}
-                    
-                    for dst_core_id, dst_thread in dst_op_meta.thread_mapping.items():
-                        for dst_uop_node in dst_thread.uop_nodes:
-                            if isinstance(dst_uop_node, MCA_OperatorGraphCompiler.Thread.UopNode):
-                                dst_tiled_op_sig = dst_op_meta.op_sig.tiled_ops[dst_uop_node.tiled_op_idx]
-                                dst_i_tiles = dst_tiled_op_sig.i_tiles[dst_uop_node.uop_idx]
-                                
-                                for i_tile in dst_i_tiles:
-                                    if i_tile.buf_name == op_meta.op_sig.output_buffer_name:
-                                        dst_tile_access_orders[dst_core_id].append(i_tile)
-                
-                    for src_core_id, src_tiled_ops in tiled_op_mapping.items():
-                        _prev_src_o_tiles = set()
-
-                        for src_tiled_op_sig in src_tiled_ops:
-                            src_o_tile = src_tiled_op_sig.o_tile
-                            
-                            for dst_core_id, dst_tile_access_order in dst_tile_access_orders.items():
-                                _searched_indices = [i for i, tile in enumerate(dst_tile_access_order) if tile.signature == src_o_tile.signature]
-                                if len(_searched_indices) == 0:
-                                    continue
-                                
-                                _first_search = _searched_indices[0]
-                                _final_search = _searched_indices[-1]
-                                _tiles_required = set(dst_tile_access_order[i] for i in range(_first_search, _final_search, 1))
-                                _n_tiles_cached = len(_tiles_required.intersection(_prev_src_o_tiles))
-                                
-                                max_shared_area_per_core[src_core_id] = max(max_shared_area_per_core[src_core_id], ((_n_tiles_cached + 1) * src_o_tile.tile_size))
-                            
-                            _prev_src_o_tiles.add(src_o_tile)
-                            
-                max_shared_area = max(max_shared_area_per_core.values())
-                op_meta.opp_fifo_size = max_shared_area * 2
-                
-                if max_shared_area > (op_meta.spad_space_size_per_core - op_meta.min_ld_area_per_pp - op_meta.min_st_area_per_pp):
-                    logger.debug(f"Operator {op_id} cannot be pipelined with its dependencies due to insufficient shared area per core. Required: {max_shared_area} bytes, available: {op_meta.spad_space_size_per_core - op_meta.min_ld_area_per_pp - op_meta.min_st_area_per_pp} bytes.")
-                    op_meta.unfreeze()
-                    for dst_op_id in dept_candidates:
-                        env.op_meta[dst_op_id].unfreeze()
-                    return False
-                
-                if not op_meta.freeze(tiled_op_mapping):
-                    logger.debug(f"Operator {op_id} cannot be frozen due to unsatisfiable scheduling constraints with the current thread mapping and shared tile-to-slot mapping.")
-                    op_meta.unfreeze()
-                    for dst_op_id in dept_candidates:
-                        env.op_meta[dst_op_id].unfreeze()
-                    return False
-
-                dept_candidates.append(op_id)
-           
-            return True
             
         @property
         def is_frozen(self):
@@ -1350,12 +1286,6 @@ class MCA_OperatorGraphCompiler:
             if self.bcast_fifo_size == 0:
                 return 0
             return self.bcast_fifo_size // self.bcast_fifo_slot_size
-        
-        @property
-        def opp_fifo_depth(self):
-            if self.opp_fifo_slot_size == 0:
-                return 0
-            return self.opp_fifo_size // self.opp_fifo_slot_size
         
         @property
         def ld_ex_fifo_depth(self):
@@ -1388,6 +1318,17 @@ class MCA_OperatorGraphCompiler:
             
             self.target_op_order: list[str] = []  # order of operator addition (for debugging and visualization purposes)
             self.grouped_compile_targets: list[list[str]] = []
+            
+            self.add_variable("global_barrier_arrival_cnt")
+            self.add_variable("global_barrier_blocking")
+        
+        @property
+        def global_barrier(self):
+            return (
+                "global_barrier_arrival_cnt",
+                "global_barrier_blocking",
+                len(self.recipe.global_core_group.core_ids)
+            )
             
         def add_op_sig(self, op_sig: MCA_OperatorSignature):
             buf_names = list(op_sig.buffers.keys())
@@ -1433,141 +1374,26 @@ class MCA_OperatorGraphCompiler:
                 fifo_handle.mem_ptr.addr = ptr.addr
             self.fifo_buffers[name] = fifo_handle
             return fifo_handle
-        
-        def allocate_core_groups(self):
-            core_groups = self.recipe.core_groups
-            n_core_groups = len(core_groups)
-            
-            if (n_core_groups < len(self.op_meta)) or (not self.recipe.operator_pipelining):
-                for i, op_id in enumerate(self.op_meta.keys()):
-                    op_sig = self.op_meta[op_id].op_sig
-                    op_sig.initialize_core_group(self.recipe.global_core_group)
-                return
-            
-            remaining_core_groups = n_core_groups - len(self.op_meta)
-            core_group_allocation_map = {i: 1 for i in self.op_meta.keys()}  # {op_id: n_core_groups_allocated}  
-            total_arithmetic_intensity = sum(op_meta.op_sig.total_arithmetic_intensity for op_meta in self.op_meta.values())
-            
-            if remaining_core_groups > 0 and total_arithmetic_intensity > 0:
-                allocation_data = []
-                for op_id, op_meta in self.op_meta.items():
-                    exact_allocation = (op_meta.op_sig.total_arithmetic_intensity / total_arithmetic_intensity) * remaining_core_groups
-                    floor_allocation = math.floor(exact_allocation)
-                    remainder = exact_allocation - floor_allocation
-                    
-                    core_group_allocation_map[op_id] += floor_allocation
-                    allocation_data.append((op_id, remainder))
-                    
-                current_allocated = sum(core_group_allocation_map.values())
-                leftover_core_groups = n_core_groups - current_allocated
-                
-                allocation_data.sort(key=lambda x: x[1], reverse=True)
-                
-                for i in range(leftover_core_groups):
-                    op_id, _ = allocation_data[i]
-                    core_group_allocation_map[op_id] += 1
-                
-            for op_id in self.target_op_order:
-                op_sig = self.op_meta[op_id].op_sig
-                n_allocated_core_groups = core_group_allocation_map[op_id]
-                allocated_core_groups = core_groups[:n_allocated_core_groups]
-                core_groups = core_groups[n_allocated_core_groups:]
-                
-                merged_core_group = MCA_CoreGroup.merge_core_groups(allocated_core_groups)
-                op_sig.initialize_core_group(merged_core_group)
-                
-                logger.debug(f"allocated core group {merged_core_group} for operator {op_id} (allocated {n_allocated_core_groups} core groups).")
-        
-        def topological_sort_grouped_target_ops(self, op_ids: set[str]) -> list[str]:
-            graph = {
-                op_id: [
-                    dep for dep in self.op_meta[op_id].o_tile_sharers
-                ] 
-                for op_id in op_ids
-            }
-            
-            in_degree = {u: 0 for u in graph}
-            
-            for u in graph:
-                for v in graph[u]:
-                    if v not in in_degree:
-                        in_degree[v] = 0
-                    in_degree[v] += 1
-
-            queue = deque([u for u in in_degree if in_degree[u] == 0])
-            result = []
-
-            while queue:
-                u = queue.popleft()
-                result.append(u)
-
-                if u in graph:
-                    for v in graph[u]:
-                        in_degree[v] -= 1
-
-                        if in_degree[v] == 0:
-                            queue.append(v)
-
-            if len(result) != len(in_degree):
-                raise ValueError("Cyclic dependency detected in the operator graph.")
-
-            return result
             
         def freeze(self):
-            if any(not op_meta.op_sig.is_core_group_initialized for op_meta in self.op_meta.values()):
-                self.allocate_core_groups()
-                
-            pipeline_targets: list[set[str]] = [set()]
-            merge_targets: list[set[str]] = []  # set of operator IDs that have been merged into the current pipeline target (to avoid merging the same operator multiple times)
+            if len(self.op_meta) == 0:
+                raise ValueError("No operators to compile.")
             
-            for op_id in self.target_op_order:
-                op_meta = self.op_meta[op_id]
-                is_core_group_overlapped = False
-                
-                for prev_target_id in pipeline_targets[-1]:
-                    prev_target_meta = self.op_meta[prev_target_id]
-                    if len(op_meta.op_sig.core_group.intersection(prev_target_meta.op_sig.core_group)) != 0:
-                        is_core_group_overlapped = True
-                        break
-                    
-                if is_core_group_overlapped:
-                    pipeline_targets.append(set())
-                    
-                pipeline_targets[-1].add(op_id)
-                
-            for op_ids in pipeline_targets:
-                if len(op_ids) == 0:
-                    continue
-                elif len(op_ids) == 1:
-                    op_id = next(iter(op_ids))
-                    op_meta = self.op_meta[op_id]
-                    if not op_meta.freeze():
-                        raise ValueError(f"Failed to freeze operator metadata for operator {op_id}.")
-                    logger.debug(f"Successfully froze operator metadata for pipeline target with single operator {op_id}.")
-                    self.grouped_compile_targets.append([op_id])
-                else:
-                    op_ids = MCA_OperatorGraphCompiler.OperatorMetadata.establish_dependency(self, op_ids)
-                    if not MCA_OperatorGraphCompiler.OperatorMetadata.check_dependency_and_freeze(self, op_ids):
-                        merge_targets.append(op_ids)
-                    else:
-                        logger.debug(f"Successfully froze operator metadata for pipeline target with operators {op_ids}.")
-                        self.grouped_compile_targets.append(sorted(list(op_ids), key=lambda x: self.target_op_order.index(x)))
+            # TODO: implement multiple operator compilation based on the AI (Arithmetic Intensity) and operator pipelining
+            core_group = self.recipe.global_core_group
+            for op_meta in self.op_meta.values():
+                op_meta.op_sig.initialize_core_group(core_group)
             
-            for op_ids in merge_targets:
-                core_group = MCA_CoreGroup.merge_core_groups([self.op_meta[op_id].op_sig.core_group for op_id in op_ids])
-                for op_id in op_ids:
-                    op_meta = self.op_meta[op_id]
-                    op_meta.op_sig.initialize_core_group(core_group)
-                    op_meta.freeze()
-                    self.grouped_compile_targets.append([op_id])
-                
-                    logger.debug(f"Successfully froze operator metadata for merge target {op_id} (merged in {core_group}).")
-                
+            for op_meta in self.op_meta.values():
+                if not op_meta.freeze():
+                    raise ValueError(f"Failed to freeze operator metadata for operator {op_meta.op_sig.op_id}.")
+                logger.debug(f"Successfully froze operator metadata for operator {op_meta.op_sig.op_id}.")
+                self.grouped_compile_targets.append([op_meta.op_sig.op_id])
+            
             return self
         
     class MemoryState:
         BCAST = "bcast"
-        OPP = "opp"
         LD_EX = "ld_ex"
         EX_ST = "ex_st"
         
@@ -1588,7 +1414,6 @@ class MCA_OperatorGraphCompiler:
             
             # FIFOs
             self.bcast_descriptors  = {core_id:  MCA_CompiledOperator.IR.FIFODescriptor(f"CORE{core_id}_{op_meta.op_sig.op_id}_BCAST", l1_space.allocate(core_id, op_meta.bcast_fifo_size), op_meta.bcast_fifo_slot_size, op_meta.bcast_fifo_depth) for core_id in core_group.core_ids}
-            self.opp_descriptors    = {core_id:  MCA_CompiledOperator.IR.FIFODescriptor(f"CORE{core_id}_{op_meta.op_sig.op_id}_OPP",   l1_space.allocate(core_id, op_meta.opp_fifo_size),   op_meta.opp_fifo_slot_size,   op_meta.opp_fifo_depth)   for core_id in core_group.core_ids}
             self.ld_ex_descriptors  = {core_id:  MCA_CompiledOperator.IR.FIFODescriptor(f"CORE{core_id}_{op_meta.op_sig.op_id}_LD_EX", l1_space.allocate(core_id, op_meta.ld_ex_fifo_size), op_meta.ld_ex_fifo_slot_size, op_meta.ld_ex_fifo_depth) for core_id in core_group.core_ids}
             self.ex_st_descriptors  = {core_id:  MCA_CompiledOperator.IR.FIFODescriptor(f"CORE{core_id}_{op_meta.op_sig.op_id}_EX_ST", l1_space.allocate(core_id, op_meta.ex_st_fifo_size), op_meta.ex_st_fifo_slot_size, op_meta.ex_st_fifo_depth) for core_id in core_group.core_ids}
             
@@ -1600,9 +1425,6 @@ class MCA_OperatorGraphCompiler:
             
             self._cache_slot_size = op_meta.cache_buffer_slot_size
             self._cache_states: dict[int, dict[int, tuple[TileSignature, int, MCA_CompiledOperator.IR.MEM_COPY_TILE]]] = {core_id: {slot_id: [None, slot_id, None] for slot_id in range(op_meta.cache_buffer_slot_num)} for core_id in core_group.core_ids}  # {core_id: {slot_id: [tile_signature, lru_cnt, last_used_ir]}}
-            
-            self._opp_states:   dict[int, list[tuple[TileSignature, MCA_CompiledOperator.IR.MEM_COPY_TILE, int]]] = {core_id: [] for core_id in core_group.core_ids}  # {core_id: {slot_id: [tile_sig, mem_copy_ir, ref_count]}}
-            self._opp_tile_to_slot_id: dict[int, dict[TileSignature, int]] = {core_id: {} for core_id in core_group.core_ids}  # {core_id: {tile_signature: slot_id}}
             
             self._ld_ex_states: dict[int, int] = {core_id: 0 for core_id in core_group.core_ids}  # {core_id: slot_num}
             self._ld_ex_tile_to_slot_id: dict[int, dict[TileSignature, int]] = {core_id: {} for core_id in core_group.core_ids}  # {core_id: {tile_signature: slot_id}}
@@ -1645,31 +1467,6 @@ class MCA_OperatorGraphCompiler:
                 return True
             return False
         
-        def opp_push(self, core_id: int, tile_sig: TileSignature, ir: MCA_CompiledOperator.IR.MEM_COPY_TILE):
-            slot_id = len(self._opp_states[core_id])
-            self._opp_tile_to_slot_id[core_id][tile_sig] = slot_id
-            self._opp_states[core_id].append([tile_sig, ir, 0])
-            
-        def opp_pop(self, tile_sig: TileSignature) -> tuple[int, int]:
-            for core_id, tile_to_slot_id in self._opp_tile_to_slot_id.items():
-                if tile_sig in tile_to_slot_id:
-                    slot_id = tile_to_slot_id[tile_sig]
-                    self._opp_states[core_id][slot_id][2] += 1
-                    return core_id, slot_id
-            
-            raise Exception(f"Tile {tile_sig} is not found in the operand buffer of any core.")
-        
-        def opp_cleanup(self):
-            for core_id in self._opp_states.keys():
-                for slot_id, (tile_sig, ir, ref_cnt) in enumerate(self._opp_states[core_id]):
-                    if ref_cnt == 0:
-                        continue
-                    
-                    ir.dsts.append(self.opp_descriptors[core_id].ref(tile_sig, slot_id, ref_cnt))
-                
-                self._opp_states[core_id].clear()
-                self._opp_tile_to_slot_id[core_id].clear()
-        
         def ld_ex_push(self, core_id: int, tile_sig: TileSignature) -> int:
             slot_id = self._ld_ex_states[core_id]
             self._ld_ex_tile_to_slot_id[core_id][tile_sig] = slot_id
@@ -1711,16 +1508,12 @@ class MCA_OperatorGraphCompiler:
         self._op_sigs = {}
         self._op_order = []
         
-    def compile_grouped_target_ops(self, env: 'MCA_OperatorGraphCompiler.Environment', op_ids: set[str]) -> dict[str, MCA_CompiledOperator]:
-        op_ids: list[str] = env.topological_sort_grouped_target_ops(op_ids)
-        
+    def compile_grouped_target_ops(self, env: 'MCA_OperatorGraphCompiler.Environment', op_ids: list[str]) -> dict[str, MCA_CompiledOperator]:
         op_metas = {target_op_id: env.op_meta[target_op_id] for target_op_id in op_ids}
         
         compiled_ops    = {op_id: MCA_CompiledOperator(env, op_meta) for op_id, op_meta in op_metas.items()}
         mem_states      = {op_id: MCA_OperatorGraphCompiler.MemoryState(op_meta, env.recipe) for op_id, op_meta in op_metas.items()} 
         thread_mappings = {op_id: op_meta.thread_mapping for op_id, op_meta in op_metas.items()}
-        
-        tile_producers: dict[str, dict[TileSignature, int]] = {op_id: {} for op_id in op_ids}
         
         for op_id in op_ids:
             op_meta = op_metas[op_id]
@@ -1730,23 +1523,8 @@ class MCA_OperatorGraphCompiler:
             
             for core_id in core_group.core_ids:
                 env.add_fifo_buffer(mem_state.bcast_descriptors[core_id].buf_name, op_meta.bcast_fifo_depth, op_meta.bcast_fifo_slot_size, mem_state.bcast_descriptors[core_id].ptr)
-                env.add_fifo_buffer(mem_state.opp_descriptors[core_id].buf_name,   op_meta.opp_fifo_depth,   op_meta.opp_fifo_slot_size,   mem_state.opp_descriptors[core_id].ptr)
                 env.add_fifo_buffer(mem_state.ld_ex_descriptors[core_id].buf_name, op_meta.ld_ex_fifo_depth, op_meta.ld_ex_fifo_slot_size, mem_state.ld_ex_descriptors[core_id].ptr)
                 env.add_fifo_buffer(mem_state.ex_st_descriptors[core_id].buf_name, op_meta.ex_st_fifo_depth, op_meta.ex_st_fifo_slot_size, mem_state.ex_st_descriptors[core_id].ptr)
-        
-        # STAGE 1: Analyze dependencies and determine tile-level sharing relationships (for pipelining)
-        for src_op_id in op_ids:
-            src_meta = op_metas[src_op_id]
-            
-            for src_core_id, src_thread in thread_mappings[src_op_id].items():
-                logger.debug(f"Analyzing dependencies for {src_op_id} on core {src_core_id}...")  
-                for uop_node_idx, uop_node in enumerate(src_thread.uop_nodes):
-                    logger.debug(f"Processing uop node {uop_node_idx}/{len(src_thread.uop_nodes)}", end="\r")
-                    if isinstance(uop_node, MCA_OperatorGraphCompiler.Thread.UopNode):
-                        tiled_op_sig = src_meta.op_sig.tiled_ops[uop_node.tiled_op_idx]
-                        src_o_tile = tiled_op_sig.o_tile
-                        
-                        tile_producers[src_op_id][src_o_tile] = src_core_id
         
         # STAGE 2: Create compiled ops and update memory states while iteratively resolving tile-level dependencies
         for op_id in op_ids:
@@ -1754,11 +1532,8 @@ class MCA_OperatorGraphCompiler:
             thread_mapping = thread_mappings[op_id]
             mem_state = mem_states[op_id]
             
-            for core_id, thread in thread_mapping.items():     
-                logger.debug(f"Compiling operator {op_id} on core {core_id}...")           
+            for core_id, thread in tqdm.tqdm(thread_mapping.items(), desc=f"Compiling operator {op_id} on cores", leave=False, disable=not logger.is_current_debug_log_level()):           
                 for iii, uop_node in enumerate(thread.uop_nodes):
-                    logger.debug(f"Processing uop node {iii}/{len(thread.uop_nodes)}", end="\r")
-                    
                     if isinstance(uop_node, MCA_OperatorGraphCompiler.Thread.ContextLoadNode):
                         slot_id = uop_node.slot_id
                         tiled_op_idx = uop_node.tiled_op_idx
@@ -1818,14 +1593,6 @@ class MCA_OperatorGraphCompiler:
                                     ir.src = mem_state.bcast_descriptors[_bcast_core_id].ref(i_tile, _bcast_slot_id, 1)
                             else:
                                 ir.src = mem_state.tensor_descriptors[i_tile.buf_name].ref(i_tile)
-                            # # CASE: cache miss / from buffer
-                            # elif op_meta.i_buf_src[i_tile.buf_name].is_buffer:  
-                            #     ir.src = mem_state.tensor_descriptors[i_tile.buf_name].ref(i_tile)
-                            # CASE: cache miss / from opp fifo
-                            # else:
-                            #     opp_src_op_id = op_meta.i_buf_src[i_tile.buf_name].k
-                            #     opp_src_core_id, opp_src_slot_id = mem_states[opp_src_op_id].opp_pop(i_tile)
-                            #     ir.src = mem_states[opp_src_op_id].opp_descriptors[opp_src_core_id].ref(i_tile, slot_id=opp_src_slot_id, ref_cnt=1)
                             
                             # Write to cache if scheduled, regardless of hit or miss, to update the cache state and enable subsequent hits
                             if _is_cache_schedule_valid and not _is_cache_hit:
@@ -1847,14 +1614,9 @@ class MCA_OperatorGraphCompiler:
                             
                             if op_meta.o_tile_store:
                                 ir.dsts.append(mem_state.tensor_descriptors[o_tile.buf_name].ref(o_tile))
-                            # if len(op_meta.o_tile_sharers) > 0:
-                            #     mem_state.opp_push(core_id, o_tile, ir)
-                                
+
                             compiled_ops[op_id].add_store_ir(core_id, ir)
                             compiled_ops[op_id].new_stage(core_id)  # add new stage to reduce the size of kernel object (compile time overhead issue)
-        
-        for op_id in op_ids:
-            mem_states[op_id].opp_cleanup()
         
         return compiled_ops
         
@@ -1873,4 +1635,4 @@ class MCA_OperatorGraphCompiler:
         for grouped_op_ids in env.grouped_compile_targets:
             compiled_ops.update(self.compile_grouped_target_ops(env, grouped_op_ids))
         
-        return MCA_CompiledProgram(recipe.device, compiled_ops)
+        return MCA_CompiledProgram(env, compiled_ops)

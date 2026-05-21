@@ -56,7 +56,7 @@ def draw(src_path: str, img_path: str):
     plt.xticks(x_values, x_labels, rotation=0, ha='center', fontsize=10)
     plt.hlines(1.0, -0.5, len(x_labels)-0.5, colors='red', linestyles='dashed', linewidth=0.8, label=f'Baseline ({baseline_name})')
     
-    plt.xlabel('Cache Region [KB] (Ping-Pong: 48KB / Inter-Core: 32KB)', fontsize=11)
+    plt.xlabel('Cache Region [KB] (PP: 48KB / IC: 32KB)', fontsize=11)
     plt.ylabel('Speedup', fontsize=12)
     plt.margins(x=0.00)
 

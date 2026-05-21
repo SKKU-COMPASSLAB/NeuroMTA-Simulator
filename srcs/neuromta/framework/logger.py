@@ -1,5 +1,6 @@
 import sys
 import enum
+import inspect
 
 
 __all__ = [
@@ -74,7 +75,7 @@ class logger:
             _global_current_monitor_log_level = monitor_log_level
 
     @classmethod
-    def log(cls, message: str, level: LogLevel = LogLevel.INFO, end: str = "\n"):
+    def log(cls, scope: str, message: str, level: LogLevel = LogLevel.INFO, end: str = "\n"):
         global _global_current_log_level
         global _global_monitoring_window
 
@@ -84,7 +85,7 @@ class logger:
             level = LogLevel[level.upper()]
         
         if level.value >= _global_current_log_level.value:
-            header = f"[{level.name}] "
+            header = f"[{level.name}] [{scope}] "
             if level.value >= LogLevel.ERROR.value:
                 sys.stderr.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + end)
                 sys.stderr.flush()   # ensure the log is printed immediately
@@ -99,23 +100,83 @@ class logger:
 
     @classmethod
     def debug(cls, message: str, end: str = "\n"):
-        cls.log(message, LogLevel.DEBUG, end=end)
+        caller_frame = inspect.currentframe().f_back
+        try:
+            caller_locals = caller_frame.f_locals
+            if 'self' in caller_locals:
+                scope = caller_locals['self'].__class__.__name__
+            elif 'cls' in caller_locals:
+                scope = caller_locals['cls'].__name__
+            else:
+                scope = "GLOBAL"
+        finally:
+            del caller_frame
+        
+        cls.log(scope, message, LogLevel.DEBUG, end=end)
 
     @classmethod
     def info(cls, message: str, end: str = "\n"):
-        cls.log(message, LogLevel.INFO, end=end)
+        caller_frame = inspect.currentframe().f_back
+        try:
+            caller_locals = caller_frame.f_locals
+            if 'self' in caller_locals:
+                scope = caller_locals['self'].__class__.__name__
+            elif 'cls' in caller_locals:
+                scope = caller_locals['cls'].__name__
+            else:
+                scope = "GLOBAL"
+        finally:
+            del caller_frame
+            
+        cls.log(scope, message, LogLevel.INFO, end=end)
 
     @classmethod
     def warning(cls, message: str, end: str = "\n"):
-        cls.log(message, LogLevel.WARNING, end=end)
+        caller_frame = inspect.currentframe().f_back
+        try:
+            caller_locals = caller_frame.f_locals
+            if 'self' in caller_locals:
+                scope = caller_locals['self'].__class__.__name__
+            elif 'cls' in caller_locals:
+                scope = caller_locals['cls'].__name__
+            else:
+                scope = "GLOBAL"
+        finally:
+            del caller_frame
+            
+        cls.log(scope, message, LogLevel.WARNING, end=end)
 
     @classmethod
     def error(cls, message: str, end: str = "\n"):
-        cls.log(message, LogLevel.ERROR, end=end)
+        caller_frame = inspect.currentframe().f_back
+        try:
+            caller_locals = caller_frame.f_locals
+            if 'self' in caller_locals:
+                scope = caller_locals['self'].__class__.__name__
+            elif 'cls' in caller_locals:
+                scope = caller_locals['cls'].__name__
+            else:
+                scope = "GLOBAL"
+        finally:
+            del caller_frame
+            
+        cls.log(scope, message, LogLevel.ERROR, end=end)
 
     @classmethod
     def critical(cls, message: str, end: str = "\n"):
-        cls.log(message, LogLevel.CRITICAL, end=end)
+        caller_frame = inspect.currentframe().f_back
+        try:
+            caller_locals = caller_frame.f_locals
+            if 'self' in caller_locals:
+                scope = caller_locals['self'].__class__.__name__
+            elif 'cls' in caller_locals:
+                scope = caller_locals['cls'].__name__
+            else:
+                scope = "GLOBAL"
+        finally:
+            del caller_frame
+            
+        cls.log(scope, message, LogLevel.CRITICAL, end=end)
 
     @classmethod
     def get_current_log_level(cls) -> LogLevel:

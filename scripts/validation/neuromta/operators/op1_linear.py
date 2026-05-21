@@ -24,10 +24,6 @@ if __name__ == "__main__":
     parser.add_argument('--monitor', action="store_true", help="Whether to show real-time monitoring window during simulation", dest="monitor")
     parser.add_argument('--debug-command', action="store_true", help="Whether to enable command-level debugging", dest="debug_command")
     parser.add_argument('--report-mismatch', action="store_true", help="Whether to generate mismatch report when validation fails", dest="report_mismatch")
-    parser.add_argument('--report-icnt-stats', action="store_true", help="Whether to report interconnect statistics after simulation", dest="report_icnt_stats")
-    parser.add_argument('--report-dram-stats', action="store_true", help="Whether to report DRAM statistics after simulation", dest="report_dram_stats")
-    parser.add_argument('--bcast-queue-depth', type=int, default=16, help="The depth of the broadcast queue", dest="bcast_queue_depth")
-    parser.add_argument('--spad-size', type=str, default="1MB", help="The size of the scratchpad memory per core (e.g., '256KB')", dest="spad_size")
     parser.add_argument('--max-timestamp', type=int, default=-1, help="Maximum timestamp to run the simulation", dest="max_timestamp")
     parser.add_argument('--save-profile', action="store_true", help="Whether to save profiler data to files", dest="save_profile")
     parser.add_argument('--save-compile-summary', action="store_true", help="Whether to save compilation summary to files", dest="save_compile_summary")
@@ -44,8 +40,7 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (8, 8))
     
-    M, N, K = 1024, 1024, 1024
-    # M, N, K = 256, 256, 256
+    M, N, K = 256, 1024, 1024
     dtype = torch.int16
     acc_dtype = torch.int16
     
@@ -71,30 +66,17 @@ if __name__ == "__main__":
     
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
-    
-    # global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
-    #     device=device,
-    #     core_groups=[core_group],
-    #     spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
-    #     broadcast_optimize_queue_depth=args.bcast_queue_depth,
-    #     context_buffer_slot_num=4,
-    #     ld_ex_buffer_slot_num=16,
-    #     ex_st_buffer_slot_num=16,
-    #     concurrent_load_num=8,
-    #     temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,     # weight/bias temporal reuse
-    #     spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
-    # )
-    
+
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=[core_group],
-        spad_space_size_per_core=parse_mem_cap_str(args.spad_size),
+        spad_space_size_per_core=parse_mem_cap_str("1MB"),
         broadcast_optimize_queue_depth=8,
         broadcast_optimize_max_ref_cnt=16,
         context_buffer_slot_num=4,
         ld_ex_buffer_slot_num=16,
         ex_st_buffer_slot_num=8,
-        concurrent_load_num=8,
+        concurrent_load_num=2,
         temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,  # weight/bias temporal reuse
         spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
     )
@@ -169,19 +151,3 @@ if __name__ == "__main__":
                 f.writelines(content)
             logger.error(f"Mismatch report saved to '{mismatch_report}'.")
             logger.error(f"Total mismatches: {len(content)}/{reference.numel()}")
-        
-    if args.report_icnt_stats:
-        import pprint
-        from neuromta.component.context.global_context import BOOKSIM_MODULE_ID
-        from neuromta.component.companions.booksim import BookSim2
-        
-        booksim2_module: BookSim2 = device.companion_core._companion_modules[BOOKSIM_MODULE_ID]
-        pprint.pprint(booksim2_module.get_stats(), indent=4)
-
-    if args.report_dram_stats:
-        import pprint
-        from neuromta.component.context.global_context import DRAMSIM_MODULE_ID
-        from neuromta.component.companions.dramsim import DRAMSim3
-        
-        dram_module: DRAMSim3 = device.companion_core._companion_modules[DRAMSIM_MODULE_ID]
-        pprint.pprint(dram_module.get_stats(), indent=4)

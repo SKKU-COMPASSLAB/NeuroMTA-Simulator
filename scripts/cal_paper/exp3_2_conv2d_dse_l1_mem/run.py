@@ -156,11 +156,11 @@ class Conv2dBenchmark(Benchmark):
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
                 broadcast_optimize_queue_depth=self.bcast_optimize_queue_depth,
-                broadcast_optimize_max_ref_cnt=16,
+                broadcast_optimize_max_ref_cnt=4,
                 context_buffer_slot_num=_context_buffer_slot_num,
                 ld_ex_buffer_slot_num=self.ld_ex_buffer_slot_num,
                 ex_st_buffer_slot_num=self.ex_st_buffer_slot_num,
-                concurrent_load_num=2,
+                concurrent_load_num=1,
                 temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,
                 spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,
             )
@@ -277,27 +277,9 @@ class BenchmarkProcess(mp.Process):
         self.worker_sem.release()
         logger.info(f"process finished for {self.benchmark.signature}")
 
-total_n_slots = 512
-# ld_ex_st_buffer_slot_nums   = [3, 6, 12, 24, 48, 96, 192, 384]
+total_n_slots = 256
 
-# def bcast_queue_depth(ld_ex_st_buffer_slot_num: int) -> int:
-#     if ld_ex_st_buffer_slot_num > 48:
-#         return 64
-#     return (ld_ex_st_buffer_slot_num // 3) * 4
-
-# def cache_slot_num(ld_ex_st_buffer_slot_num: int) -> int:
-#     return total_n_slots - ld_ex_st_buffer_slot_num - bcast_queue_depth(ld_ex_st_buffer_slot_num)
-
-# benchmarks = [
-#     Conv2dBenchmark(
-#         ld_ex_st_buffer_slot_num=ld_ex_st_buffer_slot_num,
-#         bcast_optimize_queue_depth=bcast_queue_depth(ld_ex_st_buffer_slot_num),
-#         cache_slot_num=cache_slot_num(ld_ex_st_buffer_slot_num)
-#     )
-#     for ld_ex_st_buffer_slot_num in ld_ex_st_buffer_slot_nums
-# ]
-
-cache_slot_nums = [1, 2, 4, 8, 16, 32, 64, 128, 256, 505]
+cache_slot_nums = [1, 2, 4, 8, 16, 32, 64, 128, 249]
 
 def bcast_queue_depth(cache_slot_num: int) -> int:
     remainings = total_n_slots - cache_slot_num

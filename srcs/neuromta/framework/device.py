@@ -72,6 +72,7 @@ class Device:
         
         for core in self._cores.values():
             core.reset_simulation()
+        self._timestamp = 0
     
     def set_command_debug_verbosity(self, verbose: bool=True):
         if verbose:
@@ -143,10 +144,13 @@ class Device:
         self, 
         cycle_resolution:   int  = 1,   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
         max_steps:          int  = -1,  # the maximum number of steps to run
-        max_timestamp:      int  = -1,  # the maximum timestamp to run
+        max_timestamp:      int  = None,  # the maximum timestamp to run
         
         sync_target_core_groups: Sequence[Sequence[int]] = None,  # the target core groups to synchronize after each step; if None, all cores are synchronized
     ):
+        if max_timestamp is None:
+            max_timestamp = -1
+        
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
         
