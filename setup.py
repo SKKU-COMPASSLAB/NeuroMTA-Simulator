@@ -7,5 +7,10 @@ setup(
     author='Seongwook Kim',
     author_email='su8939@skku.edu',
     packages=find_packages(where="srcs"),
-    package_dir={"": "srcs"}
+    package_dir={"": "srcs"},
+    entry_points={
+        'console_scripts': [
+            'neuromta_runner=neuromta.runner.main:main',
+        ],
+    }
 )

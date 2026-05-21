@@ -676,6 +676,10 @@ Copyright (c) 2026 COMPASSLAB(SKKU). All rights reserved.
         asyncio.run(self._run_async())
 
 
-if __name__ == "__main__":
+def main():
     runner = Runner()
     runner.run()
+
+
+if __name__ == "__main__":
+    main()
