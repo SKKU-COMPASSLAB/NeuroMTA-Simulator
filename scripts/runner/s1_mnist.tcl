@@ -2,7 +2,7 @@
 open_session tenstorrent_bh mnist 4
 
 # STEP 2: Set compilation recipe
-set_core_group_shape 4 4
+set_core_group_shape  4 4
 set_core_group_offset 0 0
 
 set_session_recipe main_space_size_per_channel      1GB

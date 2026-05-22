@@ -236,8 +236,7 @@ class Runner:
         
     == Datatype (static casting of operators / not quantization)
         - dtype: Data type for computation (e.g., int8, int16, int32, float16, float32, bfloat16).
-        - acc_dtype: Accumulation data type for computation (e.g., int8, int16, int32, float16, float32, bfloat16).
-""",
+        - acc_dtype: Accumulation data type for computation (e.g., int8, int16, int32, float16, float32, bfloat16).""",
                 "primitives": [self.Arg.required("recipe_option"), self.Arg.required("value")],
                 "method": self._command_set_session_recipe,
             },
