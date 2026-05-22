@@ -1,9 +1,15 @@
+import json
 import os
+import subprocess
+import torch
 import asyncio
 import shutil
 import sys
 import threading
+import argparse
 import multiprocessing as mp
+from collections import deque
+from typing import Any
 
 import prompt_toolkit
 from prompt_toolkit import PromptSession, print_formatted_text
@@ -12,13 +18,43 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import ANSI
-# from prompt_toolkit.application import run_in_terminal
 
-from neuromta.framework import logger
+from neuromta.framework import logger, parse_mem_cap_str
 from neuromta.runner.session import SessionCommand, SessionMessage, Session
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+
+RECIPE_MEM_OPTIONS = [
+    "main_space_size_per_channel",
+    "data_space_size_per_core",
+    "spad_space_size_per_core",
+]
+
+RECIPE_INT_OPTIONS = [
+    "broadcast_optimize_queue_depth",
+    "broadcast_optimize_max_ref_cnt",
+    "context_buffer_slot_num",
+    "ld_ex_buffer_slot_num",
+    "ex_st_buffer_slot_num",
+    "concurrent_load_num"
+]
+
+RECIPE_BOOL_OPTIONS = [
+    "greedy_temporal_reuse"
+]
+
+RECIPE_STR_OPTIONS = [
+    "temporal_reuse_type",
+    "spatial_reuse_type"
+]
+
+RECIPE_DTYPE_OPTIONS = [
+    "dtype",
+    "acc_dtype"
+]
+
+RECIPE_OPTIONS = RECIPE_MEM_OPTIONS + RECIPE_INT_OPTIONS + RECIPE_BOOL_OPTIONS + RECIPE_STR_OPTIONS + RECIPE_DTYPE_OPTIONS
 
 
 class ANSIStreamWrapper:
@@ -38,7 +74,7 @@ class ANSIStreamWrapper:
 
 
 class MethodAutoSuggest(AutoSuggest):
-    def __init__(self, methods: list[str], keywords: list[str]):
+    def __init__(self, methods: dict[str, dict[str, Any]], keywords: list[str]):
         self.methods  = methods
         self.keywords = keywords
     
@@ -59,13 +95,18 @@ class MethodAutoSuggest(AutoSuggest):
         if ' ' in text:
             cmd, partial_arg = text.split(' ', 1)
             args = partial_arg.split(' ')
+            prim: list[Runner.Arg] = self.methods.get(cmd, {}).get("primitives", [])
             
             if len(args) >= 1:
                 last_arg = args[-1]
             else:
+                if len(args) == 0 and len(prim) > 0:
+                    return Suggestion(prim[0].primitive())
                 return None
             
             if len(last_arg) == 0:
+                if len(args) <= len(prim):
+                    return Suggestion(prim[len(args)-1].primitive())
                 return None
                 
             if cmd in self.methods:
@@ -76,10 +117,44 @@ class MethodAutoSuggest(AutoSuggest):
             else:
                 return None
         else:
-            suggestion = self.find_suggestion(text, self.methods)
+            suggestion = self.find_suggestion(text, list(self.methods.keys()))
             if suggestion:
                 return Suggestion(suggestion[len(text):])
         return None
+    
+    
+class FIFOLock:
+    def __init__(self):
+        self._queue = deque()
+        self._internal_lock = threading.Lock()
+        self._is_locked = False
+
+    def acquire(self):
+        my_event = threading.Event()
+        
+        with self._internal_lock:
+            if not self._is_locked:
+                self._is_locked = True
+                return
+            else:
+                self._queue.append(my_event)
+        
+        my_event.wait()
+
+    def release(self):
+        with self._internal_lock:
+            if self._queue:
+                next_event = self._queue.popleft()
+                next_event.set()
+            else:
+                self._is_locked = False
+                
+    def __enter__(self):
+        self.acquire()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
 
 
 class Runner:
@@ -114,63 +189,133 @@ class Runner:
         self.device_presets_dirs = [os.path.join(ROOT, "device_presets")]
         self.model_presets_dirs  = [os.path.join(ROOT, "model_presets")]
         
-        self._keywords = ["help", "exit", "model", "device"]
+        self._keywords = ["help", "exit", "model", "device"] + RECIPE_OPTIONS
         self._methods = {
             "list": {
-                "description": "Lists all available models and devices.",
+                "description": "(neuromta) Lists all available models and devices.",
                 "primitives": [self.Arg.choice("model", "device")],
                 "method": self._command_list,
             },
             "open_repo": {
-                "description": "Opens a directory storing model or device presets.",
+                "description": "(neuromta) Opens a directory storing model or device presets.",
                 "primitives": [self.Arg.choice("model", "device"), self.Arg.required("path")],
                 "method": self._command_open_repo,
             },
             "open_session": {
-                "description": "Opens a new session with the specified model and device presets.",
-                "primitives": [self.Arg.required("device_name"), self.Arg.required("model_name")],
+                "description": "(neuromta) Opens a new session with the specified model and device presets.",
+                "primitives": [self.Arg.required("device_name"), self.Arg.required("model_name"), self.Arg.optional("n_workers")],
                 "method": self._command_open_session,
             },
             "close_session": {
-                "description": "Closes the currently open session.",
+                "description": "(neuromta) Closes the currently open session.",
                 "primitives": [],
                 "method": self._command_close_session,
             },
             "set_session_recipe": {
-                "description": "Changes the session's device recipe parameter.",
-                "primitives": [self.Arg.required("key"), self.Arg.required("value")],
+                "description": """(neuromta) Changes the session's device recipe parameter.
+                
+    == Memory Options
+        - main_space_size_per_channel: Memory capacity of the main space per channel (e.g., 512MB, 1GB).
+        - data_space_size_per_core: Memory capacity of the data space per core (e.g., 512MB, 1GB).
+        - spad_space_size_per_core: Memory capacity of the scratchpad space per core (e.g., 512MB, 1GB).
+        - broadcast_optimize_queue_depth: Queue depth for broadcast optimization (integer).
+        
+    == L1 Memory Layout
+        - broadcast_optimize_max_ref_cnt: Maximum reference count for broadcast optimization (integer).
+        - context_buffer_slot_num: Number of slots in the context buffer (integer).
+        - ld_ex_buffer_slot_num: Number of slots in the load/execution buffer (integer).
+        - ex_st_buffer_slot_num: Number of slots in the execution/store buffer (integer).
+        - concurrent_load_num: Number of concurrent loads allowed (integer).
+    
+    == Flags
+        - greedy_temporal_reuse: Whether to enable greedy temporal reuse (boolean).
+        
+    == Data Reuse Strategy
+        - temporal_reuse_type: Type of temporal reuse strategy [ALL | ALL_MAIN | ALL_L1 | SINGLE_MAIN | SINGLE_L1 | IGNORE].
+        - spatial_reuse_type: Type of spatial reuse strategy [SINGLE_MAIN | SINGLE_L1 | IGNORE].
+        
+    == Datatype (static casting of operators / not quantization)
+        - dtype: Data type for computation (e.g., int8, int16, int32, float16, float32, bfloat16).
+        - acc_dtype: Accumulation data type for computation (e.g., int8, int16, int32, float16, float32, bfloat16).
+""",
+                "primitives": [self.Arg.required("recipe_option"), self.Arg.required("value")],
                 "method": self._command_set_session_recipe,
             },
             "set_core_group_shape": {
-                "description": "Changes the session's core group shape.",
+                "description": "(neuromta) Changes the session's core group shape.",
                 "primitives": [self.Arg.required("dim1"), self.Arg.optional("dim2")],
                 "method": self._command_set_core_group_shape,
             },
             "set_core_group_offset": {
-                "description": "Changes the session's core group offset.",
+                "description": "(neuromta) Changes the session's core group offset.",
                 "primitives": [self.Arg.required("offset1"), self.Arg.optional("offset2")],
                 "method": self._command_set_core_group_offset,
             },
+            "enable_monitoring": {
+                "description": "(neuromta) Enables session monitoring during graph execution.",
+                "primitives": [],
+                "method": self._command_enable_monitoring,
+            },
+            "enable_profiler": {
+                "description": "(neuromta) Enables detailed profiling during graph execution.",
+                "primitives": [self.Arg.required("path")],
+                "method": self._command_enable_profiler,
+            },
             "compile_graph": {
-                "description": "Compiles the model on the device and prepares for execution.",
+                "description": "(neuromta) Compiles the model on the device and prepares for execution.",
                 "primitives": [],
                 "method": self._command_compile_graph,
             },
             "run_graph": {
-                "description": "Runs the compiled graph.",
+                "description": "(neuromta) Runs the compiled graph.",
                 "primitives": [],
                 "method": self._command_run_graph,
             },
+            "save_results": {
+                "description": "(neuromta) Saves the execution results to a specified file.",
+                "primitives": [self.Arg.required("path")],
+                "method": self._command_save_results,
+            },
+            "save_scripts": {
+                "description": "(neuromta) Saves the generated scripts to a specified file.",
+                "primitives": [self.Arg.required("path")],
+                "method": self._command_save_scripts,
+            },
+            "save_compile_summary": {
+                "description": "(neuromta) Saves the compilation summary to a specified file.",
+                "primitives": [self.Arg.required("path")],
+                "method": self._command_save_compile_summary,
+            },
+            "ls": {
+                "description": "(shell command) Lists the contents of the current directory.",
+                "primitives": [],
+                "method": self._command_shell_ls,
+            },
+            "cd": {
+                "description": "(shell command) Changes the current directory.",
+                "primitives": [self.Arg.required("path")],
+                "method": self._command_shell_cd,
+            },
+            "mkdir": {
+                "description": "(shell command) Creates a new directory.",
+                "primitives": [self.Arg.required("path")],
+                "method": self._command_shell_mkdir,
+            },
+            "pwd": {
+                "description": "(shell command) Prints the current working directory.",
+                "primitives": [],
+                "method": self._command_shell_pwd,
+            },
             "clear": {
-                "description": "Clears the console screen.",
+                "description": "(shell command) Clears the console screen.",
                 "primitives": [],
             },
             "help": {
-                "description": "Shows this help message.",
+                "description": "(app) Shows this help message.",
                 "primitives": [],
             },
             "exit": {
-                "description": "Exits the NeuroMTA Runner.",
+                "description": "(app) Exits the NeuroMTA Runner.",
                 "primitives": [],
             },
         }
@@ -182,13 +327,15 @@ class Runner:
         self._keywords.extend(self._get_device_presets().keys())
 
         self.history = InMemoryHistory()
-        self.suggester = MethodAutoSuggest(list(self._methods.keys()), self._keywords)
+        self.suggester = MethodAutoSuggest(self._methods, self._keywords)
         self.bindings = KeyBindings()
         
         self._sessions: list[Session] = []
         self._session_cmd_q: list[mp.Queue] = []
         self._session_msg_q: mp.Queue = mp.Queue()  # Shared message queue for receiving messages from all sessions
         self._session_compile_summary: dict[int, list[dict[str, str]]] = None  # Store the compile summary from the session after compilation
+        self._thread_fifo_lock = FIFOLock()
+        self._run_graph_logs: list = []
 
         @self.bindings.add('tab')
         def _(event):
@@ -215,9 +362,6 @@ class Runner:
                     remainder = common_prefix[len(last_token):]
                     b.insert_text(remainder)
                 else:
-                    # def print_candidates():
-                    #     sys.stdout.write('  '.join([(os.path.split(m)[-1] if self.is_token_path_like(m) else m) for m in matches]) + '\n')
-                    # run_in_terminal(print_candidates)
                     sys.stdout.write('  '.join([(os.path.split(m)[-1] if self.is_token_path_like(m) else m) for m in matches]) + '\n')
 
     @staticmethod
@@ -254,6 +398,10 @@ class Runner:
                         cds += list(self._get_model_presets().keys())
                     if "device_name" in prim.values:
                         cds += list(self._get_device_presets().keys())
+                    if "recipe_option" in prim.values:
+                        cds += RECIPE_OPTIONS
+                    if "path" in prim.values:
+                        return self._tokenize_path_candidate(last_token)
                         
                     if len(cds) > 0:
                         return last_token, cds
@@ -332,15 +480,15 @@ class Runner:
         if len(args) == 0:
             self._list_models()
             self._list_devices()
-        elif args[0] == "model":
+        elif args[0].lower() in ("model", "models"):
             self._list_models()
-        elif args[0] == "device":
+        elif args[0].lower() in ("device", "devices"):
             self._list_devices()
         else:
             logger.error("Invalid argument for 'list' command. Use 'model' or 'device'.")
     
     def _command_open_repo(self, repo_type: str, path: str):
-        if repo_type not in ["model", "device"]:
+        if repo_type.lower() not in ["model", "device"]:
             logger.error("Invalid repository type. Use 'model' or 'device'.")
             return
         
@@ -364,6 +512,11 @@ class Runner:
         self.suggester.keywords = self._keywords
     
     def _command_open_session(self, device_preset_name: str, model_preset_name: str, n_workers: str = "1"):
+        logger.info(f"Opening session...")
+        logger.info(f"  Device preset: {device_preset_name}")
+        logger.info(f"  Model preset: {model_preset_name}")
+        logger.info(f"  Number of workers: {n_workers}")
+        
         if len(self._sessions) > 0:
             logger.error("A session is already open. Please close the current session before opening a new one.")
             return
@@ -427,14 +580,68 @@ class Runner:
         self._session_cmd_q = []
         self._sessions = []
         self._session_compile_summary = None  # Clear compile summary when sessions are closed
+        
+        while self._session_msg_q.qsize() > 0:
+            try:
+                self._session_msg_q.get_nowait()
+            except Exception:
+                break
     
     def _command_set_session_recipe(self, key: str, value: str):
         if len(self._sessions) == 0:
             logger.error("No active session to set recipe.")
             return
         
+        global RECIPE_MEM_OPTIONS
+        global RECIPE_INT_OPTIONS
+        global RECIPE_BOOL_OPTIONS
+        global RECIPE_STR_OPTIONS
+        global RECIPE_DTYPE_OPTIONS
+
+        if key in RECIPE_MEM_OPTIONS:
+            try:
+                value = parse_mem_cap_str(value)
+            except ValueError as e:
+                logger.error(f"Invalid memory capacity string for '{key}': {value}. Error: {str(e)}")
+                return
+        elif key in RECIPE_INT_OPTIONS:
+            try:
+                value = int(value)
+            except ValueError:
+                logger.error(f"Invalid integer value for '{key}': {value}")
+                return
+        elif key in RECIPE_BOOL_OPTIONS:
+            if value.lower() in ["true", "1", "yes"]:
+                value = True
+            elif value.lower() in ["false", "0", "no"]:
+                value = False
+            else:
+                logger.error(f"Invalid boolean value for '{key}': {value}. Use true/false, 1/0, or yes/no.")
+                return
+        elif key in RECIPE_STR_OPTIONS:
+            pass
+        elif key in RECIPE_DTYPE_OPTIONS:
+            valid_dtypes = ["int8", "int16", "int32", "float16", "float32", "bfloat16"]
+            if value not in valid_dtypes:
+                logger.error(f"Invalid dtype value for '{key}': {value}. Valid options are: {', '.join(valid_dtypes)}")
+                return
+            else:
+                value = getattr(torch, value)
+        else:
+            logger.error(f"Unknown recipe parameter: {key}")
+            return
+
         for session in self._sessions:
             session.cmd_q.put(SessionCommand(cmd_type="change_recipe", args=(key, value)))
+            
+        for _ in range(len(self._sessions)):
+            msg: SessionMessage = self._session_msg_q.get()
+            if msg.msg_type == "error":
+                logger.error(f"Failed to set recipe parameter for session {msg.session_id}: {msg.payload}")
+            elif msg.msg_type == "done":
+                logger.info(f"Recipe parameter updated successfully for session {msg.session_id}.")
+            else:
+                logger.warning(f"Session {msg.session_id} sent unknown message type: {msg.msg_type}")
     
     def _command_set_core_group_shape(self, *dims: str):
         if len(self._sessions) == 0:
@@ -473,8 +680,44 @@ class Runner:
                 logger.info(f"Core group offset updated successfully for session {msg.session_id}.")
             else:
                 logger.warning(f"Session {msg.session_id} sent unknown message type: {msg.msg_type}")
+                
+    def _command_enable_monitoring(self):
+        if len(self._sessions) == 0:
+            logger.error("No active session to enable monitoring.")
+            return
+        
+        for session in self._sessions:
+            session.cmd_q.put(SessionCommand(cmd_type="enable_monitoring"))
+            
+        for _ in range(len(self._sessions)):
+            msg: SessionMessage = self._session_msg_q.get()
+            if msg.msg_type == "error":
+                logger.error(f"Failed to enable monitoring for session {msg.session_id}: {msg.payload}")
+            elif msg.msg_type == "done":
+                logger.info(f"Monitoring enabled successfully for session {msg.session_id}.")
+            else:
+                logger.warning(f"Session {msg.session_id} sent unknown message type: {msg.msg_type}")
+                
+    def _command_enable_profiler(self, path: str):
+        if len(self._sessions) == 0:
+            logger.error("No active session to enable profiler.")
+            return
+        
+        for session in self._sessions:
+            session.cmd_q.put(SessionCommand(cmd_type="enable_profiler", args=(path,)))
+            
+        for _ in range(len(self._sessions)):
+            msg: SessionMessage = self._session_msg_q.get()
+            if msg.msg_type == "error":
+                logger.error(f"Failed to enable profiler for session {msg.session_id}: {msg.payload}")
+            elif msg.msg_type == "done":
+                logger.info(f"Profiler enabled successfully for session {msg.session_id}.")
+            else:
+                logger.warning(f"Session {msg.session_id} sent unknown message type: {msg.msg_type}")
     
     def _command_compile_graph(self):
+        logger.info("Compiling graph on all sessions...")
+        
         if len(self._sessions) == 0:
             logger.error("No active session to compile graph.")
             return
@@ -503,8 +746,12 @@ class Runner:
                     logger.info(f"    ENTRY {entry_idx}: node={entry['node']}, op_method={entry['op_method']}")
 
             self._session_compile_summary = compile_summary  # Store the compile summary for later use in run_graph
+        else:
+            logger.warning("No valid compilation summary received from sessions.")
         
     def _command_run_graph(self):
+        logger.info("Running graph on all sessions...")
+        
         if len(self._sessions) == 0:
             logger.error("No active session to run graph.")
             return
@@ -540,10 +787,73 @@ class Runner:
                 logger.info(f"  Result for GROUP {group_idx} ENTRY {entry_idx}")
                 for key, value in result.items():
                     logger.info(f"    {key}: {value}")
+                    
+                self._run_graph_logs.append({
+                    "group_idx": group_idx,
+                    "entry_idx": entry_idx,
+                    "session_id": msg.session_id,
+                    "result": result,
+                })
             else:
                 logger.warning(f"Session {msg.session_id} sent unknown message type: {msg.msg_type}")
                 
         logger.info("All scheduled graph entries have been executed.")
+        
+    def _command_save_results(self, path: str):
+        try:
+            with open(path, 'w') as f:
+                json.dump(self._run_graph_logs, f, indent=4)
+            logger.info(f"Logs saved successfully to: {path}")
+        except Exception as e:
+            logger.error(f"Failed to save logs to {path}: {str(e)}")
+            
+    def _command_save_scripts(self, path: str):
+        for history in self.history.get_strings():
+            logger.info(history)
+        try:
+            with open(path, 'w') as f:
+                for history in self.history.get_strings():
+                    f.write(history + '\n')
+            logger.info(f"Scripts saved successfully to: {path}")
+        except Exception as e:
+            logger.error(f"Failed to save scripts to {path}: {str(e)}")
+            
+    def _command_save_compile_summary(self, path: str):
+        if self._session_compile_summary is None:
+            logger.error("No compilation summary available to save.")
+            return
+        
+        try:
+            with open(path, 'w') as f:
+                json.dump(self._session_compile_summary, f, indent=4)
+            logger.info(f"Compilation summary saved successfully to: {path}")
+        except Exception as e:
+            logger.error(f"Failed to save compilation summary to {path}: {str(e)}")
+        
+    def _command_shell_ls(self):
+        result = subprocess.run(['ls', '-alh'], capture_output=True, text=True)
+
+        if result.returncode == 0:
+            logger.info("Directory contents:\n" + result.stdout)
+        else:
+            logger.error(result.stderr)
+            
+    def _command_shell_cd(self, path: str):
+        try:
+            os.chdir(path)
+            logger.info(f"Changed directory to: {os.getcwd()}")
+        except Exception as e:
+            logger.error(f"Failed to change directory: {str(e)}")
+            
+    def _command_shell_mkdir(self, path: str):
+        try:
+            os.makedirs(path, exist_ok=True)
+            logger.info(f"Directory created: {path}")
+        except Exception as e:
+            logger.error(f"Failed to create directory: {str(e)}")
+            
+    def _command_shell_pwd(self):
+        logger.info(f"Current working directory: {os.getcwd()}")
                 
     def get_help_text(self):
         help_text = ""
@@ -594,25 +904,26 @@ class Runner:
                     break
 
     def _execute_in_thread(self, cmd_name, *args):
-        if cmd_name in self._methods:
-            method = self._methods.get(cmd_name, {}).get("method", None)
-            if method is None:
-                logger.error(f"Command '{cmd_name}' is not implemented yet.")
-                return
-            try:
-                method(*args)
-            except Exception as e:
-                logger.error(f"An error occurred while executing command '{cmd_name}': {str(e)}")
-        else:
-            logger.error(f"Unknown command: {cmd_name}")
-
-    async def _run_async(self):
+        with self._thread_fifo_lock:
+            if cmd_name in self._methods:
+                method = self._methods.get(cmd_name, {}).get("method", None)
+                if method is None:
+                    logger.error(f"Command '{cmd_name}' is not implemented yet.")
+                else:
+                    try:
+                        method(*args)
+                    except Exception as e:
+                        logger.error(f"An error occurred while executing command '{cmd_name}': {str(e)}")
+        
+    async def _run_async(self, user_script_path: str=None):
         # Create a prompt session with history, auto-suggest, and custom keybindings
-        session = PromptSession(
+        prompt_session = PromptSession(
             history=self.history,
             auto_suggest=self.suggester,
             key_bindings=self.bindings
         )
+        
+        ongoing_threads: list[threading.Thread] = []
         
         title = r"""
  __  __                                               ______  ______     
@@ -630,6 +941,20 @@ Copyright (c) 2026 COMPASSLAB(SKKU). All rights reserved.
 """
 
         print(title)
+        
+        user_script_input = []
+        if user_script_path is not None:
+            try:
+                with open(user_script_path, 'r') as f:
+                    for line in f.readlines():
+                        line = line.strip()
+                        if '#' in line:
+                            line = line.split('#', 1)[0].strip()
+                        if line and not line.startswith("#"):
+                            user_script_input.append(line)
+            except Exception as e:
+                logger.error(f"Failed to read user script from {user_script_path}: {str(e)}")
+                return
 
         with patch_stdout():
             sys.stdout = ANSIStreamWrapper(sys.stdout)
@@ -637,22 +962,30 @@ Copyright (c) 2026 COMPASSLAB(SKKU). All rights reserved.
             
             while True:
                 try:
-                    user_input = await session.prompt_async(">>> ")
-                    user_input = user_input.strip()
+                    if len(user_script_input) > 0:
+                        user_input = user_script_input.pop(0)
+                        use_multi_thread = False
+                    else:
+                        user_input = await prompt_session.prompt_async(">>> ")
+                        user_input = user_input.strip()
+                        use_multi_thread = True
 
                     if not user_input:
                         continue
-
-                    # Split the input string into the command and its arguments
+                    
                     tokens = user_input.split()
                     cmd_token = tokens[0]
                     arg_tokens = tokens[1:]
-
+                    
                     if cmd_token == 'exit':
-                        if len(self._sessions) > 0:
-                            logger.info("Closing active sessions before exiting...")
-                            self._command_close_session()
-                        logger.info("Exiting NeuroMTA Runner...")
+                        with self._thread_fifo_lock:
+                            if len(self._sessions) > 0:
+                                logger.info("Closing active sessions before exiting...")
+                                self._command_close_session()
+                            for thread in ongoing_threads:
+                                if thread.is_alive():
+                                    thread.join(timeout=0.5)
+                            logger.info("Exiting NeuroMTA Runner...")
                         break    
                     if cmd_token == 'help':
                         await self._show_help()
@@ -662,23 +995,55 @@ Copyright (c) 2026 COMPASSLAB(SKKU). All rights reserved.
                         continue
 
                     if cmd_token in self._methods.keys():
-                        thread = threading.Thread(target=self._execute_in_thread, args=(cmd_token, *arg_tokens))
-                        thread.start()
+                        if use_multi_thread:
+                            ongoing_threads = [t for t in ongoing_threads if t.is_alive()]
+                            thread = threading.Thread(target=self._execute_in_thread, args=(cmd_token, *arg_tokens))
+                            thread.start()
+                            ongoing_threads.append(thread)
+                        else:
+                            self._execute_in_thread(cmd_token, *arg_tokens)
                     else:
                         logger.error(f"Unknown command: {cmd_token}")
 
                 except KeyboardInterrupt:
-                    continue
+                    for session in self._sessions:
+                        if session.is_alive():
+                            session.terminate()
+                    self._session_cmd_q = []
+                    self._sessions = []
+                    self._session_compile_summary = None  # Clear compile summary when sessions are closed
+                    
+                    while self._session_msg_q.qsize() > 0:
+                        try:
+                            self._session_msg_q.get_nowait()
+                        except Exception:
+                            break
+                    
+                    for thread in ongoing_threads:
+                        if thread.is_alive():
+                            thread.join(timeout=0.5)
+                    ongoing_threads = []
+                    
+                    self._thread_fifo_lock = FIFOLock()  # Reset the lock to clear any waiting threads
+                    user_script_input = []  # Clear any remaining user script input
+                    logger.info("All sessions terminated and resources cleared.")
+                    break
                 except EOFError:
                     break
 
-    def run(self):
-        asyncio.run(self._run_async())
+    def run(self, user_script_path: str=None):
+        asyncio.run(self._run_async(user_script_path=user_script_path))
 
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="NeuroMTA Runner - Interactive CLI for managing model/device presets and sessions.")
+    parser.add_argument('-s', "--script", default=None, required=False, help="Path to the user script to execute")
+    return parser.parse_args()
 
 def main():
+    args = parse_arguments()
     runner = Runner()
-    runner.run()
+    runner.run(user_script_path=args.script)
 
 
 if __name__ == "__main__":

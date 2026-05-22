@@ -113,7 +113,10 @@ def MCA_OP_CONV2D(
     
     op_sig.add_buffer("ifm",  ifm.tiling((m_tile, k_tile)),  is_input=True)
     op_sig.add_buffer("wgt",  wgt.tiling((n_tile, k_tile)),  is_param=True)
-    op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    if bias is not None:
+        op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    else:
+        op_sig.add_buffer("bias", None, is_param=True)
     op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
     
     op_sig.global_kwargs["stride"] = (stride, stride) if isinstance(stride, int) else stride

@@ -133,8 +133,8 @@ def MCA_MAPPER_CONV2D(
     if is_conv2d:
         if C != ifm.shape[3]:
             raise Exception(f"Input channel mismatch between IFM and WGT: {ifm.shape[3]} != {C}")
-        if K != bias.shape[1] != ofm.shape[3]:
-            raise Exception(f"Output channel mismatch between WGT, BIAS and OFM: {K} != {bias.shape[1]} != {ofm.shape[3]}")
+        if K != ofm.shape[3]:
+            raise Exception(f"Output channel mismatch between WGT and OFM: {K} != {ofm.shape[3]}")
         if N != ofm.shape[0]:
             raise Exception(f"Batch size mismatch between IFM and OFM: {N} != {ofm.shape[0]}")
         if OH != ofm.shape[1]:
@@ -156,26 +156,28 @@ def MCA_MAPPER_CONV2D(
     if is_conv2d:
         ifm_tile_shape = ifm.tile_shape
         wgt_tile_shape = wgt.tile_shape
-        bias_tile_shape = bias.tile_shape
+        # bias_tile_shape = bias.tile_shape
         ofm_tile_shape = ofm.tile_shape
+        
+        
         
         if ifm_tile_shape[0] != ofm_tile_shape[0]:
             raise Exception(f"IFM and OFM tile shape batch size mismatch: {ifm_tile_shape[0]} != {ofm_tile_shape[0]}")
-        if wgt_tile_shape[0] != ofm_tile_shape[1] or wgt_tile_shape[0] != bias_tile_shape[1]:
-            raise Exception(f"WGT and OFM tile shape channel size mismatch: {wgt_tile_shape[0]} != {ofm_tile_shape[1]} != {bias_tile_shape[1]}")
+        if wgt_tile_shape[0] != ofm_tile_shape[1]:
+            raise Exception(f"WGT and OFM tile shape channel size mismatch: {wgt_tile_shape[0]} != {ofm_tile_shape[1]}")
         if wgt_tile_shape[1] != ifm_tile_shape[1]:
             raise Exception(f"WGT and IFM tile shape feature size mismatch: {wgt_tile_shape[1]} != {ifm_tile_shape[1]}")
     
         ifm_y_outer_shards, ifm_y_inner_shards, ifm_x_shards = (ifm.n_outer_shards, *ifm.shard_grid)    # NH,  NHW,  C
         wgt_y_outer_shards, wgt_y_inner_shards, wgt_x_shards = (wgt.n_outer_shards, *wgt.shard_grid)    # FHW, FHWK, C
-        bias_x_shards = bias.shard_grid[-1]                                                             # K
+        # bias_x_shards = bias.shard_grid[-1]                                                             # K
         ofm_y_outer_shards, ofm_y_inner_shards, ofm_x_shards = (ofm.n_outer_shards, *ofm.shard_grid)    # NOH, NOHW, K
         
         if ifm_x_shards // groups != wgt_x_shards:
             raise Exception(f"IFM and WGT shard grid feature size mismatch in input channel C dimension: {ifm_x_shards} != {wgt_x_shards}")
-        if ofm_x_shards != bias_x_shards or ofm_x_shards != (wgt_y_inner_shards // wgt_y_outer_shards):
-            raise Exception(f"OFM, BIAS and WGT shard grid channel size mismatch in output channel K dimension: {ofm_x_shards} != {bias_x_shards} != {wgt_y_inner_shards // wgt_y_outer_shards}")
-        
+        if ofm_x_shards != (wgt_y_inner_shards // wgt_y_outer_shards):
+            raise Exception(f"OFM and WGT shard grid channel size mismatch in output channel K dimension: {ofm_x_shards} != {wgt_y_inner_shards // wgt_y_outer_shards}")
+
     else:
         ifm_tile_shape = ifm.tile_shape
         ofm_tile_shape = ofm.tile_shape
@@ -246,8 +248,11 @@ def MCA_MAPPER_CONV2D(
                                             wgt_tile = op_sig.tiles["wgt"][wgt_tile_idx]
                                             
                                             # GET PSUM tile signature (BIAS or partially merged OFM)
-                                            psum_tile_idx = bias.get_shard_grid_from_tile_grid_idx(0, k_tile_it)
-                                            psum_tile = op_sig.tiles["bias"][psum_tile_idx]
+                                            if bias is not None:
+                                                psum_tile_idx = bias.get_shard_grid_from_tile_grid_idx(0, k_tile_it)
+                                                psum_tile = op_sig.tiles["bias"][psum_tile_idx]
+                                            else:
+                                                psum_tile = None
 
                                         # GET IFM tile signature with halo memcpy patterns
                                         #   - Note that IFM tile indices depend on OFM tile indices due to stride, padding, dilation
@@ -286,13 +291,15 @@ def MCA_MAPPER_CONV2D(
                                         uop_kwargs = {}
                                         
                                         # Compute core uses all the individual IFM tiles and handles the memcpy patterns internally
+                                        if is_conv2d:
+                                            uop_kwargs["use_bias"] = bias is not None
                                         uop_kwargs["ifm_tile_count"] = len(ifm_tile_idx_with_memcpy_pattern)
                                         uop_kwargs["memcpy_pattern"] = list(ifm_tile_idx_with_memcpy_pattern.values())
                                         uop_i_tiles.extend([op_sig.tiles["ifm"][idx] for idx in ifm_tile_idx_with_memcpy_pattern.keys()])
                                                 
                                         if is_conv2d:
                                             uop_i_tiles.append(wgt_tile)
-                                            if tiled_op.n_uops == 0:
+                                            if psum_tile is not None and tiled_op.n_uops == 0:
                                                 uop_i_tiles.append(psum_tile)
                                         
                                         tiled_op.add_uop(

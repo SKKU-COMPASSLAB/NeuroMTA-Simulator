@@ -150,14 +150,15 @@ class MCA_KERNEL_TILED_CONV2D(_MCA_KERNEL_BASE):
         op_sig = env.op_meta[ir.op_id].op_sig
         tiled_op = op_sig.tiled_ops[ir.tiled_op_idx]
 
-        preload_psum = (ir.uop_idx == 0)
-        flush_ofm    = (ir.uop_idx == tiled_op.n_uops - 1)
-
         uop_kwargs = tiled_op.op_kwargs[ir.uop_idx]
         
+        use_bias = uop_kwargs.get("use_bias", False)
         ifm_tile_count: int = uop_kwargs["ifm_tile_count"]
         ifm_sig_arr = tiled_op.i_tiles[ir.uop_idx][:ifm_tile_count]
         ifm_memcpy_pattern_arr = uop_kwargs["memcpy_pattern"]
+        
+        preload_psum = (ir.uop_idx == 0) and use_bias
+        flush_ofm    = (ir.uop_idx == tiled_op.n_uops - 1)
         
         dtype = ir.dtype
         acc_dtype = ir.acc_dtype

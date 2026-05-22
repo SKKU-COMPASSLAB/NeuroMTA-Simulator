@@ -961,7 +961,7 @@ class MCA_CompiledNetworkGraph:
         if profiler_output_dir is not None:
             profilers = profilers if profilers is not None else []
             profiler_hub = ProfilerFileSaverHub(output_dir=os.path.join(profiler_output_dir, sim_name))
-            profiler_hub.add_profilers(profilers)
+            profiler_hub.add_profilers(*profilers)
         
         device = self.graph_recipe.device
         core_groups = self.graph_recipe.compile_recipe.core_groups
@@ -994,11 +994,11 @@ class MCA_CompiledNetworkGraph:
         
         if profiler_output_dir is not None:
             result_dict[sim_name]["profiles"] = [
-                result_dict[sim_name]["profiles"].append({
+                {
                     "metric_name": profiler.metric_name,
                     "metric_unit": profiler.metric_unit,
                     "profile": profiler.get_profile(),
-                })
+                }
                 for profiler in profilers
             ]
             profiler_hub.close()

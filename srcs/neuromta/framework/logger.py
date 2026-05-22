@@ -34,6 +34,7 @@ _COLOR_RESET = "\033[0m"
 _global_current_log_level: LogLevel = LogLevel.INFO
 _global_current_monitor_log_level: LogLevel = LogLevel.INFO
 _global_monitoring_window = None
+_global_log_print_scope = True
 
 
 def set_global_monitoring_window(monitoring_window):
@@ -54,9 +55,10 @@ def get_global_monitoring_window():
 
 class logger:
     @classmethod
-    def set_print_options(cls, log_level: LogLevel=None, monitor_log_level: LogLevel=None):
+    def set_print_options(cls, log_level: LogLevel=None, monitor_log_level: LogLevel=None, print_scope: bool=None):
         global _global_current_log_level
         global _global_current_monitor_log_level
+        global _global_log_print_scope
 
         if isinstance(log_level, int):
             log_level = LogLevel(log_level)
@@ -73,11 +75,15 @@ class logger:
 
         if monitor_log_level is not None:
             _global_current_monitor_log_level = monitor_log_level
+            
+        if print_scope is not None:
+            _global_log_print_scope = print_scope
 
     @classmethod
     def log(cls, scope: str, message: str, level: LogLevel = LogLevel.INFO, end: str = "\n"):
         global _global_current_log_level
         global _global_monitoring_window
+        global _global_log_print_scope
 
         if isinstance(level, int):
             level = LogLevel(level)
@@ -85,7 +91,9 @@ class logger:
             level = LogLevel[level.upper()]
         
         if level.value >= _global_current_log_level.value:
-            header = f"[{level.name}] [{scope}] "
+            header = f"[{level.name}] "
+            if _global_log_print_scope:
+                header += f"[{scope}] "
             if level.value >= LogLevel.ERROR.value:
                 sys.stderr.write(f"{_LOG_LEVEL_COLORS[level]}{header}{message}{_COLOR_RESET}" + end)
                 sys.stderr.flush()   # ensure the log is printed immediately

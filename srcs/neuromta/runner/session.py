@@ -68,6 +68,9 @@ class Session(mp.Process):
         self.device_lib_path = device_lib_path
         self.model_lib_path = model_lib_path
         
+        self._enable_monitoring = False
+        self._profiler_output_dir = None
+        
     def change_recipe(self, device_lib, key: str, value: Any) -> SessionMessage:
         device_lib.RECIPE[key] = value
         return SessionMessage.done(self.session_id)
@@ -113,16 +116,34 @@ class Session(mp.Process):
         except Exception as e:
             return None, SessionMessage.error(self.session_id, str(e))
 
-    def run_graph(self, graph: MCA_CompiledNetworkGraph, model_lib, group_idx: int, entry_idx: int) -> SessionMessage:
+    def run_graph(self, graph: MCA_CompiledNetworkGraph, device_lib, model_lib, group_idx: int, entry_idx: int) -> SessionMessage:
         try:
             dummy_inputs: list[Any] = model_lib.INPUTS
+            
+            if self._profiler_output_dir is not None:
+                device: MCA_DeviceBase = device_lib.DEVICE
+                
+                os.makedirs(self._profiler_output_dir, exist_ok=True)
+                profilers = [
+                    DRAMBandwidthProfiler(device, record_type="BOTH"),
+                    InterconnectBandwidthProfiler(device),
+                ]
+            else:
+                profilers = None
+            
             result_dict = graph.run_compiled_graph(
-                *dummy_inputs, group_idx=group_idx, entry_idx=entry_idx)
+                *dummy_inputs, group_idx=group_idx, entry_idx=entry_idx,
+                monitoring_window=self._enable_monitoring,
+                profilers=profilers,
+                profiler_output_dir=self._profiler_output_dir,
+            )
+            
             payload = {
                 "group_idx": group_idx,
                 "entry_idx": entry_idx,
                 "result": result_dict,
             }
+            
             return SessionMessage.done(self.session_id, payload)
         except Exception as e:
             return SessionMessage.error(self.session_id, str(e))
@@ -210,12 +231,19 @@ class Session(mp.Process):
             elif cmd.cmd_type == "compile_graph":
                 graph, msg = self.compile_graph(device_lib, model_lib)
                 self.msg_q.put(msg)
+            elif cmd.cmd_type == "enable_monitoring":
+                self._enable_monitoring = True
+                self.msg_q.put(SessionMessage.done(self.session_id, "Monitoring enabled."))
+            elif cmd.cmd_type == "enable_profiler":
+                path, = cmd.args
+                self._profiler_output_dir = path
+                self.msg_q.put(SessionMessage.done(self.session_id, f"Profiler enabled with output directory: {path}"))
             elif cmd.cmd_type == "run_graph":
                 if graph is None:
                     self.msg_q.put(SessionMessage.error(self.session_id, "No compiled graph available. Please compile the graph before running."))
                     continue
                 group_idx, entry_idx = cmd.args
-                msg = self.run_graph(graph, model_lib, group_idx, entry_idx)
+                msg = self.run_graph(graph, device_lib, model_lib, group_idx, entry_idx)
                 self.msg_q.put(msg)
             else:
                 self.msg_q.put(SessionMessage.error(self.session_id, f"Unknown command type: {cmd.cmd_type}"))

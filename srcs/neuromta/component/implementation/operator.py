@@ -83,11 +83,12 @@ class MCA_OperatorSignature:
         self._buffers[buf_name] = buffer
         self._tiles[buf_name] = {}
         
-        for y_s in range(buffer.shard_grid[0]):
-            for x_s in range(buffer.shard_grid[1]):
-                for y_t in range(buffer.tile_grid_per_shard[0]):
-                    for x_t in range(buffer.tile_grid_per_shard[1]):
-                        self._tiles[buf_name][(y_s, x_s, y_t, x_t)] = TileSignature(buf_name, buffer.tile_shape, buffer.dtype, y_s, x_s, y_t, x_t)
+        if buffer is not None:
+            for y_s in range(buffer.shard_grid[0]):
+                for x_s in range(buffer.shard_grid[1]):
+                    for y_t in range(buffer.tile_grid_per_shard[0]):
+                        for x_t in range(buffer.tile_grid_per_shard[1]):
+                            self._tiles[buf_name][(y_s, x_s, y_t, x_t)] = TileSignature(buf_name, buffer.tile_shape, buffer.dtype, y_s, x_s, y_t, x_t)
         
         self.buffer_names.append(buf_name)
         if is_param:
@@ -734,13 +735,13 @@ class MCA_OperatorGraphCompiler:
             self.ld_ratio = (self.min_ld_area_per_pp / (self.min_ld_area_per_pp + self.min_st_area_per_pp)) if (self.min_ld_area_per_pp + self.min_st_area_per_pp) > 0 else 0.8
             
             # Constant buffer sizes
-            self.bcast_fifo_slot_size = max(buf.tile_size for buf_name, buf in op_sig.buffers.items() if buf_name in op_sig.input_buffer_names)
+            self.bcast_fifo_slot_size = max(buf.tile_size for buf_name, buf in op_sig.buffers.items() if buf_name in op_sig.input_buffer_names and buf is not None)
             self.bcast_fifo_size      = recipe.broadcast_optimize_queue_depth * self.bcast_fifo_slot_size
             
             self.ctx_buffer_slot_size = self.op_sig.buffers[op_sig.output_buffer_name].tile_size  # conservatively reserve the same size as output tile buffer for context store (for tile-level pipelining)
             self.ctx_buffer_size      = recipe.context_buffer_slot_num * self.ctx_buffer_slot_size
             
-            self.ld_ex_fifo_slot_size = max(buf.tile_size for buf_name, buf in op_sig.buffers.items() if buf_name in op_sig.input_buffer_names)
+            self.ld_ex_fifo_slot_size = max(buf.tile_size for buf_name, buf in op_sig.buffers.items() if buf_name in op_sig.input_buffer_names and buf is not None)
             self.ld_ex_fifo_size      = recipe.ld_ex_buffer_slot_num * self.ld_ex_fifo_slot_size
             
             self.ex_st_fifo_slot_size = op_sig.buffers[op_sig.output_buffer_name].tile_size
@@ -749,9 +750,10 @@ class MCA_OperatorGraphCompiler:
             self.cache_buffer_slot_size = self.ld_ex_fifo_slot_size  # conservatively reserve the same size as LD->EX FIFO slot for cache buffer (for tile-level reuse)
             
             # Reuse targets
-            reuse_targets = sorted(self.op_sig.input_buffer_names, key=lambda buf_name: (self.op_sig.buffers[buf_name].total_size, 1 if self.op_sig.buffers[buf_name].mem_space.is_main else 0), reverse=True)
-            main_reuse_targets = [n for n in reuse_targets if self.op_sig.buffers[n].mem_space.is_main]
-            l1_reuse_targets = [n for n in reuse_targets if self.op_sig.buffers[n].mem_space.is_l1]
+            reuse_targets = [buf_name for buf_name in op_sig.input_buffer_names if op_sig.buffers[buf_name] is not None]
+            reuse_targets = sorted(reuse_targets, key=lambda buf_name: (op_sig.buffers[buf_name].total_size, 1 if op_sig.buffers[buf_name].mem_space.is_main else 0), reverse=True)
+            main_reuse_targets = [n for n in reuse_targets if op_sig.buffers[n].mem_space.is_main]
+            l1_reuse_targets = [n for n in reuse_targets if op_sig.buffers[n].mem_space.is_l1]
             
             if recipe.temporal_reuse_type == recipe.ReuseType.ALL:
                 self.temporal_reuse_targets = reuse_targets if len(reuse_targets) > 0 else op_sig.input_buffer_names
@@ -994,7 +996,8 @@ class MCA_OperatorGraphCompiler:
             thread_mapping: dict[int, MCA_OperatorGraphCompiler.Thread] = {}
             
             if self.greedy_temporal_reuse:
-                actual_temporal_reuse_targets = self.temporal_reuse_targets + [buf_name for buf_name in self.op_sig.input_buffer_names if buf_name not in self.temporal_reuse_targets]
+                actual_temporal_reuse_targets = self.temporal_reuse_targets + [buf_name for buf_name in self.op_sig.input_buffer_names 
+                                                                               if buf_name not in self.temporal_reuse_targets and self.op_sig.buffers[buf_name] is not None]  # If greedy temporal reuse is enabled, we can also consider other input buffers as temporal reuse targets (in case the specified temporal reuse targets do not provide enough reuse opportunities), but only consider those that are from buffers (not tile-shared sources) since tile-shared sources cannot be guaranteed to be reused across different tiled ops
             else:
                 actual_temporal_reuse_targets = self.temporal_reuse_targets
             actual_temporal_reuse_targets = [buf_name for buf_name in actual_temporal_reuse_targets if self.i_buf_src[buf_name].is_buffer]  # Only consider buffers as temporal reuse targets for thread mapping, since tile-shared sources cannot be guaranteed to be reused across different tiled ops

@@ -75,32 +75,8 @@ def run_compiled_graph(
         print(f"{sim_name}: {timestamp} cycles")
 
 
-class CustomMNISTCNN(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.layer1 = torch.nn.Sequential(
-            torch.nn.Conv2d(1, 32, kernel_size = 3, stride =1, padding = 1),
-            torch.nn.ReLU(),
-            torch.nn.MaxPool2d(kernel_size = 2, stride = 2)
-        )
-        self.layer2 = torch.nn.Sequential(
-            torch.nn.Conv2d(32, 64, kernel_size=3, stride =1, padding = 1),
-            torch.nn.ReLU(),
-            torch.nn.MaxPool2d(kernel_size = 2, stride = 2)
-        )
-        self.fc = torch.nn.Linear(7 * 7 * 64, 10, bias = True)
-        torch.nn.init.xavier_uniform_(self.fc.weight)
-   
-    def forward(self, x):
-        out = self.layer1(x)
-        out = self.layer2(out)
-        out = out.view(out.size(0), -1)
-        out = self.fc(out)
-        return out
-
-
 if __name__ == "__main__":
-    logger.set_print_options(log_level=LogLevel.DEBUG)
+    logger.set_print_options(log_level=LogLevel.INFO)
     
     args = parse_args()
     
@@ -108,15 +84,15 @@ if __name__ == "__main__":
     device = TenstorrentDevice(**config).initialize()
     device.set_command_debug_verbosity(verbose=False)
 
-    module = CustomMNISTCNN().eval()
-    dummy_inputs = [torch.randn(1, 1, 28, 28)]
+    module = torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.DEFAULT).eval()
+    dummy_inputs = [torch.randn(1, 3, 224, 224)]
     
     graph_recipe = MCA_NetworkRecipe(
         device=device,
         core_groups=device.get_npu_core_group((0, 0), (12, 14)),
-        # spad_space_size_per_core=parse_mem_cap_str("1MB"),
-        # dtype=torch.float32,
-        # acc_dtype=torch.float32,
+        spad_space_size_per_core=parse_mem_cap_str("1MB"),
+        dtype=torch.float32,
+        acc_dtype=torch.float32,
     )
     
     graph = compile_graph(

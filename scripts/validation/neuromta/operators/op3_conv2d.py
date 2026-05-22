@@ -39,8 +39,11 @@ if __name__ == "__main__":
     device.initialize()
     device.set_command_debug_verbosity(verbose=args.debug_command)
     
-    core_group = device.get_npu_core_group((0, 0), (12, 14))
+    core_group = device.get_npu_core_group((0, 0), (4, 4))
     
+    N, H, W, C = 1, 28, 28, 1
+    FH, FW, K = 3, 3, 32
+    STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
     # N, H, W, C = 1, 13, 13, 256
     # FH, FW, K = 3, 3, 256
     # STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
@@ -50,9 +53,9 @@ if __name__ == "__main__":
     # N, H, W, C = 1, 56, 56, 64
     # FH, FW, K = 3, 3, 64
     # STRIDE, PADDING, DILATION = (1, 1), (1, 1), (1, 1)
-    N, H, W, C = 1, 224, 224, 3
-    FH, FW, K = 11, 11, 96
-    STRIDE, PADDING, DILATION = (4, 4), (2, 2), (1, 1)
+    # N, H, W, C = 1, 224, 224, 3
+    # FH, FW, K = 11, 11, 96
+    # STRIDE, PADDING, DILATION = (4, 4), (2, 2), (1, 1)
     # N, H, W, C = 1, 224, 224, 3
     # FH, FW, K = 7, 7, 64
     # STRIDE, PADDING, DILATION = (2, 2), (3, 3), (1, 1)
@@ -65,6 +68,7 @@ if __name__ == "__main__":
     ifm  = torch.ones((N, H, W, C), dtype=dtype)
     wgt  = torch.ones((FH, FW, K, C), dtype=dtype)
     bias = torch.ones((K,), dtype=acc_dtype) * 2
+    # bias = torch.zeros((K,), dtype=acc_dtype)
     ofm  = torch.zeros((N, OH, OW, K), dtype=acc_dtype)
     
     ifm_size  = ifm.numel() * ifm.dtype.itemsize
@@ -88,20 +92,32 @@ if __name__ == "__main__":
     compiler = MCA_OperatorGraphCompiler()
     compiler.add_op(operator)
     
+    # global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
+    #     device=device,
+    #     core_groups=[core_group],
+    #     spad_space_size_per_core=parse_mem_cap_str("512KB"),
+    #     # broadcast_optimize_queue_depth=4,
+    #     # broadcast_optimize_max_ref_cnt=16,
+    #     # context_buffer_slot_num=8,
+    #     # ld_ex_buffer_slot_num=8,
+    #     # ex_st_buffer_slot_num=4,
+    #     # concurrent_load_num=2,
+    #     # temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,       # ifm temporal reuse
+    #     # spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast
+    # )
+    
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=[core_group],
-        spad_space_size_per_core=parse_mem_cap_str("1MB"),
-        broadcast_optimize_queue_depth=4,
-        broadcast_optimize_max_ref_cnt=16,
-        context_buffer_slot_num=8,
-        ld_ex_buffer_slot_num=8,
-        ex_st_buffer_slot_num=4,
-        concurrent_load_num=2,
+        spad_space_size_per_core=parse_mem_cap_str("512KB"),
+        broadcast_optimize_queue_depth=8,
+        broadcast_optimize_max_ref_cnt=4,
+        context_buffer_slot_num=16,
+        ld_ex_buffer_slot_num=16,
+        ex_st_buffer_slot_num=8,
+        concurrent_load_num=1,
         temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,       # ifm temporal reuse
         spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast
-        # temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_L1,       # ifm temporal reuse
-        # spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -137,8 +153,8 @@ if __name__ == "__main__":
     if args.save_profile:
         profiler_saver.close()
     
-    for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
-        logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
+        for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
+            logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")
@@ -152,6 +168,7 @@ if __name__ == "__main__":
         input=ifm.permute(0, 3, 1, 2).to(acc_dtype).contiguous(), 
         weight=wgt.permute(2, 3, 0, 1).to(acc_dtype).contiguous(), 
         bias=bias.to(acc_dtype), 
+        # bias=None, 
         stride=STRIDE, 
         padding=PADDING, 
         dilation=DILATION
