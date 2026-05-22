@@ -220,3 +220,6 @@ scripts/*experiment/*/.logs*
 .data/
 build/
 .logs*
+
+# Neuromta output files (runner.tcl)
+output
