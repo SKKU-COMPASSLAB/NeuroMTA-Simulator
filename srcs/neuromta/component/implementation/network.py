@@ -20,40 +20,13 @@ from torch.multiprocessing import Pool
 
 
 
-__all__ = [
-    "Placeholder",
-    
+__all__ = [   
     "NetworkGraphEntry",
     "CompiledGraphEntry",
     "NetworkGraphContext",
     "NetworkRecipe",
     "MCA_CompiledNetworkGraph",
 ]
-
-
-class Placeholder:
-    def __init__(self, name: str):
-        self.name = name
-        
-
-def _safe_infer_jit_type(arg: Any) -> torch._C.Type:
-    if isinstance(arg, list) and len(arg) == 0:
-        return torch._C.ListType(torch._C.AnyType.get())
-
-    if isinstance(arg, dict) and len(arg) == 0:
-        return torch._C.DictType(torch._C.AnyType.get(), torch._C.AnyType.get())
-
-    if arg is None:
-        return torch._C.NoneType.get()
-
-    try:
-        inferred = torch._C._jit_try_infer_type(arg)
-        if inferred.success():
-            return inferred.type()
-        else:
-            return torch._C.AnyType.get()
-    except RuntimeError:
-        return torch._C.AnyType.get()
 
 
 def _cast_to_jit_type(arg: Any, target_type: torch._C.Type) -> Any:
@@ -69,54 +42,7 @@ def _cast_to_jit_type(arg: Any, target_type: torch._C.Type) -> Any:
         return torch.tensor(arg) if not isinstance(arg, torch.Tensor) else arg
     elif target_type.isSubtypeOf(torch._C.DeviceObjType.get()):
         return torch.device(arg) if not isinstance(arg, torch.device) else arg
-    # elif target_type.isSubtypeOf(torch._C.ListType.get()):
-    #     return list(arg) if not isinstance(arg, list) else arg
-    # elif target_type.isSubtypeOf(torch._C.DictType.get()):
-    #     return dict(arg) if not isinstance(arg, dict) else arg
-    # else:
-    #     raise TypeError(f"Unsupported target type for JIT conversion: {target_type}")
     return arg  # fallback: return as is if no specific conversion rule applies
-
-
-# def _check_jit_type_compatibility(s_type: torch._C.Type, m_arg: Any) -> tuple[bool, bool, Any]:  # flag_compatible, flag_optional, converted arg
-#     try:
-#         # m_type = torch._C._jit_try_infer_type(m_arg).type()
-#         m_type = _safe_infer_jit_type(m_arg)
-        
-#         # print(s_type.kind(), m_type.kind(), type(m_arg))
-
-#         if s_type.isSubtypeOf(m_type):
-#             # print("VALID (subtype)")
-#             return (True, "Optional" in s_type.kind(), m_arg)
-
-#         if s_type.kind() == "BoolType" and m_type.kind() in ("BoolType", "IntType", "NumberType"):
-#             # print("VALID (bool -> numeric)")
-#             return (True, False, bool(m_arg))
-#         if s_type.kind() == "NumberType" and m_type.kind() in ("IntType", "FloatType"):
-#             # print("VALID (numeric -> int/float upcast)")
-#             return (True, False, m_arg)
-#         elif s_type.kind() == "DeviceObjType" and m_type.kind() in ("StringType"):
-#             # print("VALID (device -> string)")
-#             return (True, False, torch.device(m_arg))
-#         elif s_type.kind() == "TensorType" and m_type.kind() in ("ListType"):
-#             # print("VALID (tensor -> list)")
-#             return (True, False, torch.tensor(m_arg))
-#         elif "Optional" in s_type.kind():
-#             s_opt_type = s_type.getElementType()
-#             _flag_compatible, _, _converted_arg = _check_jit_type_compatibility(s_opt_type, m_arg)
-#             # print("VALID (optional)")
-#             return (_flag_compatible, True, _converted_arg)
-#     except Exception as e:
-#         # print(f"INVALID: {e}")
-#         return (False, False, m_arg)
-    
-#     # print("INCOMPATIBLE")
-#     return (False, False, m_arg)
-
-# def _check_argument_compatibility(s_arg, m_arg: Any) -> tuple[bool, bool, Any]:
-#     s_type = s_arg.type
-
-#     return _check_jit_type_compatibility(s_type=s_type, m_arg=m_arg)
 
 def _get_attr_from_node(node: torch.Node, attr_name: str) -> any:
     for attr_types in ['f', 'fs', 'c', 's', 'ss', 'i', 'g', 'gs', 'ival', 't', 'ts', 'ty', 'tys']:
@@ -126,51 +52,6 @@ def _get_attr_from_node(node: torch.Node, attr_name: str) -> any:
             pass
     
     return None
-
-# def _find_nonprim_method(method_domain: str, method_name: str, args: list[Any]) -> tuple[Callable, list[Any], dict[str, Any]]:
-#     method = None
-    
-#     for aten_ref in [getattr(torch.ops, method_domain), torch, torch.nn.functional]:
-#         try:
-#             method = getattr(aten_ref, method_name)
-#             break
-#         except:
-#             pass
-        
-#     # check schema
-#     pp_args = []
-#     pp_kwargs = {}
-#     schema_found = False
-    
-#     for overload_name in method._overload_names:
-#         schema: torch._C.FunctionSchema = torch._C._get_schema(method._qualified_op_name, overload_name)
-        
-#         if len(schema.arguments) < len(args):
-#             continue
-        
-#         flag_schema_compatible = True
-#         tmp_pp_args = []
-#         tmp_pp_kwargs = {}
-        
-#         for s_arg, m_arg in zip(schema.arguments, args):
-#             flag_compatible, flag_optional, converted_arg = _check_argument_compatibility(s_arg=s_arg, m_arg=m_arg)
-#             print(f"  {s_arg.name}: {s_arg.type} vs {type(m_arg)}, compatible={flag_compatible}, optional={flag_optional}, converted_arg={converted_arg}")
-
-#             if not flag_compatible and not flag_optional:
-#                 flag_schema_compatible = False
-#             else:
-#                 tmp_pp_kwargs[s_arg.name] = converted_arg
-        
-#         if flag_schema_compatible:
-#             pp_args = tmp_pp_args
-#             pp_kwargs = tmp_pp_kwargs
-#             schema_found = True
-#             break
-        
-#     if not schema_found:
-#         return None, [], {}
-    
-#     return method, pp_args, pp_kwargs
 
 def resolve_args_kwargs(schema: torch._C.FunctionSchema, raw_inputs: list):
     args = []
@@ -593,22 +474,16 @@ class NetworkGraphContext(dict):
     def __getattr__(self, name):
         if isinstance(name, torch.Value):
             name = name.debugName()
-        elif isinstance(name, Placeholder):
-            name = name.name
         return super().__getattr__(name)
     
     def __getitem__(self, key):
         if isinstance(key, torch.Value):
             key = key.debugName()
-        elif isinstance(key, Placeholder):
-            key = key.name
         return super().__getitem__(key)
     
     def __setitem__(self, key, value):
         if isinstance(key, torch.Value):
             key = key.debugName()
-        elif isinstance(key, Placeholder):
-            key = key.name
         return super().__setitem__(key, value)
     
     def run_prim_entry(self, entry: NetworkGraphEntry, trace_mode: bool=False):

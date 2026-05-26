@@ -1,5 +1,5 @@
 # STEP 1: Open session
-open_session tenstorrent_bh llama2_attn_decode 1
+open_session tenstorrent_bh llama2_attn_decode 4
 
 # STEP 2: Set compilation recipe
 set_core_group_shape  12 14
@@ -28,7 +28,7 @@ set_session_recipe acc_dtype                        float16
 mkdir ./output
 
 # enable_monitoring                   # make sure you have already run the monitoring server (neuromta_monitor_server)
-enable_profiler ./output/profiles   # note that this will generate a large amount of profiling data, so specify an appropriate output path
+# enable_profiler ./output/profiles   # note that this will generate a large amount of profiling data, so specify an appropriate output path
 
 compile_graph
 run_graph
