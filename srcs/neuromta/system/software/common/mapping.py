@@ -23,7 +23,10 @@ def MCA_MAPPER_LINEAR(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
     
     ifm_shape = ifm.shape
     wgt_shape = wgt.shape
-    bias_shape = bias.shape
+    if bias is not None:
+        bias_shape = bias.shape
+    else:
+        bias_shape = (1, wgt_shape[0])  # Bias shape should match output channel dimension of weight
     ofm_shape = ofm.shape
     
     if ifm_shape[0] != ofm_shape[0]:
@@ -35,7 +38,10 @@ def MCA_MAPPER_LINEAR(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
     
     ifm_shard_grid = ifm.shard_grid
     wgt_shard_grid = wgt.shard_grid
-    bias_shard_grid = bias.shard_grid
+    if bias is not None:
+        bias_shard_grid = bias.shard_grid
+    else:
+        bias_shard_grid = (1, wgt_shard_grid[0])
     ofm_shard_grid = ofm.shard_grid
     
     if ifm_shard_grid[0] != ofm_shard_grid[0]:
@@ -47,7 +53,10 @@ def MCA_MAPPER_LINEAR(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
     
     ifm_tile_shape = ifm.tile_shape
     wgt_tile_shape = wgt.tile_shape
-    bias_tile_shape = bias.tile_shape
+    if bias is not None:
+        bias_tile_shape = bias.tile_shape
+    else:
+        bias_tile_shape = (1, wgt_tile_shape[0])
     ofm_tile_shape = ofm.tile_shape
     
     if ifm_tile_shape[0] != ofm_tile_shape[0]:
@@ -69,11 +78,14 @@ def MCA_MAPPER_LINEAR(op_sig: MCA_OperatorSignature) -> MCA_OperatorSignature:
                                 op_sig.tiles["ifm"][(m_s, k_s, m_t, k_t)],
                                 op_sig.tiles["wgt"][(n_s, k_s, n_t, k_t)],
                             ]
-                            if k_s == 0 and k_t == 0:
+                            if bias is not None and k_s == 0 and k_t == 0:
                                 i_tiles.append(op_sig.tiles["bias"][(0, n_s, 0, n_t)])  # TODO: bias or psum?
                             tiled_op.add_uop(
                                 i_tiles=i_tiles,
                                 o_tile=op_sig.tiles["ofm"][(m_s, n_s, m_t, n_t)],
+                                op_kwargs={
+                                    "use_bias": bias is not None and k_s == 0 and k_t == 0,  # TODO: bias or psum?
+                                }
                             )
     
     return op_sig

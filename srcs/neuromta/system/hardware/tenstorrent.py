@@ -113,14 +113,6 @@ class TenstorrentConfig(dict):
             cc = dma_cmap_col[inst_id % 2]
             rr = (inst_id // 2) * n_dma_core_per_inst + (di % n_dma_core_per_inst)
             dma_core_to_coord_map[d] = (rr, cc)
-            
-        # for main_mem_inst_idx in range(n_main_mem_instances):
-        #     c = dma_cmap_col[main_mem_inst_idx % 2]
-            
-        #     # for main_mem_cmd_q_idx in range(n_main_mem_cmd_q_per_instance):
-        #     #     r = main_mem_inst_idx // 2 * n_main_mem_cmd_q_per_instance + main_mem_cmd_q_idx
-        #     #     d = global_config.dma_core_ids[main_mem_inst_idx * n_main_mem_cmd_q_per_instance + main_mem_cmd_q_idx]
-        #     #     dma_core_to_coord_map[d] = (r, c)
         
         cnt = 0
         for r in range(icnt_shape[0]):
@@ -148,6 +140,131 @@ class TenstorrentConfig(dict):
             dtype=torch.float32,
             acc_dtype=torch.float32,
             op_latency_per_byte=0.5,  # the peak performance assumes bfloat16 (2 bytes per operation)
+        )
+        
+        vpu_config = VPUConfig(
+            vreg_len=parse_mem_cap_str("128B"),
+            vreg_num=32,
+            vdtype=torch.float32,
+            
+            vlen_max=1024,
+            vlen_min=32,
+            
+            unary_op_latency=1,
+            arith_op_latency=2,
+        )
+        
+        return cls(
+            processor_clock_freq=processor_clock_freq,
+            global_config=global_config,
+            icnt_config=icnt_config,
+            mxu_config=mxu_config,
+            vpu_config=vpu_config,
+        )
+        
+    @classmethod
+    def WORMHOLE(
+        cls,
+        processor_clock_freq: int = parse_freq_str("1.0GHz"),
+        main_mem_channel_size: int = parse_mem_cap_str("2GB"),  # 6 instances * 2GB = 12GB total
+        l1_mem_bank_size: int = parse_mem_cap_str("1.5MB"),
+        l1_mem_dynamic_space_size_per_bank: int = 0,
+    ) -> 'TenstorrentConfig':
+        config_name = "wormhole"
+
+        # Wormhole uses a 10x12 grid architecture
+        icnt_shape = (10, 12)
+        
+        # Mapping 2 rows for DMA/Memory controllers, 8 rows for Tensix(NPU) cores
+        n_npu_core = 8 * 12  # 96 NPU cores 
+        n_dma_core = 2 * 12  # 24 DMA cores
+        
+        n_main_mem_instances = 6
+        n_main_mem_channel_per_instance = 1
+
+        main_mem_config = MainMemoryConfig(
+            # STATIC MEMORY CONFIG
+            processor_clock_freq=processor_clock_freq,
+            n_instance=n_main_mem_instances,
+            channel_size=main_mem_channel_size,
+            n_channel_per_instance=n_main_mem_channel_per_instance,
+            
+            # DRAMSIM CONFIG
+            dramsim3_enable=PYDRAMSIM3_AVAILABLE,
+            dramsim3_src_config_path="GDDR6_8Gb_x16.ini",
+            dramsim3_dst_config_path=TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name),
+            dramsim3_max_issue_per_cmd_q_per_cycle=32,
+        )
+        
+        icnt_config = IcntConfig(                       # INTERCONNECT CONFIG
+            processor_clock_freq=processor_clock_freq,  # - 1.0GHz (from the Wormhole specsheet)
+            shape=icnt_shape,                           # - 10x12 torus
+            subnets=2,                                  # - 2 independent NoCs (one per router)
+            flit_size=parse_mem_cap_str("64B"),         # - 64B flit size (flow-control unit)
+            max_payload_size=32,                        # - max payload = 32 flits (= 2048B)
+            booksim2_enable=PYBOOKSIM2_AVAILABLE,
+            booksim2_kwargs={
+                "routing_delay": 1,
+                "vc_alloc_delay": 1,
+                "sw_alloc_delay": 1,
+                "st_prepare_delay": 0,
+                "st_final_delay": 1,
+                
+                "input_speedup": 1,
+                "output_speedup": 1,
+                "internal_speedup": 1.0,
+                
+                "num_vcs": 16,
+                "vc_buf_size": 8,
+            }
+        )
+        
+        global_config = GlobalContextConfig(
+            n_npu_core=n_npu_core,
+            n_dma_core=n_dma_core,
+            l1_mem_bank_size=l1_mem_bank_size,
+            l1_mem_dynamic_space_size_per_bank=l1_mem_dynamic_space_size_per_bank,
+            main_mem_config=main_mem_config,
+        )
+
+        dma_core_to_coord_map: dict[int, list[tuple[int, int]]] = {}
+        # Wormhole memory controllers are typically mapped along the top and bottom edges
+        dma_cmap_row = [0, 9] 
+        npu_core_to_coord_map: dict[int, tuple[int, int]] = {}
+        
+        n_dma_core_per_inst = n_dma_core // n_main_mem_instances
+        for di, d in enumerate(global_config.dma_core_ids):
+            inst_id = di // n_dma_core_per_inst
+            rr = dma_cmap_row[inst_id % 2]
+            cc = (inst_id // 2) * n_dma_core_per_inst + (di % n_dma_core_per_inst)
+            dma_core_to_coord_map[d] = (rr, cc)
+        
+        cnt = 0
+        for r in range(icnt_shape[0]):
+            for c in range(icnt_shape[1]):
+                if r in dma_cmap_row:
+                    continue
+                
+                n = global_config.npu_core_ids[cnt]
+                npu_core_to_coord_map[n] = (r, c)
+                cnt += 1
+                
+        for d, coord in dma_core_to_coord_map.items():
+            icnt_config.update_core_map(coord, d)
+        for n, coord in npu_core_to_coord_map.items():
+            icnt_config.update_core_map(coord, n)
+        
+        mxu_config = MXUConfig(
+            peak_op_per_cycle=2048,  # Scaled down to match Wormhole compute characteristics
+            preload_cycle=1,         # assume pipelining (additional 1 cycle for tail latency)
+            flush_cycle=1,           # assume pipelining (additional 1 cycle for tail latency)
+            
+            pe_arr_height=32,
+            pe_arr_width=32,
+            seq_len=32,
+            dtype=torch.float32,
+            acc_dtype=torch.float32,
+            op_latency_per_byte=0.5, 
         )
         
         vpu_config = VPUConfig(

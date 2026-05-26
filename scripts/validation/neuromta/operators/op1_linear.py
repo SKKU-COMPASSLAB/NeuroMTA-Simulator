@@ -40,7 +40,7 @@ if __name__ == "__main__":
     
     core_group = device.get_npu_core_group((0, 0), (8, 8))
     
-    M, N, K = 256, 1024, 1024
+    M, N, K = 128, 1024, 1024
     dtype = torch.int16
     acc_dtype = torch.int16
     
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     bias_size = bias.numel() * bias.dtype.itemsize
     ofm_size  = ofm.numel() * ofm.dtype.itemsize
     
-    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("512KB"), core_group=device.get_npu_core_group()).override(core_group)
+    l1_data_mem_space   = device.create_l1_mem_space(parse_mem_cap_str("1MB"), core_group=device.get_npu_core_group()).override(core_group)
     main_data_mem_space = device.create_main_mem_space(parse_mem_cap_str("1GB"))
     
     ifm_b  = MCA_TensorBuffer(mem_space=l1_data_mem_space, shape=ifm.shape,  dtype=ifm.dtype).allocate().update(ifm)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     global_recipe=MCA_OperatorGraphCompiler.CompileRecipe(
         device=device,
         core_groups=[core_group],
-        spad_space_size_per_core=parse_mem_cap_str("1MB"),
+        spad_space_size_per_core=parse_mem_cap_str("512KB"),
         broadcast_optimize_queue_depth=8,
         broadcast_optimize_max_ref_cnt=16,
         context_buffer_slot_num=4,

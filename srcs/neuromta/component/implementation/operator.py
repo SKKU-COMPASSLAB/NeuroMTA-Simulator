@@ -982,11 +982,15 @@ class MCA_OperatorGraphCompiler:
                 if best_candidate is None:
                     break
 
-                # 4. Finalize the chosen cluster and update queue pointers
+                # 4. Finalize the chosen cluster and update queue pointers safely
                 new_cluster = []
+                max_idx_of_cluster = best_candidate['max_idx']
+                
                 for q_id, idx in best_candidate['positions']:
                     new_cluster.append(queued_items[q_id][idx])
-                    current_pos[q_id] = idx + 1
+                
+                for q_id in queued_items.keys():
+                    current_pos[q_id] = max(current_pos[q_id], max_idx_of_cluster + 1)
                 
                 clustered_items.append(new_cluster)
 

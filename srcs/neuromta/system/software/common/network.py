@@ -64,6 +64,16 @@ class MCA_NetworkRecipe(NetworkRecipe):
         bias: torch.Tensor = i_args[2] if len(i_args) > 2 else None
         ofm: torch.Tensor  = o_args[0]
         
+        if ifm.dim() == 1:
+            ifm = ifm.unsqueeze(0)  # Add batch dimension
+        if ofm.dim() == 1:
+            ofm = ofm.unsqueeze(0)  # Add batch dimension
+        
+        if ifm.dim() > 2:
+            ifm = ifm.view(-1, ifm.shape[-1])  # Flatten to 2D (M, K)
+        if ofm.dim() > 2:
+            ofm = ofm.view(-1, ofm.shape[-1])  # Flatten to 2D (M, N)
+            
         M, K = ifm.shape
         N, K = wgt.shape
         

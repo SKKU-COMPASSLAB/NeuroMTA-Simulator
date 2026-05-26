@@ -55,9 +55,8 @@ class GoogleTPUConfig(dict):
         n_npu_core = 8
         icnt_shape = (2, max(n_dma_core, n_npu_core))
         
-        n_main_mem_instances = 1
-        n_main_mem_channel_per_instance = 8
-        n_main_mem_cmd_q_per_instance = 8
+        n_main_mem_instances = 8
+        n_main_mem_channel_per_instance = 1
 
         main_mem_config = MainMemoryConfig(
             # STATIC MEMORY CONFIG
@@ -70,6 +69,7 @@ class GoogleTPUConfig(dict):
             dramsim3_enable=PYDRAMSIM3_AVAILABLE,
             dramsim3_src_config_path="HBM2_8Gb_x128.ini",
             dramsim3_dst_config_path=GOOGLE_TPU_IP_DRAMSIM_CONFIG_FMT(config_name=config_name),
+            dramsim3_max_issue_per_cmd_q_per_cycle=32,
         )
         
         icnt_config = IcntConfig(                       # INTERCONNECT CONFIG
@@ -110,6 +110,10 @@ class GoogleTPUConfig(dict):
             icnt_config.update_core_map(coord=(1, i), core_id=n)
         
         mxu_config = MXUConfig(
+            peak_op_per_cycle=32768,   # from the tenstorrent blackhole specsheet (refer to the official github repo)
+            preload_cycle=128,
+            flush_cycle=128,  
+
             pe_arr_height=128,
             pe_arr_width=128,
             seq_len=128,  # TODO: sequence length is 128? 256? for now decide for simple tiling ...
@@ -120,7 +124,7 @@ class GoogleTPUConfig(dict):
         
         vpu_config = VPUConfig(
             vreg_len=parse_mem_cap_str("512B"),
-            vreg_num=32,
+            vreg_num=128,
             vdtype=torch.float32,
             
             vlen_max=1024,

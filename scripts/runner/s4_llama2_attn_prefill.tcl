@@ -1,9 +1,9 @@
 # STEP 1: Open session
-open_session tenstorrent_bh mnist 4
+open_session tenstorrent_bh llama2_attn_prefill 1
 
 # STEP 2: Set compilation recipe
-set_core_group_shape  4 4
-set_core_group_offset 0 0
+set_core_group_shape  12 14
+set_core_group_offset 0  0
 
 set_session_recipe main_space_size_per_channel      1GB
 set_session_recipe data_space_size_per_core         1MB
@@ -27,7 +27,7 @@ set_session_recipe acc_dtype                        float16
 # STEP 3: Compile and run graph
 mkdir ./output
 
-# enable_monitoring                   # make sure you have already run the monitoring server (neuromta_monitor_server)
+enable_monitoring                   # make sure you have already run the monitoring server (neuromta_monitor_server)
 enable_profiler ./output/profiles   # note that this will generate a large amount of profiling data, so specify an appropriate output path
 
 compile_graph

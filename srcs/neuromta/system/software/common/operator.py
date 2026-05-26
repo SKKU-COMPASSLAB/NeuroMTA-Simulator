@@ -41,7 +41,10 @@ def MCA_OP_LINEAR(
     
     op_sig.add_buffer("ifm",  ifm.tiling((m_tile, k_tile)),  is_input=True)
     op_sig.add_buffer("wgt",  wgt.tiling((n_tile, k_tile)),  is_param=True)
-    op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    if bias is not None:
+        op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    else:
+        op_sig.add_buffer("bias", None, is_param=True)
     op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
     
     return common_mapping_lib.MCA_MAPPER_LINEAR(op_sig)
@@ -84,7 +87,10 @@ def MCA_OP_LINEAR_RELU(
     
     op_sig.add_buffer("ifm",  ifm.tiling((m_tile, k_tile)),  is_input=True)
     op_sig.add_buffer("wgt",  wgt.tiling((n_tile, k_tile)),  is_param=True)
-    op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    if bias is not None:
+        op_sig.add_buffer("bias", bias.tiling((1, n_tile)),      is_param=True)
+    else:
+        op_sig.add_buffer("bias", None, is_param=True)
     op_sig.add_buffer("ofm",  ofm.tiling((m_tile, n_tile)),  is_output=True)
     
     return common_mapping_lib.MCA_MAPPER_LINEAR(op_sig)

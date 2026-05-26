@@ -56,48 +56,67 @@ def _safe_infer_jit_type(arg: Any) -> torch._C.Type:
         return torch._C.AnyType.get()
 
 
-def _check_jit_type_compatibility(s_type: torch._C.Type, m_arg: Any) -> tuple[bool, bool, Any]:  # flag_compatible, flag_optional, converted arg
-    try:
-        # m_type = torch._C._jit_try_infer_type(m_arg).type()
-        m_type = _safe_infer_jit_type(m_arg)
+def _cast_to_jit_type(arg: Any, target_type: torch._C.Type) -> Any:
+    if target_type.isSubtypeOf(torch._C.BoolType.get()):
+        return bool(arg)
+    elif target_type.isSubtypeOf(torch._C.IntType.get()):
+        return int(arg)
+    elif target_type.isSubtypeOf(torch._C.FloatType.get()):
+        return float(arg)
+    elif target_type.isSubtypeOf(torch._C.StringType.get()):
+        return str(arg)
+    elif target_type.isSubtypeOf(torch._C.TensorType.get()):
+        return torch.tensor(arg) if not isinstance(arg, torch.Tensor) else arg
+    elif target_type.isSubtypeOf(torch._C.DeviceObjType.get()):
+        return torch.device(arg) if not isinstance(arg, torch.device) else arg
+    # elif target_type.isSubtypeOf(torch._C.ListType.get()):
+    #     return list(arg) if not isinstance(arg, list) else arg
+    # elif target_type.isSubtypeOf(torch._C.DictType.get()):
+    #     return dict(arg) if not isinstance(arg, dict) else arg
+    # else:
+    #     raise TypeError(f"Unsupported target type for JIT conversion: {target_type}")
+    return arg  # fallback: return as is if no specific conversion rule applies
+
+
+# def _check_jit_type_compatibility(s_type: torch._C.Type, m_arg: Any) -> tuple[bool, bool, Any]:  # flag_compatible, flag_optional, converted arg
+#     try:
+#         # m_type = torch._C._jit_try_infer_type(m_arg).type()
+#         m_type = _safe_infer_jit_type(m_arg)
         
-        # print(s_type.kind(), m_type.kind(), type(m_arg))
+#         # print(s_type.kind(), m_type.kind(), type(m_arg))
 
-        if s_type.isSubtypeOf(m_type):
-            # print("VALID (subtype)")
-            return (True, "Optional" in s_type.kind(), m_arg)
+#         if s_type.isSubtypeOf(m_type):
+#             # print("VALID (subtype)")
+#             return (True, "Optional" in s_type.kind(), m_arg)
 
-        if s_type.kind() == "BoolType" and m_type.kind() in ("BoolType", "IntType", "NumberType"):
-            # print("VALID (bool -> numeric)")
-            return (True, False, bool(m_arg))
-        if s_type.kind() == "NumberType" and m_type.kind() in ("IntType", "FloatType"):
-            # print("VALID (numeric -> int/float upcast)")
-            return (True, False, m_arg)
-        elif s_type.kind() == "DeviceObjType" and m_type.kind() in ("StringType"):
-            # print("VALID (device -> string)")
-            return (True, False, torch.device(m_arg))
-        elif s_type.kind() == "TensorType" and m_type.kind() in ("ListType"):
-            # print("VALID (tensor -> list)")
-            return (True, False, torch.tensor(m_arg))
-        # elif s_type.kind() == "ListType" and m_type.kind() in ("ListType"):
-        #     print("VALID (list -> list with different element type)")
-        #     return (True, False, m_arg)
-        elif "Optional" in s_type.kind():
-            s_opt_type = s_type.getElementType()
-            _flag_compatible, _, _converted_arg = _check_jit_type_compatibility(s_opt_type, m_arg)
-            # print("VALID (optional)")
-            return (_flag_compatible, True, _converted_arg)
-    except Exception as e:
-        # print(f"INVALID: {e}")
-        return (False, False, m_arg)
+#         if s_type.kind() == "BoolType" and m_type.kind() in ("BoolType", "IntType", "NumberType"):
+#             # print("VALID (bool -> numeric)")
+#             return (True, False, bool(m_arg))
+#         if s_type.kind() == "NumberType" and m_type.kind() in ("IntType", "FloatType"):
+#             # print("VALID (numeric -> int/float upcast)")
+#             return (True, False, m_arg)
+#         elif s_type.kind() == "DeviceObjType" and m_type.kind() in ("StringType"):
+#             # print("VALID (device -> string)")
+#             return (True, False, torch.device(m_arg))
+#         elif s_type.kind() == "TensorType" and m_type.kind() in ("ListType"):
+#             # print("VALID (tensor -> list)")
+#             return (True, False, torch.tensor(m_arg))
+#         elif "Optional" in s_type.kind():
+#             s_opt_type = s_type.getElementType()
+#             _flag_compatible, _, _converted_arg = _check_jit_type_compatibility(s_opt_type, m_arg)
+#             # print("VALID (optional)")
+#             return (_flag_compatible, True, _converted_arg)
+#     except Exception as e:
+#         # print(f"INVALID: {e}")
+#         return (False, False, m_arg)
     
-    # print("INCOMPATIBLE")
-    return (False, False, m_arg)
+#     # print("INCOMPATIBLE")
+#     return (False, False, m_arg)
 
-def _check_argument_compatibility(s_arg, m_arg: Any) -> tuple[bool, bool, Any]:
-    s_type = s_arg.type
+# def _check_argument_compatibility(s_arg, m_arg: Any) -> tuple[bool, bool, Any]:
+#     s_type = s_arg.type
 
-    return _check_jit_type_compatibility(s_type=s_type, m_arg=m_arg)
+#     return _check_jit_type_compatibility(s_type=s_type, m_arg=m_arg)
 
 def _get_attr_from_node(node: torch.Node, attr_name: str) -> any:
     for attr_types in ['f', 'fs', 'c', 's', 'ss', 'i', 'g', 'gs', 'ival', 't', 'ts', 'ty', 'tys']:
@@ -108,49 +127,70 @@ def _get_attr_from_node(node: torch.Node, attr_name: str) -> any:
     
     return None
 
-def _find_nonprim_method(method_domain: str, method_name: str, args: list[Any]) -> tuple[Callable, list[Any], dict[str, Any]]:
-    method = None
+# def _find_nonprim_method(method_domain: str, method_name: str, args: list[Any]) -> tuple[Callable, list[Any], dict[str, Any]]:
+#     method = None
     
-    for aten_ref in [getattr(torch.ops, method_domain), torch, torch.nn.functional]:
-        try:
-            method = getattr(aten_ref, method_name)
-            break
-        except:
-            pass
+#     for aten_ref in [getattr(torch.ops, method_domain), torch, torch.nn.functional]:
+#         try:
+#             method = getattr(aten_ref, method_name)
+#             break
+#         except:
+#             pass
         
-    # check schema
-    pp_args = []
-    pp_kwargs = {}
-    schema_found = False
+#     # check schema
+#     pp_args = []
+#     pp_kwargs = {}
+#     schema_found = False
     
-    for overload_name in method._overload_names:
-        schema: torch._C.FunctionSchema = torch._C._get_schema(method._qualified_op_name, overload_name)
+#     for overload_name in method._overload_names:
+#         schema: torch._C.FunctionSchema = torch._C._get_schema(method._qualified_op_name, overload_name)
         
-        if len(schema.arguments) < len(args):
-            continue
+#         if len(schema.arguments) < len(args):
+#             continue
         
-        flag_schema_compatible = True
-        tmp_pp_args = []
-        tmp_pp_kwargs = {}
+#         flag_schema_compatible = True
+#         tmp_pp_args = []
+#         tmp_pp_kwargs = {}
         
-        for s_arg, m_arg in zip(schema.arguments, args):
-            flag_compatible, flag_optional, converted_arg = _check_argument_compatibility(s_arg=s_arg, m_arg=m_arg)
+#         for s_arg, m_arg in zip(schema.arguments, args):
+#             flag_compatible, flag_optional, converted_arg = _check_argument_compatibility(s_arg=s_arg, m_arg=m_arg)
+#             print(f"  {s_arg.name}: {s_arg.type} vs {type(m_arg)}, compatible={flag_compatible}, optional={flag_optional}, converted_arg={converted_arg}")
 
-            if not flag_compatible and not flag_optional:
-                flag_schema_compatible = False
-            else:
-                tmp_pp_kwargs[s_arg.name] = converted_arg
+#             if not flag_compatible and not flag_optional:
+#                 flag_schema_compatible = False
+#             else:
+#                 tmp_pp_kwargs[s_arg.name] = converted_arg
         
-        if flag_schema_compatible:
-            pp_args = tmp_pp_args
-            pp_kwargs = tmp_pp_kwargs
-            schema_found = True
-            break
+#         if flag_schema_compatible:
+#             pp_args = tmp_pp_args
+#             pp_kwargs = tmp_pp_kwargs
+#             schema_found = True
+#             break
         
-    if not schema_found:
-        return None, [], {}
+#     if not schema_found:
+#         return None, [], {}
     
-    return method, pp_args, pp_kwargs
+#     return method, pp_args, pp_kwargs
+
+def resolve_args_kwargs(schema: torch._C.FunctionSchema, raw_inputs: list):
+    args = []
+    kwargs = {}
+    
+    for i, arg in enumerate(schema.arguments):
+        if i < len(raw_inputs):
+            val = raw_inputs[i]
+        else:
+            if arg.has_default_value():
+                val = arg.default_value
+            else:
+                raise ValueError(f"No value provided for argument '{arg.name}'.")
+                
+        if arg.kwarg_only:
+            kwargs[arg.name] = val
+        else:
+            args.append(val)
+            
+    return args, kwargs
 
 def _kahn_topological_sort(graph: Dict[int, Iterable[int]]) -> List[int]:
     indeg = defaultdict(int)  # node -> in-degree
@@ -606,28 +646,39 @@ class NetworkGraphContext(dict):
         elif node_action == "GetAttr":
             self[node.output()] = getattr(self[node.input()], attrs['name'])
         elif node_action == "Constant":
-            self[node.output()] = attrs.get('value', None)
+            self[node.output()] = _cast_to_jit_type(attrs.get('value', None), node.output().type())
         elif node_action == "ListConstruct":
             self[node.output()] = [self[i] for i in node.inputs()]
         elif node_action == "TupleConstruct":
             self[node.output()] = tuple([self[i] for i in node.inputs()])
         elif node_action == "NumToTensor":
             self[node.output()] = torch.tensor(self[node.inputsAt(0)])
+        elif node_action == "TupleUnpack":
+            for idx, o in enumerate(node.outputs()):
+                self[o] = self[node.input()][idx]
         else:
+            logger.warning(f"{node}")
             raise Exception(f"action '{node_action}' is not supported by the session in 'prim' domain\nexception occurred for the node: {node.kind()}")
         
     def run_nonprim_entry(self, entry: NetworkGraphEntry):
         node = entry.node
-        node_domain, node_action = node.kind().split("::")
+        schema = torch._C.parse_schema(node.schema())
         
-        args = [self[i] for i in node.inputs()]
-        method, pp_args, pp_kwargs = _find_nonprim_method(node_domain, node_action, args=args)
+        _args, _kwargs = resolve_args_kwargs(schema=schema, raw_inputs=[self[i] for i in node.inputs()])
+        _methods = torch._C._jit_get_operation(node.kind())
+        _method_found = False
         
-        if method is None:
-            raise Exception(f"method '{node_action}' in domain '{node_domain}' not found\nexception occurred for the node: {node.kind()}")
-        
-        outputs = method(*pp_args, **pp_kwargs)
-        
+        for method in _methods:
+            try:
+                outputs = method(*_args, **_kwargs)
+                _method_found = True
+                break
+            except Exception as e:
+                pass
+
+        if not _method_found:
+            raise Exception(f"No suitable method found for non-primitive node: {node.kind()}")
+
         if len(list(node.outputs())) == 1:
             self[node.output()] = outputs.clone() if isinstance(outputs, torch.Tensor) else outputs
         else:
@@ -685,7 +736,7 @@ class MCA_CompiledNetworkGraph:
         
         graph_context = NetworkGraphContext()
         
-        traced_module = torch.jit.trace(module, *dummy_inputs)
+        traced_module = torch.jit.trace(module, dummy_inputs)
         traced_graph = traced_module.graph
 
         # STEP 2: parse traced graph to get input/output variables and nodes
@@ -984,10 +1035,6 @@ class MCA_CompiledNetworkGraph:
                     logger.info(f"PCC check passed for the {sim_name}::{i} (entry_type: {entry.node.kind()})")
                 else:
                     logger.warning(f"PCC check failed for the {sim_name}::{i} (entry_type: {entry.node.kind()}, MSE: {pcc_flag*100:.4f}%)")
-        
-        # # STEP 4: store contexts
-        # for entry in entries:
-        #     entry.store_local_context(self.graph_context)
         
         # STEP 5: save profiling results and simulation timestamp
         result_dict[sim_name] = {"timestamp": device.timestamp}

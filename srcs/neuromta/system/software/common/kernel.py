@@ -51,6 +51,8 @@ class MCA_KERNEL_TILED_LINEAR(_MCA_KERNEL_BASE):
         op_sig = env.op_meta[ir.op_id].op_sig
         tiled_op = op_sig.tiled_ops[ir.tiled_op_idx]
         
+        uop_kwargs = tiled_op.op_kwargs[ir.uop_idx]
+        use_bias = uop_kwargs.get("use_bias", False)
         preload_psum = (ir.uop_idx == 0)
         flush_ofm    = (ir.uop_idx == tiled_op.n_uops - 1)
         
@@ -62,7 +64,7 @@ class MCA_KERNEL_TILED_LINEAR(_MCA_KERNEL_BASE):
         
         ifm = cls.read_from_ref(core, env, ir.i_tile_refs[0])
         wgt = cls.read_from_ref(core, env, ir.i_tile_refs[1])
-        psum = cls.read_from_ref(core, env, ir.i_tile_refs[2]) if preload_psum else None
+        psum = cls.read_from_ref(core, env, ir.i_tile_refs[2]) if preload_psum and use_bias else None
         ofm = DataContainer(shape=ir.o_tile_ref.tile_sig.tile_shape, dtype=ir.o_tile_ref.tile_sig.dtype) if flush_ofm else None
 
         core.mxu_tiled_gemm(

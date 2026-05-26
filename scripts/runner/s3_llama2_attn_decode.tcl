@@ -1,9 +1,9 @@
 # STEP 1: Open session
-open_session tenstorrent_bh mnist 4
+open_session tenstorrent_bh llama2_attn_decode 1
 
 # STEP 2: Set compilation recipe
-set_core_group_shape  4 4
-set_core_group_offset 0 0
+set_core_group_shape  12 14
+set_core_group_offset 0  0
 
 set_session_recipe main_space_size_per_channel      1GB
 set_session_recipe data_space_size_per_core         1MB

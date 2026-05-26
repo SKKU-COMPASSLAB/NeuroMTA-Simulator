@@ -3,6 +3,7 @@ import torch
 import sys
 import importlib.util
 import multiprocessing as mp
+import traceback
 from typing import Any
 
 from neuromta.framework import *
@@ -114,7 +115,7 @@ class Session(mp.Process):
             
             return graph, SessionMessage.done(self.session_id, payload)
         except Exception as e:
-            return None, SessionMessage.error(self.session_id, str(e))
+            return None, SessionMessage.error(self.session_id, str(e) + f"\n{traceback.format_exc()}")
 
     def run_graph(self, graph: MCA_CompiledNetworkGraph, device_lib, model_lib, group_idx: int, entry_idx: int) -> SessionMessage:
         try:
@@ -146,7 +147,7 @@ class Session(mp.Process):
             
             return SessionMessage.done(self.session_id, payload)
         except Exception as e:
-            return SessionMessage.error(self.session_id, str(e))
+            return SessionMessage.error(self.session_id, str(e) + f"\n{traceback.format_exc()}")
 
     def run(self):
         # Dynamically load the device library
@@ -171,14 +172,14 @@ class Session(mp.Process):
         if not hasattr(device_lib, "CORE_GROUP_SHAPE"):
             self.msg_q.put(SessionMessage.error(self.session_id, "Device library does not have 'CORE_GROUP_SHAPE' attribute."))
             return
-        if not isinstance(device_lib.CORE_GROUP_SHAPE, tuple):
-            self.msg_q.put(SessionMessage.error(self.session_id, "'CORE_GROUP_SHAPE' attribute in device library is not a tuple."))
+        if not isinstance(device_lib.CORE_GROUP_SHAPE, (tuple, list, int)):
+            self.msg_q.put(SessionMessage.error(self.session_id, "'CORE_GROUP_SHAPE' attribute in device library is not a tuple, list, or int."))
             return
         if not hasattr(device_lib, "CORE_GROUP_OFFSET"):
             self.msg_q.put(SessionMessage.error(self.session_id, "Device library does not have 'CORE_GROUP_OFFSET' attribute."))
             return
-        if not isinstance(device_lib.CORE_GROUP_OFFSET, tuple):
-            self.msg_q.put(SessionMessage.error(self.session_id, "'CORE_GROUP_OFFSET' attribute in device library is not a tuple."))
+        if not isinstance(device_lib.CORE_GROUP_OFFSET, (tuple, list, int)):
+            self.msg_q.put(SessionMessage.error(self.session_id, "'CORE_GROUP_OFFSET' attribute in device library is not a tuple, list, or int."))
             return
         
         # Dynamically load the model library
