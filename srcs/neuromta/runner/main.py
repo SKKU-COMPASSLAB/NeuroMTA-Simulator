@@ -287,7 +287,7 @@ class Runner:
             },
             "ls": {
                 "description": "(shell command) Lists the contents of the current directory.",
-                "primitives": [],
+                "primitives": [self.Arg.optional("path")],
                 "method": self._command_shell_ls,
             },
             "cd": {
@@ -779,7 +779,7 @@ class Runner:
             if msg.msg_type == "error":
                 logger.error(f"Failed to run graph entry for session {msg.session_id}: {msg.payload}")
             elif msg.msg_type == "done":
-                logger.info(f"Graph entry executed successfully for session {msg.session_id}.)")
+                logger.info(f"Graph entry executed successfully for session {msg.session_id}.")
                 group_idx = msg.payload.get("group_idx", None)
                 entry_idx = msg.payload.get("entry_idx", None)
                 result = msg.payload.get("result", {})
@@ -829,8 +829,10 @@ class Runner:
         except Exception as e:
             logger.error(f"Failed to save compilation summary to {path}: {str(e)}")
         
-    def _command_shell_ls(self):
-        result = subprocess.run(['ls', '-alh'], capture_output=True, text=True)
+    def _command_shell_ls(self, path=None):
+        if path is None:
+            path = os.curdir
+        result = subprocess.run(['ls', '-alh', path], capture_output=True, text=True)
 
         if result.returncode == 0:
             logger.info("Directory contents:\n" + result.stdout)
