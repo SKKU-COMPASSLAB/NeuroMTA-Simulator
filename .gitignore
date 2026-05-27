@@ -223,3 +223,4 @@ build/
 
 # Neuromta output files (runner.tcl)
 output
+custom*/
