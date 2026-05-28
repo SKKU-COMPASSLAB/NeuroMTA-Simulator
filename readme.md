@@ -51,7 +51,7 @@ pip install ./externals/neuromta_monitor
 
 ## Quick Start
 
-NeuroMTA simulator provides a CLI console to make users easily manage simulation. Run `neuromta_runner` command to run the console!
+NeuroMTA simulator provides a CLI console to make users easily manage simulation. Run `neuromta_runner` command to run the console! See this [tutorial](docs/tutorials/runner/1_quick_start.md) to understand how to use the NeuroMTA Runner!
 
 ```
 $ neuromta_runner 
