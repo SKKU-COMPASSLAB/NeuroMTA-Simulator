@@ -107,16 +107,23 @@ neuromta_runner -s ./scripts/runner/s1_mnist.tcl
 
 ### NeuroMTA Framework
 
-NeuroMTA simulator provides a comprehensive framework `neuromta/framework` to implement behavioral and cycle-level model of the deep learning accelerator. The framework includes several metaclasses to create cores, memory space, and device instances. You can create your own cores and hardware components by defining command-level interface of them.
+NeuroMTA simulator provides a comprehensive framework `neuromta.framework` to implement behavioral and cycle-level model of the deep learning accelerator. The framework includes several metaclasses to create cores, memory space, and device instances. You can create your own cores and hardware components by defining command-level interface of them.
 
 ### NeuroMTA Component
 
-NeuroMTA simulator provides `neuromta/component`, which contains the actual implementation of predetermined hardware architectures including multi-tile accelerator. You can check details of each hardware architecture including NPU core, MXU (Matrix Multiplication Unit) and DMA (Direct Memory Access) engines. In this subproject, you can see several softwares that determines the memory layout of the tensors, dynamically maps tiled operators to each NPU core, and compiled DNN operator considering the on-chip memory usage and data transfer between NPU and DMA cores.
+NeuroMTA simulator provides `neuromta.component`, which contains the actual implementation of predetermined hardware architectures including multi-tile accelerator. You can check details of each hardware architecture including NPU core, MXU (Matrix Multiplication Unit) and DMA (Direct Memory Access) engines. In this subproject, you can see several softwares that determines the memory layout of the tensors, dynamically maps tiled operators to each NPU core, and compiled DNN operator considering the on-chip memory usage and data transfer between NPU and DMA cores.
 
 ### NeuroMTA System
 
-NeuroMTA simulator provides `neuromta/system`, which contains the preset of the commercial NPU architectures.
+NeuroMTA simulator provides `neuromta.system`, which contains the preset of the commercial NPU architectures.
 
 ## Tutorials
 
-TBD
+### NeuroMTA Runner
+
+1) [Quick Start with NeuroMTA Runner](docs/tutorials/runner/1_quick_start.md)
+2) [Customizing Device and Model Presets](docs/tutorials/runner/2_customizing_presets.md)
+
+### NeuroMTA Component
+
+1) [Introduction](docs/tutorials/component/1_introduction.md)
