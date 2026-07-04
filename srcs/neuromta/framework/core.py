@@ -12,6 +12,12 @@ import torch
 
 
 __all__ = [
+    "Program",
+    "set_global_program",
+    "get_global_program",
+    "jit_program_prototype",
+    "check_jit_program_prototype",
+    
     "set_global_context",
     "get_global_core_context",
     "get_global_kernel_context",
@@ -41,6 +47,53 @@ __all__ = [
 
 
 MAX_COMMAND_NUM_PER_KERNEL = 2 ** 20
+
+
+_global_program: 'Program' = None
+
+def set_global_program(program: 'Program'):
+    global _global_program
+    _global_program = program
+    
+def get_global_program() -> 'Program':
+    global _global_program
+    return _global_program
+
+class Program:
+    def __init__(self):
+        self._kernel_map: list[KernelPrototype] = []
+        
+    def merge(self, other: 'Program') -> None:
+        self._kernel_map.extend(other._kernel_map) 
+            
+    def add_kernel(self, kernel: 'KernelPrototype', slot_id: str="MAIN"):
+        self._kernel_map.append(kernel)
+        return self
+    
+    def dispatch(self, slot_id: str="MAIN"):
+        for kernel in self._kernel_map:
+            kernel.dispatch(slot_id=slot_id)
+                
+    def __enter__(self):
+        set_global_program(self)
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        set_global_program(None)
+        
+
+def jit_program_prototype(_func: Callable):
+    @functools.wraps(_func)
+    def __jit_program_prototype_wrapper(*_args, **_kwargs) -> Program:
+        program = Program()
+        with program:
+            _func(*_args, **_kwargs)
+        return program
+    __jit_program_prototype_wrapper._is_jit_program_prototype = True  # mark this function as a jit program prototype
+    return __jit_program_prototype_wrapper
+
+def check_jit_program_prototype(_func: Callable) -> bool:
+    return hasattr(_func, "_is_jit_program_prototype") and _func._is_jit_program_prototype
 
 
 #################################################
@@ -149,6 +202,9 @@ def jit_prototype(_func: Callable):
         if get_global_context_mode() == GlobalContextMode.COMPILE:  # the jit prototype is called inside another kernel function
             kernel_context = get_global_kernel_context()
             kernel_context.add_execution_step(prototype)
+            
+        if get_global_program() is not None:
+            get_global_program().add_kernel(prototype)
         
         return prototype
     __jit_prototype_wrapper._is_jit_prototype = True  # mark this function as a jit prototype
