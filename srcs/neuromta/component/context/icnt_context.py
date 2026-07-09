@@ -100,6 +100,19 @@ class IcntConfig:
     def update_core_map(self, coord: tuple[int, int], core_id: int):
         self._core_map[coord] = core_id
     
+    @property
+    def peak_bisection_bandwidth(self) -> float:
+        if self.booksim2_enable:
+            return self.booksim2_config.peak_bisection_bandwidth()
+        
+        bisection_channels = min(self.shape) * 2
+        channel_bandwidth = (
+            self.flit_size
+            * self.lightweight_flits_per_cycle_per_channel
+            * self.processor_clock_freq
+        )
+        return channel_bandwidth * self.subnets * bisection_channels
+    
     def summary(self) -> dict[str, Any]:
         return {
             "shape": self.shape,

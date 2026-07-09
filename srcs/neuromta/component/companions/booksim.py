@@ -41,7 +41,7 @@ class BookSim2Config:
         return self._flit_size * self._subnets * self.processor_clock_freq
     
     def peak_bisection_bandwidth(self) -> float:
-        return self.peak_bandwidth_per_router() * self._y * 2
+        return self.peak_bandwidth_per_router() * min(self._x, self._y) * 2
 
     def create_icnt(self) -> c_void_p:
         return pybooksim2.create_icnt(config=self._config)

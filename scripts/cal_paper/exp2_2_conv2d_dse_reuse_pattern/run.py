@@ -337,24 +337,7 @@ if __name__ == "__main__":
     print(f"Benchmark results saved to '{output_path}'.")
     
     if visualize is not None:
-        global_context_config: GlobalContextConfig = config["global_config"]
-        icnt_config: IcntConfig = config["icnt_config"]
-        mxu_config: MXUConfig = config["mxu_config"]
-        dramsim_config = global_context_config.main_mem_config.dramsim3_config
-        booksim_config = icnt_config.booksim2_config
         img_path = os.path.join(OUTPUT_DIR, f"exp2_2_conv2d_dse_reuse_pattern.png")
-        
-        mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
-        noc_bisection_bw = booksim_config.peak_bisection_bandwidth() / 1e9  # in GB/s
-        
-        print(f"=== DRAMSim3 Configuration ===")
-        print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
-        print(f"number of instances: {dramsim_config.n_instance}")
-        
-        print(f"=== BookSim2 Configuration ===")
-        print(f"bisection bandwidth: {noc_bisection_bw:.2f} GB/s")
-        print(f"number of subnets: {booksim_config._subnets}")
-        print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
             src_path=output_path,

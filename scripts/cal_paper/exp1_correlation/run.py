@@ -494,7 +494,7 @@ if __name__ == "__main__":
     
     manager = mp.Manager()
     return_dict = manager.dict()
-    config = TenstorrentConfig.BLACKHOLE()
+    config = TenstorrentConfig.BLACKHOLE(use_pydramsim3=True, use_pybooksim2=True)
     
     n_workers = min(args.n_workers, len(benchmarks))
     worker_sem = mp.Semaphore(n_workers)
@@ -537,21 +537,20 @@ if __name__ == "__main__":
         global_context_config: GlobalContextConfig = config["global_config"]
         icnt_config: IcntConfig = config["icnt_config"]
         mxu_config: MXUConfig = config["mxu_config"]
-        dramsim_config = global_context_config.main_mem_config.dramsim3_config
-        booksim_config = icnt_config.booksim2_config
+        # dramsim_config = global_context_config.main_mem_config.dramsim3_config
+        # booksim_config = icnt_config.booksim2_config
         img_path = os.path.join(OUTPUT_DIR, f"exp1_1_validation_roofline.png")
         
-        mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
-        noc_bisection_bw = booksim_config.peak_bisection_bandwidth() / 1e9  # in GB/s
+        # mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
+        # noc_bisection_bw = booksim_config.peak_bisection_bandwidth() / 1e9  # in GB/s
+        mem_peak_bw = global_context_config.main_mem_config.peak_bandwidth / 1e9
+        noc_bisection_bw = icnt_config.peak_bisection_bandwidth / 1e9
         
         print(f"=== DRAMSim3 Configuration ===")
         print(f"peak bandwidth: {mem_peak_bw:.2f} GB/s")
-        print(f"number of instances: {dramsim_config.n_instance}")
         
         print(f"=== BookSim2 Configuration ===")
         print(f"bisection bandwidth: {noc_bisection_bw:.2f} GB/s")
-        print(f"number of subnets: {booksim_config._subnets}")
-        print(f"flit size: {booksim_config._flit_size} Bytes")
         
         visualize.draw(
             peak_perf_per_core=mxu_config.peak_op_per_cycle,

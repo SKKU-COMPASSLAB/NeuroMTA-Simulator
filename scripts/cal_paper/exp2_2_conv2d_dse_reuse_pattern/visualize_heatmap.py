@@ -9,24 +9,24 @@ import matplotlib.colors as mcolors
 def draw(src_path: str, img_path: str):
     # Define category mappings and ordered axes
     temporal_map = {
-        'IGNORE': 'TIG',
-        'SINGLE_L1': 'TSL',
-        'ALL_L1': 'TAL',
-        'SINGLE_MAIN': 'TSM',
-        'ALL_MAIN': 'TAM',
+        'IGNORE': 'IG',
+        'SINGLE_L1': 'SL',
+        'ALL_L1': 'AL',
+        'SINGLE_MAIN': 'SM',
+        'ALL_MAIN': 'AM',
     }
 
     # Map multiple spatial types into three categories: SIG, SSL, SSM
     spatial_map = {
-        'IGNORE': 'SIG',
-        'SINGLE_L1': 'SSL',
-        'ALL_L1': 'SSL',
-        'SINGLE_MAIN': 'SSM',
-        'ALL_MAIN': 'SSM',
+        'IGNORE': 'IG',
+        'SINGLE_L1': 'SL',
+        'ALL_L1': 'AL',
+        'SINGLE_MAIN': 'SM',
+        'ALL_MAIN': 'AM',
     }
 
-    spatial_categories = ['SIG', 'SSL', 'SSM']
-    temporal_categories = ['TIG', 'TSL', 'TAL', 'TSM', 'TAM']
+    spatial_categories = ['IG', 'SL', 'SM']
+    temporal_categories = ['IG', 'SL', 'AL', 'SM', 'AM']
 
     # Read CSV and collect timestamps per (temporal, spatial) category
     df = pd.read_csv(src_path)
@@ -41,9 +41,9 @@ def draw(src_path: str, img_path: str):
         s_cat = spatial_map[s_raw]
         timestamps[(t_cat, s_cat)] = float(row['Timestamp (cycles)'])
 
-    baseline_key = ('TIG', 'SIG')
+    baseline_key = ('IG', 'IG')
     if baseline_key not in timestamps:
-        raise RuntimeError("Baseline data for TIG/SIG not found in input CSV")
+        raise RuntimeError("Baseline data for IG/IG not found in input CSV")
     baseline_ts = timestamps[baseline_key]
 
     # Build data matrix: speedup = baseline / timestamp
@@ -104,20 +104,20 @@ def draw(src_path: str, img_path: str):
                 color = 'white' if luminance < 0.5 else 'black'
             plt.text(x, y, txt, ha='center', va='center', color=color, fontsize=10)
 
-    # plt.title('Speedup Heatmap (baseline: TIG/SIG)', fontsize=12)
+    # plt.title('Speedup Heatmap (baseline: IG/IG)', fontsize=12)
     plt.tight_layout(pad=0.1)
     plt.savefig(img_path, dpi=500)
     print(f"Heatmap saved to '{img_path}'")
     
 
 def draw_category_table(img_path: str):
-    reuse_types = pd.DataFrame({
-        "Type": ["T", "S"],
-        "Description": [
-            "Temporal Reuse",
-            "Spatial Reuse",
-        ]
-    })
+    # reuse_types = pd.DataFrame({
+    #     "Type": ["T", "S"],
+    #     "Description": [
+    #         "Temporal Reuse",
+    #         "Spatial Reuse",
+    #     ]
+    # })
     
     patterns = pd.DataFrame({
         "Pattern": ["IG", "SL", "AL", "SM", "AM"],
@@ -130,26 +130,28 @@ def draw_category_table(img_path: str):
         ]
     })
     
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(2.6, 2.4))
+    fig = plt.figure(figsize=(2.6, 2.4))
     widths = [0.4, 0.7]
 
     # Turn off axes and render tables centered in each subplot
-    for ax in axes:
-        ax.axis('off')
+    # for ax in axes:
+    #     ax.axis('off')
 
-    t1 = axes[0].table(
-        cellText=reuse_types.values,
-        colLabels=reuse_types.columns,
-        cellLoc='left',
-        colLoc='left',
-        loc='center',
-        colWidths=widths,
-    )
-    t1.auto_set_font_size(False)
-    t1.set_fontsize(10)
-    t1.scale(1, 1.5)
+    # t1 = axes[0].table(
+    #     cellText=reuse_types.values,
+    #     colLabels=reuse_types.columns,
+    #     cellLoc='left',
+    #     colLoc='left',
+    #     loc='center',
+    #     colWidths=widths,
+    # )
+    # t1.auto_set_font_size(False)
+    # t1.set_fontsize(10)
+    # t1.scale(1, 1.5)
 
-    t2 = axes[1].table(
+    t2 = fig.add_subplot(111)
+    t2.axis('off')
+    t = t2.table(
         cellText=patterns.values,
         colLabels=patterns.columns,
         cellLoc='left',
@@ -157,13 +159,13 @@ def draw_category_table(img_path: str):
         loc='center',
         colWidths=widths,
     )
-    t2.auto_set_font_size(False)
-    t2.set_fontsize(10)
-    t2.scale(1, 1.5)
+    t.auto_set_font_size(False)
+    t.set_fontsize(10)
+    t.scale(1, 1.5)
 
     # Force black text for all table cells (including headers)
     # Make header row text bold
-    for tab in (t1, t2):
+    for tab in (t,):
         for (row, col), cell in tab.get_celld().items():
             txt = cell.get_text()
             txt.set_color('black')

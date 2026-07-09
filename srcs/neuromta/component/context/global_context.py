@@ -300,11 +300,15 @@ class MainMemoryConfig:
         return self.n_instance * self.n_channel_per_instance
     
     @property
-    def peak_bandwidth_per_cycle(self) -> float:
+    def peak_bandwidth(self) -> float:
         if self.dramsim3_enable:
-            return self.dramsim3_config.peak_bandwidth() / self.processor_clock_freq
+            return self.dramsim3_config.peak_bandwidth()  # Byte/s
         else:
-            return (self.transfer_speed * self.ch_io_width * self.n_channels) / 8 / self.processor_clock_freq  # Byte/cycle
+            return (self.transfer_speed * 1e6 * self.ch_io_width * self.n_channels) / 8  # Byte/s
+    
+    @property
+    def peak_bandwidth_per_cycle(self) -> float:
+        return self.peak_bandwidth / self.processor_clock_freq  # Byte/cycle
         
     @property
     def channel_size_per_instance(self) -> int:
