@@ -48,8 +48,8 @@ class TenstorrentConfig(dict):
         main_mem_channel_size: int = parse_mem_cap_str("4GB"),
         l1_mem_bank_size: int = parse_mem_cap_str("1.5MB"),
         l1_mem_dynamic_space_size_per_bank: int = 0,
-        use_pydramsim3: bool = False,
-        use_pybooksim2: bool = False,
+        use_pydramsim3: bool = True,
+        use_pybooksim2: bool = True,
     ) -> 'TenstorrentConfig':
         config_name = "blackhole"
 
@@ -185,8 +185,8 @@ class TenstorrentConfig(dict):
         main_mem_channel_size: int = parse_mem_cap_str("2GB"),  # 6 instances * 2GB = 12GB total
         l1_mem_bank_size: int = parse_mem_cap_str("1.5MB"),
         l1_mem_dynamic_space_size_per_bank: int = 0,
-        use_pydramsim3: bool = False,
-        use_pybooksim2: bool = False,
+        use_pydramsim3: bool = True,
+        use_pybooksim2: bool = True,
     ) -> 'TenstorrentConfig':
         config_name = "wormhole"
 
