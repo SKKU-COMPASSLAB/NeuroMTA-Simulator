@@ -233,11 +233,6 @@ class MCA_DeviceBase(Device):
         self.global_context = GlobalContext(config=global_config)
         
         self.icnt_context = IcntContext(config=icnt_config)
-            
-        self.companion_core.register_companion_module(
-            self.global_context.config.booksim_module_id,
-            module=BookSim2(config=self.icnt_context.config.booksim2_config)
-        )
         
         self.mxu_config = mxu_config
         self.vpu_config = vpu_config
@@ -258,10 +253,16 @@ class MCA_DeviceBase(Device):
             for core_id in self.dma_core_ids
         ]
         
-        if self.global_context.config.main_mem_config.dramsim3_config is not None:
+        if self.global_context.config.main_mem_config.dramsim3_enable:
             self.companion_core.register_companion_module(
                 self.global_context.config.dramsim_module_id,
                 module=DRAMSim3(config=self.global_context.config.main_mem_config.dramsim3_config)
+            )
+            
+        if self.icnt_context.config.booksim2_enable:
+            self.companion_core.register_companion_module(
+                self.global_context.config.booksim_module_id,
+                module=BookSim2(config=self.icnt_context.config.booksim2_config)
             )
             
         self._main_mem_spaces: list[MCA_MainMemorySpace] = []

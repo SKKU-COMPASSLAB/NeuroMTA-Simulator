@@ -48,6 +48,8 @@ class TenstorrentConfig(dict):
         main_mem_channel_size: int = parse_mem_cap_str("4GB"),
         l1_mem_bank_size: int = parse_mem_cap_str("1.5MB"),
         l1_mem_dynamic_space_size_per_bank: int = 0,
+        use_pydramsim3: bool = False,
+        use_pybooksim2: bool = False,
     ) -> 'TenstorrentConfig':
         config_name = "blackhole"
 
@@ -66,10 +68,18 @@ class TenstorrentConfig(dict):
             n_channel_per_instance=n_main_mem_channel_per_instance,
             
             # DRAMSIM CONFIG
-            dramsim3_enable=PYDRAMSIM3_AVAILABLE,
+            dramsim3_enable=PYDRAMSIM3_AVAILABLE and use_pydramsim3,
             dramsim3_src_config_path="GDDR6_8Gb_x16.ini",
             dramsim3_dst_config_path=TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name),
             dramsim3_max_issue_per_cmd_q_per_cycle=32,
+            
+            # LIGHTWEIGHT MEMORY CONFIG
+            lightweight_read_latency_cycles=0,
+            lightweight_write_latency_cycles=0,
+            lightweight_channel_bandwidth_bytes_per_cycle=64,
+            lightweight_dma_granularity=parse_mem_cap_str("256B"),
+            lightweight_command_issue_gap_cycles=0,
+            lightweight_read_write_turnaround_cycles=0,
         )
         
         icnt_config = IcntConfig(                       # INTERCONNECT CONFIG
@@ -78,7 +88,7 @@ class TenstorrentConfig(dict):
             subnets=2,                                  # - 2 independent NoCs (one per router)
             flit_size=parse_mem_cap_str("64B"),         # - 64B flit size (flow-control unit)
             max_payload_size=32,                        # - max payload = 32 flits (= 2048B)
-            booksim2_enable=PYBOOKSIM2_AVAILABLE,
+            booksim2_enable=PYBOOKSIM2_AVAILABLE and use_pybooksim2,
             booksim2_kwargs={
                 "routing_delay": 1,
                 "vc_alloc_delay": 1,
@@ -92,7 +102,13 @@ class TenstorrentConfig(dict):
                 
                 "num_vcs": 16,
                 "vc_buf_size": 8,
-            }
+            },
+            
+            lightweight_router_latency_cycles=1,
+            lightweight_link_latency_cycles=1,
+            lightweight_flits_per_cycle_per_channel=1,
+            lightweight_injection_flits_per_cycle=1,
+            lightweight_egress_flits_per_cycle=1,
         )
         
         global_config = GlobalContextConfig(
@@ -169,6 +185,8 @@ class TenstorrentConfig(dict):
         main_mem_channel_size: int = parse_mem_cap_str("2GB"),  # 6 instances * 2GB = 12GB total
         l1_mem_bank_size: int = parse_mem_cap_str("1.5MB"),
         l1_mem_dynamic_space_size_per_bank: int = 0,
+        use_pydramsim3: bool = False,
+        use_pybooksim2: bool = False,
     ) -> 'TenstorrentConfig':
         config_name = "wormhole"
 
@@ -190,10 +208,18 @@ class TenstorrentConfig(dict):
             n_channel_per_instance=n_main_mem_channel_per_instance,
             
             # DRAMSIM CONFIG
-            dramsim3_enable=PYDRAMSIM3_AVAILABLE,
+            dramsim3_enable=PYDRAMSIM3_AVAILABLE and use_pydramsim3,
             dramsim3_src_config_path="GDDR6_8Gb_x16.ini",
             dramsim3_dst_config_path=TENSTORRENT_IP_DRAMSIM_CONFIG_FMT(config_name=config_name),
             dramsim3_max_issue_per_cmd_q_per_cycle=32,
+            
+            # LIGHTWEIGHT MEMORY CONFIG
+            lightweight_read_latency_cycles=0,
+            lightweight_write_latency_cycles=0,
+            lightweight_channel_bandwidth_bytes_per_cycle=64,
+            lightweight_dma_granularity=parse_mem_cap_str("256B"),
+            lightweight_command_issue_gap_cycles=0,
+            lightweight_read_write_turnaround_cycles=0,
         )
         
         icnt_config = IcntConfig(                       # INTERCONNECT CONFIG
@@ -202,7 +228,7 @@ class TenstorrentConfig(dict):
             subnets=2,                                  # - 2 independent NoCs (one per router)
             flit_size=parse_mem_cap_str("64B"),         # - 64B flit size (flow-control unit)
             max_payload_size=32,                        # - max payload = 32 flits (= 2048B)
-            booksim2_enable=PYBOOKSIM2_AVAILABLE,
+            booksim2_enable=PYBOOKSIM2_AVAILABLE and use_pybooksim2,
             booksim2_kwargs={
                 "routing_delay": 1,
                 "vc_alloc_delay": 1,
@@ -216,7 +242,13 @@ class TenstorrentConfig(dict):
                 
                 "num_vcs": 16,
                 "vc_buf_size": 8,
-            }
+            },
+            
+            lightweight_router_latency_cycles=1,
+            lightweight_link_latency_cycles=1,
+            lightweight_flits_per_cycle_per_channel=1,
+            lightweight_injection_flits_per_cycle=1,
+            lightweight_egress_flits_per_cycle=1,
         )
         
         global_config = GlobalContextConfig(

@@ -101,10 +101,10 @@ class Device:
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
         
-        # remaining_cycles = None
+        remaining_cycles = None
             
-        # for core_id, core in self.initialized_cores.items():
-        #     core.rpc_update_routine()
+        for core_id, core in self.initialized_cores.items():
+            core.rpc_update_routine()
         
         # for core_id, core in self.initialized_cores.items():
         #     if core.is_idle:
@@ -124,10 +124,10 @@ class Device:
         # else:
         #     self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
         
-        remaining_cycles = 1
-        
-        for core_id, core in self.initialized_cores.items():
-            core.rpc_update_routine()
+        if remaining_cycles is None or remaining_cycles <= 0:
+            remaining_cycles = cycle_resolution
+            
+        # remaining_cycles = 1
         
         self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
 

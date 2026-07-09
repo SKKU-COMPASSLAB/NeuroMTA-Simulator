@@ -211,6 +211,25 @@ class MainMemoryConfig:
         dramsim3_src_config_path: str   = "GDDR6_8Gb_x16.ini",
         dramsim3_dst_config_path: str   = "dramsim3_config.ini",
         dramsim3_max_issue_per_cmd_q_per_cycle: int = 1,
+        
+        # Lightweight Memory Simulation Configuration
+        lightweight_read_latency_cycles: int = 0,
+        lightweight_write_latency_cycles: int = 0,
+        lightweight_channel_bandwidth_bytes_per_cycle: int = 64,
+        lightweight_dma_granularity: int = parse_mem_cap_str("256B"),
+        lightweight_command_issue_gap_cycles: int = 0,
+        lightweight_read_write_turnaround_cycles: int = 0,
+        lightweight_request_startup_latency_cycles: int = 0,
+        lightweight_burst_size_bytes: int = parse_mem_cap_str("64B"),
+        lightweight_n_rank_per_channel: int = 1,
+        lightweight_n_bank_group_per_rank: int = 4,
+        lightweight_n_bank_per_bank_group: int = 4,
+        lightweight_row_size_bytes: int = parse_mem_cap_str("2KB"),
+        lightweight_row_hit_latency_cycles: int = 0,
+        lightweight_row_miss_penalty_cycles: int = 0,
+        lightweight_bank_group_penalty_cycles: int = 0,
+        lightweight_dma_max_outstanding_bursts: int = 32,
+        lightweight_latency_amortization_bytes: int = parse_mem_cap_str("5KB"),    # magic number!
     ):
         if dramsim3_enable is None:
             dramsim3_enable = PYDRAMSIM3_AVAILABLE
@@ -238,13 +257,25 @@ class MainMemoryConfig:
                 max_issue_per_cmd_q_per_cycle=dramsim3_max_issue_per_cmd_q_per_cycle,
             )
         else:
-            self.dramsim3_config = DRAMSim3Config(
-                processor_clock_freq=processor_clock_freq,
-                n_instance=n_instance,
-                channel_size=channel_size,
-                n_channel_per_instance=n_channel_per_instance,
-                bandwidth_per_instance= (transfer_speed * ch_io_width * n_channel_per_instance) / 8 / processor_clock_freq,  # Byte/cycle
-            )
+            self.dramsim3_config = None
+            
+        self.lightweight_read_latency_cycles = lightweight_read_latency_cycles
+        self.lightweight_write_latency_cycles = lightweight_write_latency_cycles
+        self.lightweight_channel_bandwidth_bytes_per_cycle = lightweight_channel_bandwidth_bytes_per_cycle
+        self.lightweight_dma_granularity = lightweight_dma_granularity
+        self.lightweight_command_issue_gap_cycles = lightweight_command_issue_gap_cycles
+        self.lightweight_read_write_turnaround_cycles = lightweight_read_write_turnaround_cycles
+        self.lightweight_request_startup_latency_cycles = lightweight_request_startup_latency_cycles
+        self.lightweight_burst_size_bytes = lightweight_burst_size_bytes
+        self.lightweight_n_rank_per_channel = lightweight_n_rank_per_channel
+        self.lightweight_n_bank_group_per_rank = lightweight_n_bank_group_per_rank
+        self.lightweight_n_bank_per_bank_group = lightweight_n_bank_per_bank_group
+        self.lightweight_row_size_bytes = lightweight_row_size_bytes
+        self.lightweight_row_hit_latency_cycles = lightweight_row_hit_latency_cycles
+        self.lightweight_row_miss_penalty_cycles = lightweight_row_miss_penalty_cycles
+        self.lightweight_bank_group_penalty_cycles = lightweight_bank_group_penalty_cycles
+        self.lightweight_dma_max_outstanding_bursts = lightweight_dma_max_outstanding_bursts
+        self.lightweight_latency_amortization_bytes = lightweight_latency_amortization_bytes
         
     @property
     def n_instance(self) -> int:
@@ -274,6 +305,10 @@ class MainMemoryConfig:
             return self.dramsim3_config.peak_bandwidth() / self.processor_clock_freq
         else:
             return (self.transfer_speed * self.ch_io_width * self.n_channels) / 8 / self.processor_clock_freq  # Byte/cycle
+        
+    @property
+    def channel_size_per_instance(self) -> int:
+        return self.channel_size * self.n_channel_per_instance
     
     def summary(self) -> dict[str, Any]:
         if self.dramsim3_enable:
@@ -288,7 +323,231 @@ class MainMemoryConfig:
                 "burst_len": self.burst_len,
                 "is_ddr": self.is_ddr,
                 "processor_clock_freq": self.processor_clock_freq,
+                "lightweight_read_latency_cycles": self.lightweight_read_latency_cycles,
+                "lightweight_write_latency_cycles": self.lightweight_write_latency_cycles,
+                "lightweight_channel_bandwidth_bytes_per_cycle": self.lightweight_channel_bandwidth_bytes_per_cycle,
+                "lightweight_dma_granularity": self.lightweight_dma_granularity,
+                "lightweight_command_issue_gap_cycles": self.lightweight_command_issue_gap_cycles,
+                "lightweight_read_write_turnaround_cycles": self.lightweight_read_write_turnaround_cycles,
+                "lightweight_request_startup_latency_cycles": self.lightweight_request_startup_latency_cycles,
+                "lightweight_burst_size_bytes": self.lightweight_burst_size_bytes,
+                "lightweight_n_rank_per_channel": self.lightweight_n_rank_per_channel,
+                "lightweight_n_bank_group_per_rank": self.lightweight_n_bank_group_per_rank,
+                "lightweight_n_bank_per_bank_group": self.lightweight_n_bank_per_bank_group,
+                "lightweight_row_size_bytes": self.lightweight_row_size_bytes,
+                "lightweight_row_hit_latency_cycles": self.lightweight_row_hit_latency_cycles,
+                "lightweight_row_miss_penalty_cycles": self.lightweight_row_miss_penalty_cycles,
+                "lightweight_bank_group_penalty_cycles": self.lightweight_bank_group_penalty_cycles,
+                "lightweight_dma_max_outstanding_bursts": self.lightweight_dma_max_outstanding_bursts,
+                "lightweight_latency_amortization_bytes": self.lightweight_latency_amortization_bytes,
             }
+
+
+class MemorySimulator:
+    def __init__(self, config: MainMemoryConfig, mem_addr_offset: int):
+        self.config = config
+        self.mem_addr_offset = mem_addr_offset
+        self.mem_addr_end = self.mem_addr_offset + (self.config.n_instance * self.config.n_channel_per_instance * self.config.channel_size)
+        self.reset()
+        
+    def reset(self) -> None:
+        self._channel_next_free_cycle = {
+            (instance_id, channel_id): 0
+            for instance_id in range(self.config.n_instance)
+            for channel_id in range(self.config.n_channel_per_instance)
+        }
+        self._channel_command_next_free_cycle = {
+            (instance_id, channel_id): 0
+            for instance_id in range(self.config.n_instance)
+            for channel_id in range(self.config.n_channel_per_instance)
+        }
+        self._channel_last_is_write = {
+            (instance_id, channel_id): None
+            for instance_id in range(self.config.n_instance)
+            for channel_id in range(self.config.n_channel_per_instance)
+        }
+        self._bank_next_free_cycle = {}
+        self._bank_group_next_free_cycle = {}
+        self._open_row = {}
+        
+    def _cfg(self, name: str, default: int) -> int:
+        return getattr(self.config, name, default)
+        
+    def check_address_range(self, address: int) -> bool:
+        if address < self.mem_addr_offset:
+            return False
+        if address >= self.mem_addr_end:
+            return False
+        return True
+    
+    def get_instance_id_with_address(self, address: int) -> int:
+        if not self.check_address_range(address):
+            raise ValueError(f"Address {address} is out of range")
+        return ((address - self.mem_addr_offset) // self.config.channel_size_per_instance) % self.config.n_instance
+    
+    def get_memory_mapping(self, address: int) -> dict[str, int]:
+        instance_id = self.get_instance_id_with_address(address)
+        addr_offset = (address - self.mem_addr_offset) % self.config.channel_size_per_instance
+        channel_id = addr_offset // self.config.channel_size
+        channel_offset = addr_offset % self.config.channel_size
+        burst_size = max(1, self._cfg("lightweight_burst_size_bytes", self.config.lightweight_dma_granularity))
+        row_size = max(burst_size, self._cfg("lightweight_row_size_bytes", 2048))
+        n_rank = max(1, self._cfg("lightweight_n_rank_per_channel", 1))
+        n_bank_group = max(1, self._cfg("lightweight_n_bank_group_per_rank", 1))
+        n_bank = max(1, self._cfg("lightweight_n_bank_per_bank_group", 1))
+        n_bank_slots = n_rank * n_bank_group * n_bank
+        bursts_per_row = max(1, row_size // burst_size)
+        burst_index = channel_offset // burst_size
+        burst_in_rank_space = burst_index % (n_bank_slots * bursts_per_row)
+        bank_slot = burst_in_rank_space % n_bank_slots
+        column_burst = burst_in_rank_space // n_bank_slots
+        row_id = burst_index // (n_bank_slots * bursts_per_row)
+        rank_id = bank_slot // (n_bank_group * n_bank)
+        bank_slot_rem = bank_slot % (n_bank_group * n_bank)
+        bank_group_id = bank_slot_rem // n_bank
+        bank_id = bank_slot_rem % n_bank
+        column_offset = (column_burst * burst_size) + (channel_offset % burst_size)
+        return {
+            "inst_id": instance_id,
+            "addr": addr_offset,
+            "channel_id": channel_id,
+            "channel_offset": channel_offset,
+            "rank_id": rank_id,
+            "bank_group_id": bank_group_id,
+            "bank_id": bank_id,
+            "row_id": row_id,
+            "column_offset": column_offset,
+        }
+    
+    def _iter_dma_chunks(self, address: int, size: int) -> list[dict[str, int]]:
+        if size < 0:
+            raise ValueError(f"Invalid size: {size}")
+        if size == 0:
+            return []
+        if not self.check_address_range(address) or not self.check_address_range(address + size - 1):
+            raise ValueError(f"Address range [{address}, {address + size}) is out of range")
+        
+        chunks = []
+        remaining = size
+        current_addr = address
+        granularity = max(1, self.config.lightweight_dma_granularity)
+        burst_size = max(1, self._cfg("lightweight_burst_size_bytes", granularity))
+        row_size = max(burst_size, self._cfg("lightweight_row_size_bytes", 2048))
+        
+        while remaining > 0:
+            mapping = self.get_memory_mapping(current_addr)
+            local_addr = current_addr - self.mem_addr_offset
+            granularity_remaining = granularity - (local_addr % granularity)
+            burst_remaining = burst_size - (local_addr % burst_size)
+            row_remaining = row_size - (mapping["column_offset"] % row_size)
+            channel_remaining = self.config.channel_size - mapping["channel_offset"]
+            chunk_size = min(remaining, granularity_remaining, burst_remaining, row_remaining, channel_remaining)
+            chunks.append({
+                "address": current_addr,
+                "size": chunk_size,
+                **mapping,
+            })
+            current_addr += chunk_size
+            remaining -= chunk_size
+        
+        return chunks
+    
+    def _retire_completed_bursts(self, completions: list[int], issue_cycle: int) -> list[int]:
+        return [cycle for cycle in completions if cycle > issue_cycle]
+    
+    def send_request(
+        self,
+        addr: int,
+        size: int,
+        is_write: bool,
+        current_cycle: int = 0,
+    ) -> dict:
+        if current_cycle < 0:
+            raise ValueError("current_cycle must be non-negative")
+        
+        chunks = self._iter_dma_chunks(address=addr, size=size)
+        raw_base_latency = self.config.lightweight_write_latency_cycles if is_write else self.config.lightweight_read_latency_cycles
+        amortization_bytes = max(1, self._cfg("lightweight_latency_amortization_bytes", size if size > 0 else 1))
+        latency_scale = min(1.0, size / amortization_bytes) if size > 0 else 0.0
+        scale_latency = lambda value: 0 if value <= 0 else max(1, math.ceil(value * latency_scale))
+        base_latency = scale_latency(raw_base_latency)
+        bandwidth = self.config.lightweight_channel_bandwidth_bytes_per_cycle
+        issue_gap = self.config.lightweight_command_issue_gap_cycles
+        turnaround = self.config.lightweight_read_write_turnaround_cycles
+        request_startup = scale_latency(self._cfg("lightweight_request_startup_latency_cycles", 0))
+        row_hit_latency = scale_latency(self._cfg("lightweight_row_hit_latency_cycles", 0))
+        row_miss_penalty = scale_latency(self._cfg("lightweight_row_miss_penalty_cycles", 0))
+        bank_group_penalty = scale_latency(self._cfg("lightweight_bank_group_penalty_cycles", 0))
+        max_outstanding = max(1, self._cfg("lightweight_dma_max_outstanding_bursts", len(chunks) if chunks else 1))
+        
+        scheduled_chunks = []
+        finish_cycle = current_cycle + request_startup
+        issue_cycle = current_cycle + request_startup
+        outstanding_completions: list[int] = []
+        
+        for chunk in chunks:
+            outstanding_completions = self._retire_completed_bursts(outstanding_completions, issue_cycle)
+            if len(outstanding_completions) >= max_outstanding:
+                earliest_completion = min(outstanding_completions)
+                issue_cycle = max(issue_cycle, earliest_completion)
+                outstanding_completions = self._retire_completed_bursts(outstanding_completions, issue_cycle)
+            
+            channel_key = (chunk["inst_id"], chunk["channel_id"])
+            bank_group_key = (*channel_key, chunk["rank_id"], chunk["bank_group_id"])
+            bank_key = (*bank_group_key, chunk["bank_id"])
+            row_key = bank_key
+            
+            command_start_cycle = max(issue_cycle, self._channel_command_next_free_cycle[channel_key])
+            bank_ready_cycle = self._bank_next_free_cycle.get(bank_key, 0)
+            bank_group_ready_cycle = self._bank_group_next_free_cycle.get(bank_group_key, 0)
+            row_latency = row_hit_latency if self._open_row.get(row_key) == chunk["row_id"] else row_miss_penalty
+            dram_ready_cycle = max(command_start_cycle, bank_ready_cycle, bank_group_ready_cycle) + row_latency
+            
+            bus_start_cycle = max(dram_ready_cycle, self._channel_next_free_cycle[channel_key])
+            last_is_write = self._channel_last_is_write[channel_key]
+            if last_is_write is not None and last_is_write != is_write:
+                bus_start_cycle += turnaround
+            
+            transfer_cycles = max(1, math.ceil(chunk["size"] / bandwidth))
+            bus_finish_cycle = bus_start_cycle + transfer_cycles
+            chunk_finish_cycle = bus_finish_cycle + base_latency
+            queue_delay_cycles = max(0, bus_start_cycle - issue_cycle)
+            
+            self._channel_command_next_free_cycle[channel_key] = command_start_cycle + issue_gap
+            self._channel_next_free_cycle[channel_key] = bus_finish_cycle
+            self._channel_last_is_write[channel_key] = is_write
+            self._bank_next_free_cycle[bank_key] = bus_finish_cycle
+            self._bank_group_next_free_cycle[bank_group_key] = bus_start_cycle + bank_group_penalty
+            self._open_row[row_key] = chunk["row_id"]
+            finish_cycle = max(finish_cycle, chunk_finish_cycle)
+            outstanding_completions.append(chunk_finish_cycle)
+            
+            scheduled_chunk = dict(chunk)
+            scheduled_chunk.update({
+                "command_start_cycle": command_start_cycle,
+                "dram_ready_cycle": dram_ready_cycle,
+                "bus_start_cycle": bus_start_cycle,
+                "bus_finish_cycle": bus_finish_cycle,
+                "finish_cycle": chunk_finish_cycle,
+                "transfer_cycles": transfer_cycles,
+                "base_latency_cycles": base_latency,
+                "row_latency_cycles": row_latency,
+                "queue_delay_cycles": queue_delay_cycles,
+            })
+            scheduled_chunks.append(scheduled_chunk)
+            issue_cycle = command_start_cycle + issue_gap
+        
+        return {
+            "current_cycle": current_cycle,
+            "finish_cycle": finish_cycle,
+            "latency_cycles": finish_cycle - current_cycle,
+            "n_chunks": len(scheduled_chunks),
+            "chunks": scheduled_chunks,
+        }
+    
+    @property
+    def channel_next_free_cycle(self) -> dict[tuple[int, int], int]:
+        return dict(self._channel_next_free_cycle)
 
 
 class GlobalContextConfig:
@@ -397,6 +656,14 @@ class GlobalContext:
             self._core_info[(GlobalContextCoreType.NPU, n)] = core_info
             
             mem_info.add_owner_core(core_info)
+        
+        if self._config.main_mem_config.dramsim3_enable:
+            self._main_mem_sim = None
+        else:
+            self._main_mem_sim = MemorySimulator(
+                config=self._config.main_mem_config,
+                mem_addr_offset=self._config._main_mem_base_addr,
+            )
 
     def get_core_info(self, core_type: GlobalContextCoreType, core_id: int) -> GlobalContextCoreInfo:
         return self._core_info[(core_type, core_id)]
@@ -481,3 +748,11 @@ class GlobalContext:
     @property
     def main_mem_size(self) -> int:
         return self.n_main_mem_instances * self._config.main_mem_config.n_channel_per_instance * self._config.main_mem_config.channel_size
+
+    @property
+    def main_mem_simulator(self) -> MemorySimulator | None:
+        return self._main_mem_sim
+    
+    @property
+    def is_main_mem_simulator_enabled(self) -> bool:
+        return self._main_mem_sim is not None
