@@ -8,6 +8,7 @@ from neuromta.framework.debug_utils import *
 from neuromta.framework.memory_handle import MemoryHandle, Pointer
 from neuromta.framework.data_container import DataContainer
 from neuromta.framework.synchronizer import VariableHandle, FIFOBufferHandle
+from neuromta.framework.simulation_mode import SimulationMode, normalize_simulation_mode, get_global_simulation_mode
 import torch
 
 
@@ -36,6 +37,7 @@ __all__ = [
 
     "CoreCycleModel",
     "Core",
+    "SimulationMode",
     
     "jit_prototype",
     "check_jit_prototype",
@@ -804,6 +806,7 @@ class Core:
         self.mem_handle: MemoryHandle = None
 
         self._cycle_model: CoreCycleModel = cycle_model
+        self._simulation_mode: SimulationMode = get_global_simulation_mode()
 
         self._dispatched_main_kernels:      dict[str, Kernel] = {}
         self._dispatched_rpc_kernels:       dict[str, Kernel] = {}
@@ -858,6 +861,18 @@ class Core:
     def change_sim_model_options(self, use_cycle_model: bool = None, use_functional_model: bool = None):
         self._use_cycle_model = use_cycle_model if use_cycle_model is not None else self._use_cycle_model
         self._use_functional_model = use_functional_model if use_functional_model is not None else self._use_functional_model
+        if use_functional_model is not None:
+            self._simulation_mode = SimulationMode.CORRECTNESS if use_functional_model else SimulationMode.PERFORMANCE
+
+    def set_simulation_mode(self, mode: SimulationMode | str | bool):
+        self._simulation_mode = normalize_simulation_mode(mode)
+        if self._simulation_mode == SimulationMode.CORRECTNESS:
+            self._use_cycle_model = True
+            self._use_functional_model = True
+        elif self._simulation_mode == SimulationMode.PERFORMANCE:
+            self._use_cycle_model = True
+            self._use_functional_model = False
+        return self
 
     def reset_simulation(self):
         self.initialize_kernel_dispatch_queue()
@@ -1233,6 +1248,9 @@ class Core:
     
     @core_command_method
     def local_data_container_init(self, container: DataContainer[torch.Tensor], shape: tuple[int, ...], dtype: torch.dtype):
+        if self.is_performance_mode:
+            container.set_metadata(shape=shape, dtype=dtype)
+            return
         data = torch.zeros(shape, dtype=dtype)
         container.data = data
         
@@ -1245,10 +1263,10 @@ class Core:
         if not self.check_ptr_belonging(ptr):
             raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_init' method.")
         
-        if init_data is None:
-            init_data = torch.zeros((size,), dtype=torch.uint8)
-        
-        self.mem_handle.set_data(ptr, size=size, data=init_data)
+        if not self.is_performance_mode:
+            if init_data is None:
+                init_data = torch.zeros((size,), dtype=torch.uint8)
+            self.mem_handle.set_data(ptr, size=size, data=init_data)
         
         self.var_atomic_increase(self._mem_handle_curr_lock, 1)
         
@@ -1265,6 +1283,14 @@ class Core:
             mem_row_stride = row_size
         if cont_row_stride is None:
             cont_row_stride = row_size
+            
+        if self.is_performance_mode:
+            if container.shape is None or container.dtype is None:
+                container.set_metadata(shape=(row_num, cont_row_stride), dtype=torch.uint8)
+            else:
+                container.set_metadata(shape=container.shape, dtype=container.dtype)
+            self.var_atomic_increase(self._mem_handle_curr_lock, 1)
+            return
             
         if container.is_mem_segment:
             container.data = container.data.flatten().view(torch.uint8).reshape(-1, cont_row_stride)
@@ -1311,6 +1337,10 @@ class Core:
             mem_row_stride = row_size
         if cont_row_stride is None:
             cont_row_stride = row_size
+
+        if self.is_performance_mode:
+            self.var_atomic_increase(self._mem_handle_curr_lock, 1)
+            return
 
         if not container.is_mem_segment:
             raise ValueError("container.data must be a Tensor for local_mem_page_write.")
@@ -1456,6 +1486,14 @@ class Core:
     @property
     def use_functional_model(self) -> bool:
         return self._use_functional_model
+
+    @property
+    def simulation_mode(self) -> SimulationMode:
+        return self._simulation_mode
+
+    @property
+    def is_performance_mode(self) -> bool:
+        return not self._use_functional_model
     
     @property
     def rpc_req_recv_queue(self) -> list[RPCMessage]:

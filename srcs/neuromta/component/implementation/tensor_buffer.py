@@ -74,6 +74,7 @@ class MCA_TensorBuffer:
             for _ in range(self._n_y_shards)]
         
         self._is_allocated = False
+        self._has_materialized_payload = False
     
     @staticmethod
     def _get_shard_shape(mem_space: MCA_MemorySpace, shape: Sequence[int], shard_shape: Sequence[int] | str) -> tuple[int, int]:
@@ -207,6 +208,7 @@ class MCA_TensorBuffer:
             for x in range(self._n_x_shards):
                 new_buffer._shard_ptrs[y][x].addr = self._shard_ptrs[y][x].addr
         new_buffer._is_allocated = self._is_allocated
+        new_buffer._has_materialized_payload = self._has_materialized_payload
         
         new_buffer.tiling(tile_shape=(self._tile_y, self._tile_x))
         
@@ -297,6 +299,21 @@ class MCA_TensorBuffer:
     def update(self, tensor: torch.Tensor):
         if not self._is_allocated:
             raise RuntimeError("Tensor buffer is not allocated. Call allocate() before update().")
+        self._validate_update_tensor(tensor)
+        if self.device.is_performance_mode:
+            self._has_materialized_payload = False
+            return self
+        return self._update_payload(tensor)
+    
+    def _validate_update_tensor(self, tensor: torch.Tensor):
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(f"Tensor buffer update expects torch.Tensor, but got {type(tensor).__name__}.")
+        if len(tensor.shape) == 1:
+            tensor = tensor.unsqueeze(0)  # add batch dimension if missing
+        if tuple(tensor.shape) != tuple(self._shape):
+            raise ValueError(f"Tensor shape {tuple(tensor.shape)} does not match buffer shape {tuple(self._shape)}.")
+    
+    def _update_payload(self, tensor: torch.Tensor):
         
         # tensor = torch.nn.functional.pad(tensor, (0, self._pad_x, 0, self._pad_y))  # pad width and height dimensions
         tensor = tensor.flatten().to(dtype=self._dtype)
@@ -309,9 +326,15 @@ class MCA_TensorBuffer:
                 shard_data = tensor[h, w].contiguous().flatten()
                 ptr = self._shard_ptrs[h][w]
                 self.device.mem_set_data(ptr, size=self._shard_size, data=shard_data)
+        self._has_materialized_payload = True
         return self
                 
     def restore(self) -> torch.Tensor:
+        if self.device.is_performance_mode:
+            return torch.zeros(tuple(self._shape), dtype=self._dtype)
+        return self._restore_payload()
+    
+    def _restore_payload(self) -> torch.Tensor:
         tensor = torch.empty((self._layout_y, self._layout_x), dtype=self._dtype)
         tensor = tensor.reshape(self._n_y_shards, self._shard_y, self._n_x_shards, self._shard_x)
         tensor = tensor.permute(0, 2, 1, 3)  # (n_height_shards, n_width_shards, shard_y, shard_x)
@@ -377,6 +400,9 @@ class MCA_TensorBuffer:
         return y_shard_idx, x_shard_idx, y_tile_in_shard_idx, x_tile_in_shard_idx
     
     def get_raw_data(self, y_shard_idx: int, x_shard_idx: int, y_tile_in_shard_idx: int, x_tile_in_shard_idx: int) -> torch.Tensor:
+        if self.device.is_performance_mode:
+            return torch.zeros((self._tile_y, self._tile_x), dtype=self._dtype)
+        
         src_ptr, row_size, row_num, src_row_stride, _, _ = self.get_tile_ptr_read_args(y_shard_idx, x_shard_idx, y_tile_in_shard_idx, x_tile_in_shard_idx)
         data = self.device.mem_get_data(src_ptr, size=src_row_stride * row_num, dtype=torch.uint8)
         data = data.reshape(row_num, src_row_stride)[:, :row_size].flatten().view(self._dtype)

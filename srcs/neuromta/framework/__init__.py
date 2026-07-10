@@ -1,5 +1,6 @@
 from neuromta.framework.core import *
 from neuromta.framework.device import *
+from neuromta.framework.simulation_mode import *
 from neuromta.framework.memory_handle import *
 from neuromta.framework.parser_utils import *
 # from neuromta.framework.tracer import *

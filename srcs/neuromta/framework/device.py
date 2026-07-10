@@ -5,6 +5,7 @@ from typing import Sequence, Callable  #, Any
 
 from neuromta.framework.core import Core, Kernel, Command, RPCMessage, ThreadGroup
 from neuromta.framework.companion import CompanionCore
+from neuromta.framework.simulation_mode import SimulationMode, normalize_simulation_mode, set_global_simulation_mode, get_global_simulation_mode
 from neuromta.framework.logger import logger
 from neuromta.framework.debug_utils import *
 
@@ -23,6 +24,7 @@ class Device:
         self._rpc_rsp_send_inbox: dict[str, list[RPCMessage]] = {}
         
         self._companion_core = CompanionCore()
+        self._simulation_mode: SimulationMode = get_global_simulation_mode()
         
         self._timestamp = 0
         
@@ -34,8 +36,22 @@ class Device:
         return self._companion_core 
         
     def change_sim_model_options(self, use_cycle_model: bool = None, use_functional_model: bool = None):
+        if use_functional_model is not None:
+            self._simulation_mode = SimulationMode.CORRECTNESS if use_functional_model else SimulationMode.PERFORMANCE
+            set_global_simulation_mode(self._simulation_mode)
+        if self._cores is None:
+            return self
         for core in self._cores.values():
             core.change_sim_model_options(use_cycle_model, use_functional_model)
+        return self
+
+    def set_simulation_mode(self, mode: SimulationMode | str | bool):
+        self._simulation_mode = normalize_simulation_mode(mode)
+        set_global_simulation_mode(self._simulation_mode)
+        if self._cores is not None:
+            for core in self._cores.values():
+                core.set_simulation_mode(self._simulation_mode)
+        return self
         
     def _register_core(self, name: str, core: Core | Sequence[Core]):
         if isinstance(core, Sequence):
@@ -61,6 +77,7 @@ class Device:
         self._rpc_rsp_send_inbox = {core.core_id: [] for core in self._cores.values()}
 
         for core in self._cores.values():
+            core.set_simulation_mode(self._simulation_mode)
             core.initialize_kernel_dispatch_queue()
             core.initialize_mp_queue_inbox(rpc_req_send_inbox=self._rpc_req_send_inbox, rpc_rsp_send_inbox=self._rpc_rsp_send_inbox)
         
@@ -276,6 +293,14 @@ class Device:
         # t = [core.timestamp for core in self._cores.values()]
         # return max(t) if t else 0
         return self._timestamp
+
+    @property
+    def simulation_mode(self) -> SimulationMode:
+        return self._simulation_mode
+
+    @property
+    def is_performance_mode(self) -> bool:
+        return self._simulation_mode == SimulationMode.PERFORMANCE
 
     @property
     def is_initialized(self) -> bool:

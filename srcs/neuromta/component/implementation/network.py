@@ -880,6 +880,7 @@ class MCA_CompiledNetworkGraph:
         self, sim_name: str, entries: list[CompiledGraphEntry], result_dict: dict, monitoring_window: bool=False, max_timestamp: int=None, 
         profilers: list[ProfilerTemplate | GroupedProfilerTemplate]=None, profiler_output_dir: str=None,
         pcc_check: bool=False, pcc_check_atol: float=1e-4, pcc_check_rtol: float=1e-4,
+        execution_mode: SimulationMode | str=None,
     ):
         logger.info(f"running compiled entries for simulation: {sim_name}")
         
@@ -891,6 +892,10 @@ class MCA_CompiledNetworkGraph:
         
         device = self.graph_recipe.device
         core_groups = self.graph_recipe.compile_recipe.core_groups
+        if execution_mode is not None:
+            device.set_simulation_mode(execution_mode)
+        if device.is_performance_mode and pcc_check:
+            raise ValueError("PCC check requires correctness mode because performance mode does not compute tensor payloads.")
         
         device.reset_simulation()
         
@@ -930,7 +935,15 @@ class MCA_CompiledNetworkGraph:
         group_idx: int=None, entry_idx: int=None, monitoring_window: bool=False, max_timestamp: int=None,
         profilers: list[ProfilerTemplate | GroupedProfilerTemplate]=None, profiler_output_dir: str=None,
         pcc_check: bool=False, pcc_check_atol: float=1e-4, pcc_check_rtol: float=1e-4,
+        execution_mode: SimulationMode | str=None,
     ) -> dict[str, Any]:
+        if execution_mode is None:
+            execution_mode = os.environ.get("NEUROMTA_SIMULATION_MODE", None)
+        if execution_mode is not None:
+            self.graph_recipe.device.set_simulation_mode(execution_mode)
+        if self.graph_recipe.device.is_performance_mode and pcc_check:
+            raise ValueError("PCC check requires correctness mode because performance mode does not compute tensor payloads.")
+        
         self.run_graph(*dummy_inputs, trace_mode=True)
         
         result_dict = {}
@@ -939,19 +952,19 @@ class MCA_CompiledNetworkGraph:
             entry = self.grouped_compiled_entries[group_idx][entry_idx]
             self._run_compiled_entries_proc(
                 f"{type(self.module).__name__}::group{group_idx}::entry{entry_idx}", [entry], 
-                result_dict, monitoring_window, max_timestamp, profilers, profiler_output_dir,pcc_check, pcc_check_atol, pcc_check_rtol)
+                result_dict, monitoring_window, max_timestamp, profilers, profiler_output_dir, pcc_check, pcc_check_atol, pcc_check_rtol, execution_mode)
         elif group_idx is not None:
             entries = self.grouped_compiled_entries[group_idx]
             for entry_idx, entry in enumerate(entries):
                 self._run_compiled_entries_proc(
                     f"{type(self.module).__name__}::group{group_idx}::entry{entry_idx}", [entry], 
-                    result_dict, monitoring_window, max_timestamp, profilers, profiler_output_dir, pcc_check, pcc_check_atol, pcc_check_rtol)
+                    result_dict, monitoring_window, max_timestamp, profilers, profiler_output_dir, pcc_check, pcc_check_atol, pcc_check_rtol, execution_mode)
         else:
             for group_idx, group in enumerate(self.grouped_compiled_entries):
                 for entry_idx, entry in enumerate(group):
                     self._run_compiled_entries_proc(
                         f"{type(self.module).__name__}::group{group_idx}::entry{entry_idx}", [entry], 
-                        result_dict, monitoring_window, max_timestamp, profilers, profiler_output_dir, pcc_check, pcc_check_atol, pcc_check_rtol)
+                        result_dict, monitoring_window, max_timestamp, profilers, profiler_output_dir, pcc_check, pcc_check_atol, pcc_check_rtol, execution_mode)
             
         return dict(result_dict)
     

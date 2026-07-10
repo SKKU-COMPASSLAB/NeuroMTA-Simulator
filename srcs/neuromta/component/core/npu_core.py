@@ -322,11 +322,16 @@ class NPUCore(Core):
         
     @core_command_method
     def mxu_load_context(self, psum_cont: DataContainer[torch.Tensor]):
+        if self.is_performance_mode:
+            return
         psum_tile = psum_cont.data.view(self.mxu_context.acc_dtype).reshape(self.mxu_context.config.ofm_tile_shape)
         self.mxu_context.set_pe_arr_regs(psum_tile)
         
     @core_command_method
     def mxu_store_context(self, psum_cont: DataContainer[torch.Tensor]):
+        if self.is_performance_mode:
+            psum_cont.set_metadata(shape=self.mxu_context.config.ofm_tile_shape, dtype=self.mxu_context.acc_dtype)
+            return
         psum_tile = self.mxu_context.get_pe_arr_regs()
         psum_cont.data = psum_tile
     
@@ -656,4 +661,3 @@ class NPUCoreCycleModel(CoreCycleModel):
             return self.core.vpu_context.unary_op_latency * burst_len
         else:
             return self.core.vpu_context.arith_op_latency * burst_len
-
