@@ -73,14 +73,10 @@ if __name__ == "__main__":
         device=device,
         core_groups=[core_group],
         spad_space_size_per_core=parse_mem_cap_str("1MB"),
-        broadcast_optimize_queue_depth=8,
-        broadcast_optimize_max_ref_cnt=16,
+        fifo_buffer_slot_num=8,
         context_buffer_slot_num=4,
-        ld_ex_buffer_slot_num=16,
-        ex_st_buffer_slot_num=8,
-        concurrent_load_num=8,
-        temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,  # weight/bias temporal reuse
-        spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
+        temporal_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL_MAIN,  # weight/bias temporal reuse
+        spatial_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,   # weight broadcast (if possible)
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
@@ -116,8 +112,8 @@ if __name__ == "__main__":
     if args.save_profile:
         profiler_saver.close()
     
-    for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
-        logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
+        for profiler, saver_metadata in zip(profilers, profiler_saver.metadata):
+            logger.info(f"Profile {profiler.metric_id} saved with {len(saver_metadata['profiler_ids'])} files")
     
     print(f"kernel simulation time: {(ed - st)*1000:.2f}ms")
     print(f"simulation terminated with {device.timestamp}")

@@ -398,6 +398,12 @@ class MTA_CoreGrid(MCA_CoreGroup):
                 subgrids.append(MTA_CoreGrid(offset=grid_offset, shape=grid_shape, core_ids=grid_core_ids))
         
         return subgrids
+    
+    def get_core_id(self, y: int, x: int) -> int:
+        if y < 0 or y >= self.shape[0] or x < 0 or x >= self.shape[1]:
+            raise IndexError(f"Core grid index ({y}, {x}) is out of bounds for shape {self.shape}.")
+        idx = y * self.shape[1] + x
+        return self.core_ids[idx]
         
     def __getitem__(self, idx: int) -> int:
         if isinstance(idx, tuple):

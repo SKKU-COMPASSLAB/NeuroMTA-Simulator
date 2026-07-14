@@ -45,7 +45,7 @@ def mca_operator_method(func: Callable):
 
 
 class MCA_KernelTemplate:
-    def get_ld_thread_kernel(self, core: NPUCore, env: 'MCA_OperatorGraphCompiler.Environment', ir_seq: 'list[MCA_CompiledOperator.IR.Base]', load_ir_lock: str) -> KernelPrototype: ...
+    def get_ld_thread_kernel(self, core: NPUCore, env: 'MCA_OperatorGraphCompiler.Environment', ir_seq: 'list[MCA_CompiledOperator.IR.Base]') -> KernelPrototype: ...
     def get_ex_thread_kernel(self, core: NPUCore, env: 'MCA_OperatorGraphCompiler.Environment', ir_seq: 'list[MCA_CompiledOperator.IR.Base]') -> KernelPrototype: ...
     def get_st_thread_kernel(self, core: NPUCore, env: 'MCA_OperatorGraphCompiler.Environment', ir_seq: 'list[MCA_CompiledOperator.IR.Base]') -> KernelPrototype: ...
     def get_barrier_kernel(self, core: NPUCore, env: 'MCA_OperatorGraphCompiler.Environment', barrier: tuple[str, str, int]) -> KernelPrototype: ...
@@ -308,7 +308,7 @@ class MCA_CompiledOperator:
         class NOP(Base):
             def signature(self):
                 return "NOP"
-            
+        
         class MEM_COPY_TILE(Base):
             def __init__(self, src: 'MCA_CompiledOperator.IR.Reference', dsts: 'list[MCA_CompiledOperator.IR.Reference]'=None):
                 self.src = src
@@ -364,22 +364,13 @@ class MCA_CompiledOperator:
                 return f"EXE_CTX_STORE {self.op_id} tiled_op_idx={self.tiled_op_idx} uop_idx={self.uop_idx} {self.tile_sig.signature} -> {self.ref}"
 
     class Stage:
-        def __init__(self, n_load_threads: int):
-            self.n_load_threads = n_load_threads
-            
-            # self.loads:    list[MCA_CompiledOperator.IR.Base] = []
-            self.loads: list[list[MCA_CompiledOperator.IR.Base]] = [[] for _ in range(n_load_threads)]
+        def __init__(self):
+            self.loads:    list[MCA_CompiledOperator.IR.Base] = []
             self.executes: list[MCA_CompiledOperator.IR.Base] = []
             self.stores:   list[MCA_CompiledOperator.IR.Base] = []
             
         def add_load_ir(self, cmd: 'MCA_CompiledOperator.IR.Base'):
-            # if isinstance(cmd, MCA_CompiledOperator.IR.MEM_COPY_TILE):
-            #     cmd.ir_idx = len(self.loads)
-            if isinstance(cmd, MCA_CompiledOperator.IR.MEM_COPY_TILE):
-                thread_id = cmd.ir_idx % self.n_load_threads
-                self.loads[thread_id].append(cmd)
-            else:
-                self.loads[0].append(cmd)
+            self.loads.append(cmd)
             
         def add_execute_ir(self, cmd: 'MCA_CompiledOperator.IR.Base'):
             self.executes.append(cmd)
@@ -394,8 +385,7 @@ class MCA_CompiledOperator:
 
         def summary(self) -> dict:
             return {
-                # "loads":    [ir.signature() for ir in self.loads    if not isinstance(ir, MCA_CompiledOperator.IR.NOP)],
-                "loads":    [[ir.signature() for ir in thread_ir] for thread_ir in self.loads],
+                "loads":    [ir.signature() for ir in self.loads    if not isinstance(ir, MCA_CompiledOperator.IR.NOP)],
                 "executes": [ir.signature() for ir in self.executes if not isinstance(ir, MCA_CompiledOperator.IR.NOP)],
                 "stores":   [ir.signature() for ir in self.stores   if not isinstance(ir, MCA_CompiledOperator.IR.NOP)],
             }
@@ -410,29 +400,27 @@ class MCA_CompiledOperator:
             
         @property
         def is_bubble(self) -> bool:
-            return all(len(thread_ir) == 0 for thread_ir in self.loads) and len(self.executes) == 0 and len(self.stores) == 0
+            return len(self.loads) == 0 and len(self.executes) == 0 and len(self.stores) == 0
 
     def __init__(self, env: 'MCA_OperatorGraphCompiler.Environment', op_meta: 'MCA_OperatorGraphCompiler.OperatorMetadata'):
         self._env = env
         self._op_id = op_meta.op_sig.op_id
         self._kernel_template = op_meta.op_sig.kernel_template
         
-        self._concurrent_load_num = self._env.recipe.concurrent_load_num
-        
         self._ld_ir_counters: dict[int, int] = {core_id: 0 for core_id in op_meta.op_sig.core_group.core_ids}  # {core_id: counter}
         
-        self._ld_ir_locks: dict[int, str] = {
-            core_id: self._env.add_variable(f"{self._op_id}_core_{core_id}_ld_ir_lock").handle_name 
-            for core_id in op_meta.op_sig.core_group.core_ids
-        }
+        # self._ld_ir_locks: dict[int, str] = {
+        #     core_id: self._env.add_variable(f"{self._op_id}_core_{core_id}_ld_ir_lock").handle_name 
+        #     for core_id in op_meta.op_sig.core_group.core_ids
+        # }
         
         self._mappings: dict[int, list[MCA_CompiledOperator.Stage]] = {
-            core_id: [MCA_CompiledOperator.Stage(n_load_threads=self._concurrent_load_num)] 
+            core_id: [MCA_CompiledOperator.Stage()] 
             for core_id in op_meta.op_sig.core_group.core_ids
         }  # {core_id: [stage1, stage2, ...]}
         
     def new_stage(self, core_id: int) -> 'MCA_CompiledOperator.Stage':
-        stage = MCA_CompiledOperator.Stage(n_load_threads=self._concurrent_load_num)
+        stage = MCA_CompiledOperator.Stage()
         self._mappings[core_id].append(stage)
         return stage
     
@@ -497,15 +485,7 @@ class MCA_CompiledOperator:
             len(self.mappings.keys()) * 3,
         )
         
-        # PRESYNC BARRIER
-        # if presync_globals:
-        #     for core_id in gb_core_ids:
-        #         core = device.get_npu_core(core_id)
-                
-        #         self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("LD")
-        #         self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("EX")
-        #         self._kernel_template.get_barrier_kernel(core, self._env, barrier=gb_barrier).dispatch("ST")
-        # else:
+        # OPERATOR BARRIER
         for core_id in self.mappings.keys():
             core = device.get_npu_core(core_id)
             
@@ -521,9 +501,7 @@ class MCA_CompiledOperator:
                 if stage.is_bubble:
                     continue
                 
-                for thread_id, load_ir in enumerate(stage.loads):
-                    if len(load_ir) > 0:
-                        self._kernel_template.get_ld_thread_kernel(core, self._env, load_ir, self._ld_ir_locks[core_id]).dispatch(f"LD{thread_id}")
+                self._kernel_template.get_ld_thread_kernel(core, self._env, stage.loads).dispatch(f"LD")
                 self._kernel_template.get_ex_thread_kernel(core, self._env, stage.executes).dispatch("EX")
                 self._kernel_template.get_st_thread_kernel(core, self._env, stage.stores).dispatch("ST")
         
@@ -581,7 +559,7 @@ class MCA_OperatorGraphCompiler:
     DEFAULT="DEFAULT"
     
     class CompileRecipe:
-        class ReuseType(enum.Enum):
+        class ReuseTarget(enum.Enum):
             IGNORE      = "IGNORE"
             ALL         = "ALL"
             SINGLE      = "SINGLE"
@@ -593,57 +571,50 @@ class MCA_OperatorGraphCompiler:
         def __init__(
             self, 
             device: MCA_DeviceBase,
-            core_groups: list[MCA_CoreGroup],
+            core_groups: list[MCA_CoreGroup | MTA_CoreGrid],
             spad_space_size_per_core: int,
-            broadcast_optimize_queue_depth: int=8,
-            broadcast_optimize_max_ref_cnt: int=4,
             context_buffer_slot_num: int=16,
-            ld_ex_buffer_slot_num: int=16,
-            ex_st_buffer_slot_num: int=8,
-            concurrent_load_num: int=1,
-            temporal_reuse_type: ReuseType=ReuseType.ALL,
-            spatial_reuse_type: ReuseType=ReuseType.SINGLE_MAIN,
-            greedy_temporal_reuse: bool=True,
+            fifo_buffer_slot_num: int=16,
+            temporal_reuse_target: ReuseTarget=ReuseTarget.ALL,
+            spatial_reuse_target: ReuseTarget=ReuseTarget.SINGLE_MAIN,
         ):
             if len(core_groups) == 0:
                 raise ValueError("At least one core group must be provided.")
-            if not isinstance(core_groups[0], (MCA_CoreGroup, list)):
+            if not isinstance(core_groups[0], (MCA_CoreGroup, MTA_CoreGrid, list)):
                 core_groups = [core_groups]
 
             self.device                         = device
             self.core_groups                    = core_groups
             self.spad_space_size_per_core       = spad_space_size_per_core
-            self.broadcast_optimize_queue_depth = broadcast_optimize_queue_depth
-            self.broadcast_optimize_max_ref_cnt = broadcast_optimize_max_ref_cnt
             self.context_buffer_slot_num        = context_buffer_slot_num
-            self.ld_ex_buffer_slot_num          = ld_ex_buffer_slot_num
-            self.ex_st_buffer_slot_num          = ex_st_buffer_slot_num
-            self.concurrent_load_num            = concurrent_load_num
-            self.temporal_reuse_type    = temporal_reuse_type if isinstance(temporal_reuse_type, self.ReuseType) else self.ReuseType(temporal_reuse_type)
-            self.spatial_reuse_type     = spatial_reuse_type  if isinstance(spatial_reuse_type,  self.ReuseType) else self.ReuseType(spatial_reuse_type)
-            self.greedy_temporal_reuse  = greedy_temporal_reuse
-
+            self.fifo_buffer_slot_num           = fifo_buffer_slot_num
+            self.temporal_reuse_target          = temporal_reuse_target if isinstance(temporal_reuse_target, self.ReuseTarget) else self.ReuseTarget(temporal_reuse_target)
+            self.spatial_reuse_target           = spatial_reuse_target  if isinstance(spatial_reuse_target,  self.ReuseTarget) else self.ReuseTarget(spatial_reuse_target)
+            
         @property
         def global_core_group(self) -> MCA_CoreGroup:
             return MCA_CoreGroup.merge_core_groups(self.core_groups)
-        
-        @property
-        def broadcast_optimize(self) -> bool:
-            return self.broadcast_optimize_queue_depth > 0
             
     class Thread:
         class _NodeBase(metaclass=abc.ABCMeta):
             pass
         
         class UopNode(_NodeBase):
-            def __init__(self, op_id: str, tiled_op_idx: int, uop_idx: int, output: bool=False, bcast_schedule: dict[TileSignature, tuple[int, int, int]]=None, cache_schedule: dict[TileSignature, tuple[bool, int]]=None):
+            def __init__(
+                self, 
+                op_id: str, tiled_op_idx: int, uop_idx: int, output: bool=False, 
+                cache_schedule: dict[TileSignature, tuple[bool, int]]=None, 
+                spatial_x_schedule: dict[TileSignature, dict[str, tuple[int, int, int]]]=None,
+                spatial_y_schedule: dict[TileSignature, dict[str, tuple[int, int, int]]]=None,
+            ):
                 self.op_id = op_id
                 self.tiled_op_idx = tiled_op_idx
                 self.uop_idx = uop_idx
                 self.output = output
-                self.bcast_schedule = bcast_schedule if bcast_schedule is not None else {}  # {tile_sig: (bcast_core_id, bcast_slot_id, bcast_ref_cnt)}
                 self.cache_schedule = cache_schedule if cache_schedule is not None else {}  # {tile_sig: (is_cache_hit, cache_slot_id)}
-                
+                self.spatial_x_schedule = spatial_x_schedule if spatial_x_schedule is not None else {}  # {tile_sig: {"src": (src_core_id, src_fifo_entry_id, src_fifo_ref_cnt), "dst": (dst_core_id, dst_fifo_entry_id, dst_fifo_ref_cnt)}}
+                self.spatial_y_schedule = spatial_y_schedule if spatial_y_schedule is not None else {}  # {tile_sig: {"src": (src_core_id, src_fifo_entry_id, src_fifo_ref_cnt), "dst": (dst_core_id, dst_fifo_entry_id, dst_fifo_ref_cnt)}}
+
         class ContextStoreNode(_NodeBase):
             def __init__(self, op_id: str, tiled_op_idx: int, uop_idx: int, slot_id: int):
                 self.op_id = op_id
@@ -662,9 +633,14 @@ class MCA_OperatorGraphCompiler:
             self.core_id = core_id
             self.uop_nodes: list[MCA_OperatorGraphCompiler.Thread._NodeBase] = []
             
-        # def add_uop_node(self, op_id: str, tiled_op_idx: int, uop_idx: int, output: bool=False, bcast_schedule: dict[TileSignature, tuple[int, int, int]]=None):
-        def add_uop_node(self, op_id: str, tiled_op_idx: int, uop_idx: int, output: bool=False, bcast_schedule: dict[TileSignature, tuple[int, int, int]]=None, cache_schedule: dict[TileSignature, tuple[bool, int]]=None):
-            uop_node = self.UopNode(op_id, tiled_op_idx, uop_idx, output=output, bcast_schedule=bcast_schedule, cache_schedule=cache_schedule)
+        def add_uop_node(
+            self,
+            op_id: str, tiled_op_idx: int, uop_idx: int, output: bool=False, 
+            cache_schedule: dict[TileSignature, tuple[bool, int]]=None, 
+            spatial_x_schedule: dict[TileSignature, dict[str, tuple[int, int, int]]]=None,
+            spatial_y_schedule: dict[TileSignature, dict[str, tuple[int, int, int]]]=None,
+        ):
+            uop_node = self.UopNode(op_id, tiled_op_idx, uop_idx, output=output, cache_schedule=cache_schedule, spatial_x_schedule=spatial_x_schedule, spatial_y_schedule=spatial_y_schedule)
             self.uop_nodes.append(uop_node)
             
         def add_context_store(self, op_id: str, tiled_op_idx: int, uop_idx: int, slot_id: int):
@@ -678,6 +654,176 @@ class MCA_OperatorGraphCompiler:
         @property 
         def n_uop_nodes(self) -> int:
             return len(self.uop_nodes)
+    
+    class MemoryState:
+        def __init__(
+            self,
+            env: 'MCA_OperatorGraphCompiler.Environment',
+            op_meta: 'MCA_OperatorGraphCompiler.OperatorMetadata',
+        ):
+            self.env = env
+            self.op_meta = op_meta
+            op_sig = op_meta.op_sig
+            core_group = op_sig.core_group
+            device = env.recipe.device
+            l1_space = device.create_l1_mem_space(op_meta.spad_space_size_per_core, core_group.core_ids)
+            
+            self.ctx_descriptors = {}
+            self.cache_descriptors = {}
+            self.spatial_x_descriptors = {}
+            self.spatial_y_descriptors = {}
+            self.ld_ex_descriptors = {}
+            self.ex_st_descriptors = {}
+            
+            for core_id in core_group.core_ids:
+                self.ctx_descriptors[core_id] = MCA_CompiledOperator.IR.SPMDescriptor(
+                    f"CORE{core_id}_{op_sig.op_id}_CTX",
+                    l1_space.allocate(core_id, op_meta.ctx_buffer_size),
+                )
+                self.cache_descriptors[core_id] = MCA_CompiledOperator.IR.SPMDescriptor(
+                    f"CORE{core_id}_{op_sig.op_id}_CACHE",
+                    l1_space.allocate(core_id, op_meta.cache_buffer_size),
+                )
+                self.spatial_x_descriptors[core_id] = MCA_CompiledOperator.IR.FIFODescriptor(
+                    f"CORE{core_id}_{op_sig.op_id}_SPATIAL_X",
+                    l1_space.allocate(core_id, op_meta.bcast_fifo_size),
+                    op_meta.bcast_fifo_slot_size,
+                    op_meta.bcast_fifo_depth,
+                )
+                self.spatial_y_descriptors[core_id] = MCA_CompiledOperator.IR.FIFODescriptor(
+                    f"CORE{core_id}_{op_sig.op_id}_SPATIAL_Y",
+                    l1_space.allocate(core_id, op_meta.bcast_fifo_size),
+                    op_meta.bcast_fifo_slot_size,
+                    op_meta.bcast_fifo_depth,
+                )
+                self.ld_ex_descriptors[core_id] = MCA_CompiledOperator.IR.FIFODescriptor(
+                    f"CORE{core_id}_{op_sig.op_id}_LD_EX",
+                    l1_space.allocate(core_id, op_meta.ld_ex_fifo_size),
+                    op_meta.ld_ex_fifo_slot_size,
+                    op_meta.ld_ex_fifo_depth,
+                )
+                self.ex_st_descriptors[core_id] = MCA_CompiledOperator.IR.FIFODescriptor(
+                    f"CORE{core_id}_{op_sig.op_id}_EX_ST",
+                    l1_space.allocate(core_id, op_meta.ex_st_fifo_size),
+                    op_meta.ex_st_fifo_slot_size,
+                    op_meta.ex_st_fifo_depth,
+                )
+            
+            self.tensor_descriptors = {
+                buf_name: MCA_CompiledOperator.IR.TensorBufferDescriptor(buf_name)
+                for buf_name in op_sig.buffer_names
+            }
+            
+            self.ctx_states = {
+                core_id: {slot_id: None for slot_id in range(op_meta.ctx_buffer_slot_num)}
+                for core_id in core_group.core_ids
+            }
+            self.cache_states = {
+                core_id: {slot_id: [None, None, None] for slot_id in range(op_meta.cache_buffer_slot_num)}
+                for core_id in core_group.core_ids
+            }
+            
+            # Spatial FIFO entry IDs and cache slot IDs are already fixed in
+            # Thread.UopNode schedules. LD_EX and EX_ST are transient pipeline
+            # FIFOs, so the compiler still assigns their logical entries while
+            # creating load/execute/store IRs.
+            self.ld_ex_entry_counters = defaultdict(int)
+            self.ex_st_entry_counters = defaultdict(int)
+            self.ld_ex_tile_entries = {core_id: {} for core_id in core_group.core_ids}
+            self.ex_st_tile_entries = {core_id: {} for core_id in core_group.core_ids}
+            
+            l1_space.remove()
+        
+        def register_fifos(self):
+            for core_id in self.op_meta.op_sig.core_group.core_ids:
+                for desc in (
+                    self.spatial_x_descriptors[core_id],
+                    self.spatial_y_descriptors[core_id],
+                    self.ld_ex_descriptors[core_id],
+                    self.ex_st_descriptors[core_id],
+                ):
+                    self.env.add_fifo_buffer(desc.buf_name, desc.slot_num, desc.slot_size, desc.ptr)
+        
+        def ctx_push(self, core_id: int, slot_id: int, tile: TileSignature):
+            if self.ctx_states[core_id][slot_id] is not None:
+                raise Exception(f"Context slot {slot_id} in core {core_id} is already occupied.")
+            self.ctx_states[core_id][slot_id] = tile
+        
+        def ctx_pop(self, core_id: int, slot_id: int) -> TileSignature:
+            tile = self.ctx_states[core_id][slot_id]
+            if tile is None:
+                raise Exception(f"Context slot {slot_id} in core {core_id} is empty.")
+            self.ctx_states[core_id][slot_id] = None
+            return tile
+        
+        def cache_ref(self, core_id: int, tile: TileSignature, slot_id: int):
+            return self.cache_descriptors[core_id].ref(tile, offset=slot_id * self.op_meta.cache_buffer_slot_size)
+        
+        def cache_read(
+            self,
+            core_id: int,
+            tile: TileSignature,
+            slot_id: int,
+            stage: MCA_CompiledOperator.Stage,
+            ir: MCA_CompiledOperator.IR.MEM_COPY_TILE,
+        ):
+            cached_tile, last_write_ir, last_write_stage = self.cache_states[core_id][slot_id]
+            if cached_tile != tile:
+                raise Exception(f"Cache miss while compiling cache-hit schedule: core={core_id}, slot={slot_id}, tile={tile}, cached={cached_tile}")
+            if last_write_stage is stage and last_write_ir is not None and last_write_ir.ir_idx is not None:
+                ir.wait_ir_idx.append(last_write_ir.ir_idx)
+            ir.src = self.cache_ref(core_id, tile, slot_id)
+        
+        def cache_write(
+            self,
+            core_id: int,
+            tile: TileSignature,
+            slot_id: int,
+            stage: MCA_CompiledOperator.Stage,
+            ir: MCA_CompiledOperator.IR.MEM_COPY_TILE,
+        ):
+            _, evicted_last_write_ir, evicted_last_write_stage = self.cache_states[core_id][slot_id]
+            if evicted_last_write_stage is stage and evicted_last_write_ir is not None and evicted_last_write_ir.ir_idx is not None:
+                ir.wait_ir_idx.append(evicted_last_write_ir.ir_idx)
+            self.cache_states[core_id][slot_id] = [tile, ir, stage]
+            ir.dsts.append(self.cache_ref(core_id, tile, slot_id))
+        
+        def replace_cache_writer(
+            self,
+            core_id: int,
+            tile: TileSignature,
+            slot_id: int,
+            old_ir: MCA_CompiledOperator.IR.MEM_COPY_TILE,
+            new_ir: MCA_CompiledOperator.IR.MEM_COPY_TILE,
+            stage: MCA_CompiledOperator.Stage,
+        ):
+            cached_tile, last_write_ir, last_write_stage = self.cache_states[core_id][slot_id]
+            if cached_tile == tile and last_write_ir is old_ir and last_write_stage is stage:
+                self.cache_states[core_id][slot_id] = [tile, new_ir, stage]
+        
+        def ld_ex_push(self, core_id: int, tile: TileSignature) -> int:
+            entry_id = self.ld_ex_entry_counters[core_id]
+            self.ld_ex_entry_counters[core_id] += 1
+            self.ld_ex_tile_entries[core_id].setdefault(tile, deque()).append(entry_id)
+            return entry_id
+        
+        def ld_ex_pop(self, core_id: int, tile: TileSignature) -> int:
+            entries = self.ld_ex_tile_entries[core_id].get(tile)
+            if not entries:
+                raise Exception(f"Tile {tile} is not available in LD_EX FIFO state for core {core_id}.")
+            return entries.popleft()
+        
+        def ex_st_push(self, core_id: int, tile: TileSignature) -> int:
+            entry_id = self.ex_st_entry_counters[core_id]
+            self.ex_st_entry_counters[core_id] += 1
+            self.ex_st_tile_entries[core_id].setdefault(tile, deque()).append(entry_id)
+            return entry_id
+        
+        def ex_st_pop(self, core_id: int, tile: TileSignature) -> int:
+            entries = self.ex_st_tile_entries[core_id].get(tile)
+            if not entries:
+                raise Exception(f"Tile {tile} is not available in EX_ST FIFO state for core {core_id}.")
+            return entries.popleft()
             
     class OperatorMetadata:
         class SrcType:
@@ -710,543 +856,368 @@ class MCA_OperatorGraphCompiler:
         def __init__(self, op_sig: 'MCA_OperatorSignature', recipe: 'MCA_OperatorGraphCompiler.CompileRecipe'):
             self.op_sig = op_sig
             self.spad_space_size_per_core = recipe.spad_space_size_per_core
-            self.broadcast_optimize_max_ref_cnt = recipe.broadcast_optimize_max_ref_cnt
             
             self.i_buf_src: dict[str, MCA_OperatorGraphCompiler.OperatorMetadata.SrcType] = {
                 buf_name: MCA_OperatorGraphCompiler.OperatorMetadata.SrcType.BUFFER() 
                 for buf_name in op_sig.input_buffer_names
             }
             
-            # Initialize min LD/ST area based on the operator signature
-            self.min_ld_area_per_pp = 0
-            self.min_st_area_per_pp = 0
-            _tmp_total_ld_area = 0
-            _tmp_total_st_area = 0
+            _n_i_tiles_per_uop = 0
+            _i_tile_size = 0
+            _o_tile_size = 0
             
-            for tiled_op_sig in op_sig.tiled_ops:
-                for uop_idx in range(tiled_op_sig.n_uops):
-                    _tmp_ld_area = sum(op_sig.buffers[tile.buf_name].tile_size for tile in tiled_op_sig.i_tiles[uop_idx])
-                    _tmp_st_area = op_sig.buffers[tiled_op_sig.o_tile.buf_name].tile_size
-                    self.min_ld_area_per_pp = max(self.min_ld_area_per_pp, _tmp_ld_area)
-                    self.min_st_area_per_pp = max(self.min_st_area_per_pp, _tmp_st_area)
-                    _tmp_total_ld_area += _tmp_ld_area
-                    _tmp_total_st_area += _tmp_st_area
-                    
-            self.ld_ratio = (self.min_ld_area_per_pp / (self.min_ld_area_per_pp + self.min_st_area_per_pp)) if (self.min_ld_area_per_pp + self.min_st_area_per_pp) > 0 else 0.8
-            
-            # Constant buffer sizes
-            self.bcast_fifo_slot_size = max(buf.tile_size for buf_name, buf in op_sig.buffers.items() if buf_name in op_sig.input_buffer_names and buf is not None)
-            self.bcast_fifo_size      = recipe.broadcast_optimize_queue_depth * self.bcast_fifo_slot_size
-            
-            self.ctx_buffer_slot_size = self.op_sig.buffers[op_sig.output_buffer_name].tile_size  # conservatively reserve the same size as output tile buffer for context store (for tile-level pipelining)
-            self.ctx_buffer_size      = recipe.context_buffer_slot_num * self.ctx_buffer_slot_size
-            
-            self.ld_ex_fifo_slot_size = max(buf.tile_size for buf_name, buf in op_sig.buffers.items() if buf_name in op_sig.input_buffer_names and buf is not None)
-            self.ld_ex_fifo_size      = recipe.ld_ex_buffer_slot_num * self.ld_ex_fifo_slot_size
-            
-            self.ex_st_fifo_slot_size = op_sig.buffers[op_sig.output_buffer_name].tile_size
-            self.ex_st_fifo_size      = recipe.ex_st_buffer_slot_num * self.ex_st_fifo_slot_size
-            
-            self.cache_buffer_slot_size = self.ld_ex_fifo_slot_size  # conservatively reserve the same size as LD->EX FIFO slot for cache buffer (for tile-level reuse)
-            
-            # Reuse targets
-            reuse_targets = [buf_name for buf_name in op_sig.input_buffer_names if op_sig.buffers[buf_name] is not None]
-            reuse_targets = sorted(reuse_targets, key=lambda buf_name: (op_sig.buffers[buf_name].total_size, 1 if op_sig.buffers[buf_name].mem_space.is_main else 0), reverse=True)
-            main_reuse_targets = [n for n in reuse_targets if op_sig.buffers[n].mem_space.is_main]
-            l1_reuse_targets = [n for n in reuse_targets if op_sig.buffers[n].mem_space.is_l1]
-            
-            if recipe.temporal_reuse_type == recipe.ReuseType.ALL:
-                self.temporal_reuse_targets = reuse_targets if len(reuse_targets) > 0 else op_sig.input_buffer_names
-            elif recipe.temporal_reuse_type == recipe.ReuseType.SINGLE:
-                self.temporal_reuse_targets = [reuse_targets[0]] if len(reuse_targets) > 0 else [op_sig.input_buffer_names[0]]
-            elif recipe.temporal_reuse_type == recipe.ReuseType.ALL_MAIN:
-                self.temporal_reuse_targets = main_reuse_targets if len(main_reuse_targets) > 0 else op_sig.input_buffer_names
-            elif recipe.temporal_reuse_type == recipe.ReuseType.ALL_L1:
-                self.temporal_reuse_targets = l1_reuse_targets if len(l1_reuse_targets) > 0 else op_sig.input_buffer_names
-            elif recipe.temporal_reuse_type == recipe.ReuseType.SINGLE_MAIN:
-                self.temporal_reuse_targets = [main_reuse_targets[0]] if len(main_reuse_targets) > 0 else [op_sig.input_buffer_names[0]]
-            elif recipe.temporal_reuse_type == recipe.ReuseType.SINGLE_L1:
-                self.temporal_reuse_targets = [l1_reuse_targets[0]] if len(l1_reuse_targets) > 0 else [op_sig.input_buffer_names[0]]
-            elif recipe.temporal_reuse_type == recipe.ReuseType.IGNORE:
-                self.temporal_reuse_targets = []
-            else:
-                raise ValueError(f"Invalid temporal reuse type: {recipe.temporal_reuse_type}")
-            
-            if recipe.spatial_reuse_type == recipe.ReuseType.ALL:
-                raise Exception(f"Invalid spatial reuse type: {recipe.spatial_reuse_type}. Spatial reuse typically targets a single buffer, so ALL is not supported.")
-            elif recipe.spatial_reuse_type == recipe.ReuseType.SINGLE:
-                self.spatial_reuse_target = reuse_targets[0] if len(reuse_targets) > 0 else op_sig.input_buffer_names[0]
-            elif recipe.spatial_reuse_type == recipe.ReuseType.ALL_MAIN:
-                raise Exception(f"Invalid spatial reuse type: {recipe.spatial_reuse_type}. Spatial reuse typically targets a single buffer, so ALL_MAIN is not supported.")
-            elif recipe.spatial_reuse_type == recipe.ReuseType.ALL_L1:
-                raise Exception(f"Invalid spatial reuse type: {recipe.spatial_reuse_type}. Spatial reuse typically targets a single buffer, so ALL_L1 is not supported.")
-            elif recipe.spatial_reuse_type == recipe.ReuseType.SINGLE_MAIN:
-                self.spatial_reuse_target = main_reuse_targets[0] if len(main_reuse_targets) > 0 else op_sig.input_buffer_names[0]
-            elif recipe.spatial_reuse_type == recipe.ReuseType.SINGLE_L1:
-                self.spatial_reuse_target = l1_reuse_targets[0] if len(l1_reuse_targets) > 0 else op_sig.input_buffer_names[0]
-            elif recipe.spatial_reuse_type == recipe.ReuseType.IGNORE:
-                self.spatial_reuse_target = None
-            else:
-                raise ValueError(f"Invalid spatial reuse type: {recipe.spatial_reuse_type}")
-            
-            self.greedy_temporal_reuse = recipe.greedy_temporal_reuse
+            for tiled_op in op_sig.tiled_ops:
+                for uop_idx in range(tiled_op.n_uops):
+                    _n_i_tiles_per_uop = max(_n_i_tiles_per_uop, len(tiled_op.i_tiles[uop_idx]))
+                    _i_tile_size = max(_i_tile_size, max(tile.tile_size for tile in tiled_op.i_tiles[uop_idx]))
+                _o_tile_size = max(_o_tile_size, tiled_op.o_tile.tile_size)
 
+            self._ld_ex_fifo_slot_num = recipe.fifo_buffer_slot_num * _n_i_tiles_per_uop
+            self._ex_st_fifo_slot_num = recipe.fifo_buffer_slot_num
+            self._bcast_fifo_slot_num = recipe.fifo_buffer_slot_num
+            self._context_buffer_slot_num = recipe.context_buffer_slot_num
+            
+            self._ld_ex_fifo_entry_size = _i_tile_size
+            self._ex_st_fifo_entry_size = _o_tile_size
+            self._bcast_fifo_entry_size = _i_tile_size
+            self._context_buffer_slot_size = _o_tile_size
+            
+            self._ld_ex_fifo_size = self._ld_ex_fifo_slot_num * self._ld_ex_fifo_entry_size
+            self._ex_st_fifo_size = self._ex_st_fifo_slot_num * self._ex_st_fifo_entry_size
+            self._bcast_fifo_size = self._bcast_fifo_slot_num * self._bcast_fifo_entry_size
+            self._context_buffer_size = self._context_buffer_slot_num * self._context_buffer_slot_size
+            
+            self.spatial_reuse_target = recipe.spatial_reuse_target
+            self.temporal_reuse_target = recipe.temporal_reuse_target
+            
             # Initialized after freezing the operator metadata
-            self.cache_buffer_size = 0 # cache buffer size for tile-level reuse (cache buffer)
+            self.cache_buffer_slot_size = _i_tile_size
+            self.cache_buffer_size = 0  # self.spad_space_size_per_core - (self._ld_ex_fifo_size + self._ex_st_fifo_size + self._bcast_fifo_size + self._context_buffer_size)
+            self.cache_buffer_slot_num = 0  # self.cache_buffer_size // self.cache_buffer_slot_size
+            
             self.thread_mapping: dict[int, MCA_OperatorGraphCompiler.Thread] = {}
             
             self.o_tile_store = op_sig.buffers[op_sig.output_buffer_name].is_allocated  # if the output buffer is allocated, the computation result should be updated to the buffer
             self.o_tile_sharers: set[str] = set()  # set of op_ids that directly consume this operator's output tiles (tile-level sharers via SHARED area)
             
             self._is_frozen = False
-
-        @staticmethod
-        def optimal_grid_placement(n_queues: int, items: list[int], row_sigs: dict[int, tuple[int]], col_sigs: dict[int, tuple[int]]) -> dict:
-            """
-            Distributes items with list-based signatures, optimizing for LCS-based col_score and row_score.
-            """
-            def get_lcs(seq1: list[int], seq2: list[int]) -> list[int]:
-                """Computes the Longest Common Subsequence (LCS) of two sequences."""
-                m, n = len(seq1), len(seq2)
-                dp = [[0] * (n + 1) for _ in range(m + 1)]
-                
-                for i in range(1, m + 1):
-                    for j in range(1, n + 1):
-                        if seq1[i-1] == seq2[j-1]:
-                            dp[i][j] = dp[i-1][j-1] + 1
-                        else:
-                            dp[i][j] = max(dp[i-1][j], dp[i][j-1])
-                            
-                # Reconstruct the LCS sequence
-                lcs = []
-                i, j = m, n
-                while i > 0 and j > 0:
-                    if seq1[i-1] == seq2[j-1]:
-                        lcs.append(seq1[i-1])
-                        i -= 1
-                        j -= 1
-                    elif dp[i-1][j] > dp[i][j-1]:
-                        i -= 1
-                    else:
-                        j -= 1
-                return lcs[::-1]
             
-            def get_multi_lcs(seqs: list[list[int]]) -> list[int]:
-                """Approximates the multi-sequence LCS using a progressive approach."""
-                if not seqs:
-                    return []
-                current_lcs = seqs[0]
-                for i in range(1, len(seqs)):
-                    current_lcs = get_lcs(current_lcs, seqs[i])
-                    if not current_lcs:
-                        break
-                return current_lcs
+        def create_tiled_op_mapping(self) -> 'dict[int, list[TiledOperatorSignature]]':
+            # STEP 1: Create tiled op mapping
+            _tiled_op_mapping: dict[int, list[TiledOperatorSignature]] = None
             
-            queued_items = {queue_id: [] for queue_id in range(n_queues)}
-            row_cluster_info = {}
-            
-            if not items:
-                return queued_items, row_cluster_info
-
-            # 1. Strict Balance (Priority 1)
-            total_items = len(items)
-            base_size = total_items // n_queues
-            remainder = total_items % n_queues
-            target_sizes = [base_size + (1 if i < remainder else 0) for i in range(n_queues)]
-
-            # 2. Group by col_sig (Priority 2: Maximize col_score)
-            col_groups = defaultdict(list)
-            for item in items:
-                col_groups[col_sigs[item]].append(item)
+            if isinstance(self.op_sig.core_group, MTA_CoreGrid):
+                _tiled_op_mapping = {}
+                output_tile_grid = self.op_sig.buffers[self.op_sig.output_buffer_name].tile_grid
+                output_tile_grid_per_shard = self.op_sig.buffers[self.op_sig.output_buffer_name].tile_grid_per_shard
+                core_grid = self.op_sig.core_group.shape
+                _is_x_grid_available = output_tile_grid[-1] >= (core_grid[-1] * 0.5)
+                _is_y_grid_available = output_tile_grid[-2] >= (core_grid[-2] * 0.5)
                 
-            # Within each col_sig group, sort by row_sig to improve row alignment (Priority 3)
-            for sig in col_groups:
-                col_groups[sig].sort(key=lambda x: row_sigs[x])
-                
-            # 3. Order groups to form a stream
-            # Sorting by sig tuples helps keep identical or similar sequences close to each other.
-            sorted_col_sigs = sorted(col_groups.keys())
-            ordered_items_stream = []
-            for sig in sorted_col_sigs:
-                ordered_items_stream.extend(col_groups[sig])
-                
-            # 4. Sequential Placement to maintain balance
-            current_idx = 0
-            for q_id in range(n_queues):
-                size = target_sizes[q_id]
-                queued_items[q_id] = ordered_items_stream[current_idx : current_idx + size]
-                current_idx += size
-            
-            return queued_items
-            
-        def _create_tiled_op_mapping(self) -> tuple[dict[int, list[TiledOperatorSignature]], dict]:
-            # STEP 1: Create spatial and temporal clusters based on the tile access patterns of each tiled op
-            _tiled_op_ids = [tiled_op.tiled_op_id for tiled_op in self.op_sig.tiled_ops]
-            _temporal_sigs = {}
-            _spatial_sigs = {}
-            _tile_sig_to_id = {}
-            _tile_id_to_sig = {}
-            
-            for tiled_op_id in _tiled_op_ids:
-                tiled_op = self.op_sig.get_tiled_op(tiled_op_id)
-                
-                ss_order: list[TileSignature] = []
-                ts_order: list[TileSignature] = []
-                
-                for uop_idx in range(tiled_op.n_uops):
-                    for tile in tiled_op.i_tiles[uop_idx]:
-                        if tile not in _tile_sig_to_id:
-                            _tile_sig_to_id[tile] = len(_tile_sig_to_id)
-                            _tile_id_to_sig[_tile_sig_to_id[tile]] = tile
+                if _is_x_grid_available or _is_y_grid_available:
+                    for tiled_op in self.op_sig.tiled_ops:
+                        _o_tile_coords = tiled_op.o_tile.coords
+                        _o_tile_x = _o_tile_coords[1] * output_tile_grid_per_shard[1] + _o_tile_coords[3]
+                        _o_tile_y = _o_tile_coords[0] * output_tile_grid_per_shard[0] + _o_tile_coords[2]
                         
-                        if tile.buf_name == self.spatial_reuse_target:
-                            ss_order.append(_tile_sig_to_id[tile])
-                        if len(self.temporal_reuse_targets) > 0:
-                            if tile.buf_name == self.temporal_reuse_targets[0]:
-                                ts_order.append(_tile_sig_to_id[tile])
-                            
-                _spatial_sigs[tiled_op_id] = tuple(ss_order)
-                _temporal_sigs[tiled_op_id] = tuple(ts_order)
-
-            queued_tiled_op_ids = self.optimal_grid_placement(
-                n_queues=len(self.op_sig.core_group.core_ids),
-                items=_tiled_op_ids,
-                row_sigs=_spatial_sigs,
-                col_sigs=_temporal_sigs,
-            )
-
-            tiled_op_mapping = {
-                core_id: [
-                    self.op_sig.get_tiled_op(tiled_op_id)
-                    for tiled_op_id in queued_tiled_op_ids[i]
-                ]
-                for i, core_id in enumerate(self.op_sig.core_group.core_ids)
-            }
-
-            return tiled_op_mapping
-        
-        @staticmethod
-        def optimal_clustering(queued_items: dict, max_cluster_size: int) -> list[list]:
-            """
-            Groups items with the same signature into clusters across different queues,
-            respecting ordering constraints and a maximum cluster size.
-            """
-            current_pos = {q_id: 0 for q_id in queued_items.keys()}
-            clustered_items = []
-
-            # 1. Precompute indices for each signature in each queue
-            sig_indices = {q_id: defaultdict(list) for q_id in queued_items.keys()}
-            all_signatures = set()
-            for q_id, items in queued_items.items():
-                for idx, (sig, item_id) in enumerate(items):
-                    sig_indices[q_id][sig].append(idx)
-                    all_signatures.add(sig)
-
-            while True:
-                best_candidate = None
-
-                # 2. Search for the best next cluster across all signatures
-                for sig in all_signatures:
-                    first_indices = []
-                    for q_id in queued_items.keys():
-                        pos_list = sig_indices[q_id][sig]
-                        start_search_idx = bisect_left(pos_list, current_pos[q_id])
-                        if start_search_idx < len(pos_list):
-                            first_indices.append((q_id, pos_list[start_search_idx]))
-
-                    if len(first_indices) < 2:
-                        continue
-
-                    first_indices.sort(key=lambda x: x[1])
-
-                    limit = min(len(first_indices), max_cluster_size)
-                    for r in range(2, limit + 1):
-                        subset = first_indices[:r]
-                        max_idx = subset[-1][1]
-                        gain = len(subset) - 1
-                        sum_idx = sum(p[1] for p in subset)
-
-                        candidate = {
-                            'sig': sig,
-                            'positions': subset,
-                            'max_idx': max_idx,
-                            'gain': gain,
-                            'sum_idx': sum_idx
-                        }
-
-                        if best_candidate is None or \
-                        (candidate['max_idx'], -candidate['gain'], candidate['sum_idx']) < \
-                        (best_candidate['max_idx'], -best_candidate['gain'], best_candidate['sum_idx']):
-                            best_candidate = candidate
-
-                if best_candidate is None:
+                        _core_x = _o_tile_x % core_grid[1]
+                        _core_y = _o_tile_y % core_grid[0]
+                        _core_id = self.op_sig.core_group.get_core_id(_core_y, _core_x)
+                        _tiled_op_mapping.setdefault(_core_id, []).append(tiled_op)
+                elif len(self.op_sig.tiled_ops) > 0:
+                    _tiled_op_mapping = None
+            
+            if _tiled_op_mapping is None:
+                _tiled_op_mapping = {}
+                core_ids = self.op_sig.core_group.core_ids
+                for idx, tiled_op in enumerate(self.op_sig.tiled_ops):
+                    _core_id = core_ids[idx % len(core_ids)]
+                    _tiled_op_mapping.setdefault(_core_id, []).append(tiled_op)
+            return _tiled_op_mapping
+            
+        def create_thread_mapping(self, tiled_op_mapping: dict[int, list[TiledOperatorSignature]]) -> 'dict[int, MCA_OperatorGraphCompiler.Thread]':
+            # STEP 2: Determine the reuse strategy 
+            SPATIAL_X = "SPATIAL_X"
+            SPATIAL_Y = "SPATIAL_Y"
+            TEMPORAL = "TEMPORAL"
+            
+            _reuse_strategy: dict[str, str] = {SPATIAL_X: None, SPATIAL_Y: None, TEMPORAL: None}
+            _input_buffer_names = [buf_name for buf_name in self.op_sig.input_buffer_names if self.op_sig.buffers[buf_name] is not None]
+            _spatial_reuse_target_order = sorted(_input_buffer_names, key=lambda buf_name: (self.op_sig.buffers[buf_name].mem_space.is_main, self.op_sig.buffers[buf_name].total_size), reverse=True)
+            _temporal_reuse_target_order = sorted(_input_buffer_names, key=lambda buf_name: (self.op_sig.buffers[buf_name].mem_space.is_main, self.op_sig.buffers[buf_name].total_size), reverse=True)
+            
+            if self.spatial_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL_MAIN:
+                _spatial_reuse_target_order = [buf_name for buf_name in _spatial_reuse_target_order if self.op_sig.buffers[buf_name].mem_space.is_main]
+            elif self.spatial_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN:
+                _spatial_reuse_target_order = [buf_name for buf_name in _spatial_reuse_target_order if self.op_sig.buffers[buf_name].mem_space.is_main][:1]
+            elif self.spatial_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL_L1:
+                _spatial_reuse_target_order = [buf_name for buf_name in _spatial_reuse_target_order if not self.op_sig.buffers[buf_name].mem_space.is_main]
+            elif self.spatial_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_L1:
+                _spatial_reuse_target_order = [buf_name for buf_name in _spatial_reuse_target_order if not self.op_sig.buffers[buf_name].mem_space.is_main][:1]
+            elif self.spatial_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE:
+                _spatial_reuse_target_order = _spatial_reuse_target_order[:1]
+                
+            if self.temporal_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL_MAIN:
+                _temporal_reuse_target_order = [buf_name for buf_name in _temporal_reuse_target_order if self.op_sig.buffers[buf_name].mem_space.is_main]
+            elif self.temporal_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN:
+                _temporal_reuse_target_order = [buf_name for buf_name in _temporal_reuse_target_order if self.op_sig.buffers[buf_name].mem_space.is_main][:1]
+            elif self.temporal_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL_L1:
+                _temporal_reuse_target_order = [buf_name for buf_name in _temporal_reuse_target_order if not self.op_sig.buffers[buf_name].mem_space.is_main]
+            elif self.temporal_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_L1:
+                _temporal_reuse_target_order = [buf_name for buf_name in _temporal_reuse_target_order if not self.op_sig.buffers[buf_name].mem_space.is_main][:1]
+            elif self.temporal_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE:
+                _temporal_reuse_target_order = _temporal_reuse_target_order[:1]
+            
+            def _core_position(core_id: int) -> tuple[int, int]:
+                if isinstance(self.op_sig.core_group, MTA_CoreGrid):
+                    idx = self.op_sig.core_group.core_ids.index(core_id)
+                    return idx // self.op_sig.core_group.shape[1], idx % self.op_sig.core_group.shape[1]
+                return 0, self.op_sig.core_group.core_ids.index(core_id)
+            
+            def _axis_key(core_id: int, axis: str) -> tuple[int, int]:
+                y, x = _core_position(core_id)
+                return (y, x) if axis == SPATIAL_X else (x, y)
+            
+            def _tile_sequence(core_id: int, buf_name: str) -> list[TileSignature]:
+                seq = []
+                for tiled_op in tiled_op_mapping.get(core_id, []):
+                    for uop_idx in range(tiled_op.n_uops):
+                        for tile in tiled_op.i_tiles[uop_idx]:
+                            if tile.buf_name == buf_name:
+                                seq.append(tile)
+                return seq
+            
+            def _has_spatial_reuse(buf_name: str, axis: str) -> bool:
+                grouped_core_ids: dict[int, list[int]] = defaultdict(list)
+                for core_id in self.op_sig.core_group.core_ids:
+                    fixed_coord, moving_coord = _axis_key(core_id, axis)
+                    grouped_core_ids[fixed_coord].append(core_id)
+                
+                for core_ids in grouped_core_ids.values():
+                    core_ids.sort(key=lambda core_id: _axis_key(core_id, axis)[1])
+                    seqs = [_tile_sequence(core_id, buf_name) for core_id in core_ids]
+                    max_seq_len = max((len(seq) for seq in seqs), default=0)
+                    for seq_idx in range(max_seq_len):
+                        tiles = [seq[seq_idx] for seq in seqs if seq_idx < len(seq)]
+                        if len(tiles) < 2:
+                            continue
+                        if len(set(tiles)) < len(tiles):
+                            return True
+                return False
+            
+            for buf_name in _spatial_reuse_target_order:
+                if self.spatial_reuse_target == MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.IGNORE:
                     break
-
-                # 4. Finalize the chosen cluster and update queue pointers safely
-                new_cluster = []
-                max_idx_of_cluster = best_candidate['max_idx']
-                
-                for q_id, idx in best_candidate['positions']:
-                    new_cluster.append(queued_items[q_id][idx])
-                
-                for q_id in queued_items.keys():
-                    current_pos[q_id] = max(current_pos[q_id], max_idx_of_cluster + 1)
-                
-                clustered_items.append(new_cluster)
-
-            return clustered_items
-        
-        def _create_thread_mapping(self, tiled_op_mapping: dict[int, list[TiledOperatorSignature]]) -> 'dict[int, MCA_OperatorGraphCompiler.Thread]':
-            thread_mapping: dict[int, MCA_OperatorGraphCompiler.Thread] = {}
+                if _reuse_strategy[SPATIAL_X] is None and _has_spatial_reuse(buf_name, SPATIAL_X):
+                    _reuse_strategy[SPATIAL_X] = buf_name
+                    continue
+                if _reuse_strategy[SPATIAL_Y] is None and _has_spatial_reuse(buf_name, SPATIAL_Y):
+                    _reuse_strategy[SPATIAL_Y] = buf_name
             
-            if self.greedy_temporal_reuse:
-                actual_temporal_reuse_targets = self.temporal_reuse_targets + [buf_name for buf_name in self.op_sig.input_buffer_names 
-                                                                               if buf_name not in self.temporal_reuse_targets and self.op_sig.buffers[buf_name] is not None]  # If greedy temporal reuse is enabled, we can also consider other input buffers as temporal reuse targets (in case the specified temporal reuse targets do not provide enough reuse opportunities), but only consider those that are from buffers (not tile-shared sources) since tile-shared sources cannot be guaranteed to be reused across different tiled ops
-            else:
-                actual_temporal_reuse_targets = self.temporal_reuse_targets
-            actual_temporal_reuse_targets = [buf_name for buf_name in actual_temporal_reuse_targets if self.i_buf_src[buf_name].is_buffer]  # Only consider buffers as temporal reuse targets for thread mapping, since tile-shared sources cannot be guaranteed to be reused across different tiled ops
+            _temporal_reuse_targets = []
+            if self.temporal_reuse_target != MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.IGNORE:
+                _temporal_reuse_targets = list(_temporal_reuse_target_order)
+                if len(_temporal_reuse_targets) > 0:
+                    _reuse_strategy[TEMPORAL] = _temporal_reuse_targets[0]
             
-            tile_temporal_reuse_counts = {core_id: defaultdict(int) for core_id in tiled_op_mapping.keys()}  # {core_id: {tile_sig: list of (tiled_op_idx, uop_idx) that access this tile}}
-            for core_id, tiled_ops in tiled_op_mapping.items():
+            # STEP 3: Create the final per-core execution order first. Spatial FIFO
+            # schedules must be derived from this order so producer and consumer
+            # access the FIFO entries in the same sequence even with context switching.
+            thread_mapping = {
+                core_id: MCA_OperatorGraphCompiler.Thread(core_id)
+                for core_id in self.op_sig.core_group.core_ids
+            }
+            
+            execution_plans: dict[int, list[tuple[str, TiledOperatorSignature, int, int | None]]] = {
+                core_id: []
+                for core_id in self.op_sig.core_group.core_ids
+            }
+            
+            def _append_uop(core_id: int, tiled_op: TiledOperatorSignature, uop_idx: int):
+                execution_plans[core_id].append(("uop", tiled_op, uop_idx, None))
+            
+            def _append_context_load(core_id: int, tiled_op: TiledOperatorSignature, uop_idx: int, slot_id: int):
+                execution_plans[core_id].append(("ctx_load", tiled_op, uop_idx, slot_id))
+            
+            def _append_context_store(core_id: int, tiled_op: TiledOperatorSignature, uop_idx: int, slot_id: int):
+                execution_plans[core_id].append(("ctx_store", tiled_op, uop_idx, slot_id))
+            
+            def _has_temporal_cache_pressure(core_id: int, tiled_ops: list[TiledOperatorSignature]) -> bool:
+                if self.cache_buffer_slot_num <= 0 or len(_temporal_reuse_targets) == 0:
+                    return False
+                
+                temporal_tiles = set()
                 for tiled_op in tiled_ops:
                     for uop_idx in range(tiled_op.n_uops):
                         for tile in tiled_op.i_tiles[uop_idx]:
-                            if tile.buf_name in actual_temporal_reuse_targets:
-                                tile_temporal_reuse_counts[core_id][tile] += 1
-            
-            def max_reuse_distance(core_id: int, tiled_ops: list[TiledOperatorSignature]) -> int:
-                temporal_tiles = [
-                    tile.signature
-                    for tiled_op in tiled_ops
-                    for uop_idx in range(tiled_op.n_uops)
-                    for tile in tiled_op.i_tiles[uop_idx]
-                    if tile.buf_name in actual_temporal_reuse_targets and tile_temporal_reuse_counts[core_id][tile] > 1
-                ]
-                
-                tile_positions = defaultdict(int)
-                max_distance = 0
-                
-                for idx, tile_sig in enumerate(temporal_tiles):
-                    if tile_sig in tile_positions:
-                        distance = idx - tile_positions[tile_sig]
-                        max_distance = max(max_distance, distance)
-                    tile_positions[tile_sig] = idx
-                    
-                return max_distance
-            
-            def max_n_temporal_tiles_per_uop(tiled_ops: list[TiledOperatorSignature]) -> int:
-                max_count = 0
-                for tiled_op in tiled_ops:
-                    for uop_idx in range(tiled_op.n_uops):
-                        count = sum(1 for tile in tiled_op.i_tiles[uop_idx] if tile.buf_name in actual_temporal_reuse_targets)
-                        max_count = max(max_count, count)
-                return max_count
-            
-            def max_n_temporal_tiles_per_tiled_op(tiled_ops: list[TiledOperatorSignature]) -> int:
-                max_count = 0
-                for tiled_op in tiled_ops:
-                    count = sum(1 for uop_idx in range(tiled_op.n_uops) for tile in tiled_op.i_tiles[uop_idx] if tile.buf_name in actual_temporal_reuse_targets)
-                    max_count = max(max_count, count)
-                return max_count
-            
-            _max_sequential_ctx_length = max(max([tiled_op.n_uops for tiled_op in core_tiled_ops], default=0) for core_tiled_ops in tiled_op_mapping.values())
-            
-            def compute_sequential_ctx_length() -> int | None:
-                _max_reuse_distance = max(max_reuse_distance(core_id, core_tiled_ops) for core_id, core_tiled_ops in tiled_op_mapping.items())
-                _max_n_temporal_tiles_per_uop = max(max_n_temporal_tiles_per_uop(core_tiled_ops) for core_tiled_ops in tiled_op_mapping.values())
-                _max_n_temporal_tiles_per_tiled_op = max(max_n_temporal_tiles_per_tiled_op(core_tiled_ops) for core_tiled_ops in tiled_op_mapping.values())
-                
-                if _max_reuse_distance <= self.cache_buffer_slot_num:
-                    sequential_ctx_length = _max_sequential_ctx_length
-                    logger.debug(f"Reuse distance {_max_reuse_distance} fits in cache buffer slots {self.cache_buffer_slot_num}. Using sequential context with length {_max_sequential_ctx_length}.")
-                else:
-                    _n_tiled_op_per_reuse_distance = math.ceil(_max_reuse_distance / _max_n_temporal_tiles_per_tiled_op)
-                    _ctx_temporal_reuse_degree = math.floor(self.ctx_buffer_slot_num / _n_tiled_op_per_reuse_distance)
-                    
-                    if _ctx_temporal_reuse_degree >= 2:
-                        sequential_ctx_length = math.ceil(self.cache_buffer_slot_num / self.ctx_buffer_slot_num / _max_n_temporal_tiles_per_uop)
-                        logger.debug(f"Using temporal reuse pattern with sequential context length {sequential_ctx_length}. Reuse distance {_max_reuse_distance} exceeds cache buffer slots {self.cache_buffer_slot_num}, but temporal reuse degree {_ctx_temporal_reuse_degree} allows for some reuse. Max temporal tiles per tiled op: {_max_n_temporal_tiles_per_tiled_op}, Max temporal tiles per uop: {_max_n_temporal_tiles_per_uop}.")
-                    else:
-                        sequential_ctx_length = None
-                return sequential_ctx_length
-            
-            while True:
-                sequential_ctx_length = compute_sequential_ctx_length()
-                
-                if sequential_ctx_length is not None:
-                    logger.info(f"Chosen sequential context length: {sequential_ctx_length} | Current temporal reuse targets: {actual_temporal_reuse_targets}")
-                    break
-                
-                if len(actual_temporal_reuse_targets) <= 1:
-                    sequential_ctx_length = _max_sequential_ctx_length
-                    logger.warning(f"Cannot utilize temporal reuse. Falling back to sequential context with length {_max_sequential_ctx_length}.")
-                    break
-                
-                # If we cannot fit the reuse distance in the cache buffer, we can try to reduce the temporal reuse targets to decrease the reuse distance
-                logger.warning(f"Reuse distance exceeds cache buffer slots {self.cache_buffer_slot_num}. Attempting to reduce temporal reuse targets to decrease reuse distance. Current temporal reuse targets: {actual_temporal_reuse_targets}")
-                actual_temporal_reuse_targets = actual_temporal_reuse_targets[:-1]  # Remove the least prioritized temporal reuse target and recompute
-                
-            self.temporal_reuse_targets = actual_temporal_reuse_targets  # Update the temporal reuse targets based on the compute sequential context length decision
-                  
-            cache_context: dict[int, dict[int, tuple[TileSignature, int]]] = {
-                core_id: {
-                    slot_id: (None, slot_id)  # (tile_sig, lru_counter)
-                    for slot_id in range(self.cache_buffer_slot_num)
-                }
-                for core_id in self.op_sig.core_group.core_ids    
-            }  # {core_id: {slot_id: {tile_sig: (cache_slot_id, lru_counter)}}}
-            cache_schedules: dict[int, dict[tuple[int, int], dict[TileSignature, tuple[bool, int]]]] = {}  # {core_id: {(tiled_op_idx, uop_idx): {tile_sig: (is_hit, cache_slot_id)}}}
-            
-            logger.debug(f"Creating thread mapping with {len(tiled_op_mapping)} cores.")
-            
-            for iii, (core_id, core_tiled_ops) in enumerate(tiled_op_mapping.items()):
-                logger.debug(f"thread mapping with core {iii}/{len(tiled_op_mapping)}", end="\r")
-                thread = MCA_OperatorGraphCompiler.Thread(core_id)
-                thread_mapping[core_id] = thread
-                
-                n_concurrent_tiled_ops = self.ctx_buffer_slot_num
-                grouped_tiled_ops = [core_tiled_ops[i:i + n_concurrent_tiled_ops] for i in range(0, len(core_tiled_ops), n_concurrent_tiled_ops)]
-                collected_uops: dict[int, list[int]] = {}
-                tiled_op_slot_map: dict[int, int] = {}
-                
-                def fill_out_cache_schedule():
-                    def read_cache(core_id: int, tile: TileSignature) -> bool:
-                        target_slot_id, target_lru_counter = None, 0
-                        for slot_id, (cached_tile_sig, lru_counter) in cache_context[core_id].items():
-                            if cached_tile_sig == tile:
-                                target_slot_id = slot_id
-                                target_lru_counter = lru_counter
-
-                        if target_slot_id is not None:
-                            for slot_id, (cached_tile_sig, lru_counter) in cache_context[core_id].items():
-                                if lru_counter < target_lru_counter:
-                                    cache_context[core_id][slot_id] = (cached_tile_sig, lru_counter + 1)
-                            cache_context[core_id][target_slot_id] = (tile, 0)
-                            return True
-                        return False
-                    
-                    def write_cache(core_id: int, tile: TileSignature) -> int:
-                        target_slot_id, (_, target_lru_counter) = max(cache_context[core_id].items(), key=lambda item: item[1][1])
-                        
-                        for slot_id, (cached_tile_sig, lru_counter) in cache_context[core_id].items():
-                            if lru_counter < target_lru_counter:
-                                cache_context[core_id][slot_id] = (cached_tile_sig, lru_counter + 1)
-                        
-                        cache_context[core_id][target_slot_id] = (tile, 0)
-                        return target_slot_id
-                    
-                    for tiled_op_idx, uop_indices in collected_uops.items():
-                        tiled_op = self.op_sig.tiled_ops[tiled_op_idx]
-                        for uop_idx in uop_indices:
-                            for tile in tiled_op.i_tiles[uop_idx]:
-                                if tile.buf_name in self.temporal_reuse_targets:
-                                    # CASE: Cache hit
-                                    if read_cache(core_id, tile):
-                                        cache_slot_id = next(slot_id for slot_id, (cached_tile_sig, _) in cache_context[core_id].items() if cached_tile_sig == tile)
-                                        cache_schedules.setdefault(core_id, {}).setdefault((tiled_op_idx, uop_idx), {})[tile] = (True, cache_slot_id)
-                                                
-                                    # CASE: Cache miss
-                                    elif tile_temporal_reuse_counts[core_id][tile] > 1:  # Only cache if this tile will be reused again in the future
-                                        cache_slot_id = write_cache(core_id, tile)
-                                        cache_schedules.setdefault(core_id, {}).setdefault((tiled_op_idx, uop_idx), {})[tile] = (False, cache_slot_id)
-                                        tile_temporal_reuse_counts[core_id][tile] -= 1
-                                        
-                def fill_out_thread(thread: MCA_OperatorGraphCompiler.Thread, collected_uops: dict[int, list[int]], tiled_op_slot_map: dict[int, int]):
-                    for tiled_op_idx, uop_indices in collected_uops.items():
-                        if uop_indices[0] > 0:
-                            thread.add_context_load(self.op_sig.op_id, tiled_op_idx, uop_indices[0] - 1, slot_id=tiled_op_slot_map[tiled_op_idx])
-                        for uop_idx in uop_indices:
-                            thread.add_uop_node(self.op_sig.op_id, tiled_op_idx, uop_idx, output=uop_idx == self.op_sig.tiled_ops[tiled_op_idx].n_uops - 1)
-                        if uop_indices[-1] < self.op_sig.tiled_ops[tiled_op_idx].n_uops - 1:
-                            thread.add_context_store(self.op_sig.op_id, tiled_op_idx, uop_indices[-1], slot_id=tiled_op_slot_map[tiled_op_idx])
-                
-                for group in grouped_tiled_ops:
-                    tiled_op_slot_map = {tiled_op.tiled_op_id: idx for idx, tiled_op in enumerate(group)}
-                    n_uop_per_tiled_op = max(tiled_op.n_uops for tiled_op in group)
-                    uop_cursor = 0
-                    
-                    while uop_cursor < n_uop_per_tiled_op:
-                        if uop_cursor % sequential_ctx_length == 0 and len(collected_uops) > 0:
-                            fill_out_cache_schedule()
-                            fill_out_thread(thread, collected_uops, tiled_op_slot_map)
-                            collected_uops.clear()
-                            
-                        for tiled_op in group:
-                            tiled_op_idx = tiled_op.tiled_op_id
-                            
-                            if uop_cursor < tiled_op.n_uops:
-                                collected_uops.setdefault(tiled_op_idx, []).append(uop_cursor)
-
-                        uop_cursor += 1
-                          
-                    fill_out_cache_schedule()  
-                    fill_out_thread(thread, collected_uops, tiled_op_slot_map)
-                    collected_uops.clear()
+                            if tile.buf_name in _temporal_reuse_targets:
+                                temporal_tiles.add(tile)
+                return len(temporal_tiles) > self.cache_buffer_slot_num
             
             for core_id in self.op_sig.core_group.core_ids:
-                for uop_node in thread_mapping[core_id].uop_nodes:
-                    if isinstance(uop_node, MCA_OperatorGraphCompiler.Thread.UopNode):
-                        tiled_op_idx = uop_node.tiled_op_idx
-                        uop_idx = uop_node.uop_idx
+                core_tiled_ops = tiled_op_mapping.get(core_id, [])
+                
+                if _has_temporal_cache_pressure(core_id, core_tiled_ops) and self._context_buffer_slot_num > 1:
+                    for group_start in range(0, len(core_tiled_ops), self._context_buffer_slot_num):
+                        tiled_op_group = core_tiled_ops[group_start:group_start + self._context_buffer_slot_num]
+                        tiled_op_slot_map = {tiled_op.tiled_op_id: slot_id for slot_id, tiled_op in enumerate(tiled_op_group)}
+                        max_uops = max((tiled_op.n_uops for tiled_op in tiled_op_group), default=0)
                         
-                        if core_id in cache_schedules:
-                            if (tiled_op_idx, uop_idx) in cache_schedules[core_id]:
-                                uop_node.cache_schedule = cache_schedules[core_id][(tiled_op_idx, uop_idx)]
-
-            if self.bcast_fifo_depth > 0:
-                _core_to_spatial_access_pattern = {core_id: [] for core_id in self.op_sig.core_group.core_ids}
-                for core_id, core_uop_nodes in thread_mapping.items():
-                    for uop_node in core_uop_nodes.uop_nodes:
-                        if isinstance(uop_node, MCA_OperatorGraphCompiler.Thread.UopNode):
-                            tiled_op_idx = uop_node.tiled_op_idx
-                            uop_idx = uop_node.uop_idx
-                            
-                            for tile_idx, tile in enumerate(self.op_sig.tiled_ops[tiled_op_idx].i_tiles[uop_idx]):
-                                _is_cache_hit, _ = uop_node.cache_schedule.get(tile, (False, None))
+                        for uop_idx in range(max_uops):
+                            for tiled_op in tiled_op_group:
+                                if uop_idx >= tiled_op.n_uops:
+                                    continue
                                 
-                                if _is_cache_hit:
-                                    continue    # skip if the given tile is cache hit
-                                if not self.i_buf_src[tile.buf_name].is_buffer:
-                                    continue    # skip if the given tile is not sourced from a buffer (i.e., inter operator pipelining)
-
-                                if tile.buf_name == self.spatial_reuse_target:
-                                    _core_to_spatial_access_pattern[core_id].append(
-                                        (tile, (core_id, tiled_op_idx, uop_idx, tile_idx))
-                                    )
-                
-                _clustered_spatial_access_pattern = self.optimal_clustering(_core_to_spatial_access_pattern, max_cluster_size=self.broadcast_optimize_max_ref_cnt)
-                _bcast_schedules: dict[int, dict[TileSignature, tuple[int, int, int]]] = {}
-                _bcast_slot_usages: dict[int, int] = {core_id: 0 for core_id in self.op_sig.core_group.core_ids}
-                _uop_tile_sig_to_cluster_id: dict[tuple[int, int, int], list[int]] = {}
-                
-                for cluster_id, clustered_pattern in enumerate(_clustered_spatial_access_pattern):
-                    consumers = []
-                    for tile, (core_id, tiled_op_id, uop_idx, tile_idx) in clustered_pattern:
-                        consumers.append(core_id)
-                        _uop_tile_sig_to_cluster_id.setdefault((core_id, tiled_op_id, uop_idx), []).append(cluster_id)
-                        
-                    bcast_core_id = min(consumers, key=lambda c: _bcast_slot_usages[c])
-                    bcast_slot_id = _bcast_slot_usages[bcast_core_id]
-                    bcast_total_ref_count = len(consumers)
-                                    
-                    _bcast_slot_usages[bcast_core_id] += 1
-                    
-                    _bcast_schedules.setdefault(cluster_id, {}).setdefault(tile, (bcast_core_id, bcast_slot_id, bcast_total_ref_count))
-
-                for core_id in self.op_sig.core_group.core_ids:
-                    for uop_node in thread_mapping[core_id].uop_nodes:
-                        if isinstance(uop_node, MCA_OperatorGraphCompiler.Thread.UopNode):
-                            tiled_op_idx = uop_node.tiled_op_idx
-                            uop_idx = uop_node.uop_idx
-                            cluster_ids = _uop_tile_sig_to_cluster_id.get((core_id, tiled_op_idx, uop_idx), [])
-                            
-                            for cluster_id in cluster_ids:
-                                uop_node.bcast_schedule.update(_bcast_schedules[cluster_id])
+                                if uop_idx > 0:
+                                    _append_context_load(core_id, tiled_op, uop_idx - 1, tiled_op_slot_map[tiled_op.tiled_op_id])
+                                
+                                _append_uop(core_id, tiled_op, uop_idx)
+                                
+                                if uop_idx < tiled_op.n_uops - 1:
+                                    _append_context_store(core_id, tiled_op, uop_idx, tiled_op_slot_map[tiled_op.tiled_op_id])
+                else:
+                    for tiled_op in core_tiled_ops:
+                        for uop_idx in range(tiled_op.n_uops):
+                            _append_uop(core_id, tiled_op, uop_idx)
             
+            spatial_schedule_maps: dict[str, dict[tuple[int, int, int, TileSignature], dict[str, tuple[int, int, int]]]] = {
+                SPATIAL_X: {},
+                SPATIAL_Y: {},
+            }
+            spatial_fifo_entry_counters: dict[int, int] = defaultdict(int)
+            spatial_links: list[
+                tuple[
+                    str,
+                    int,
+                    int,
+                    tuple[int, int, int, TileSignature],
+                    tuple[int, int, int, TileSignature],
+                ]
+            ] = []
+            
+            def _apply_spatial_run(axis: str, records: list[tuple[int, int, int, int, int, TileSignature]]):
+                if len(records) < 2:
+                    return
+                
+                for record_idx in range(len(records) - 1):
+                    _, producer_plan_idx, producer_core_id, producer_tiled_op_idx, producer_uop_idx, producer_tile = records[record_idx]
+                    _, _, consumer_core_id, consumer_tiled_op_idx, consumer_uop_idx, consumer_tile = records[record_idx + 1]
+                    producer_key = (producer_core_id, producer_tiled_op_idx, producer_uop_idx, producer_tile)
+                    consumer_key = (consumer_core_id, consumer_tiled_op_idx, consumer_uop_idx, consumer_tile)
+                    spatial_links.append((axis, producer_core_id, producer_plan_idx, producer_key, consumer_key))
+            
+            for axis in (SPATIAL_X, SPATIAL_Y):
+                buf_name = _reuse_strategy[axis]
+                if buf_name is None or self._bcast_fifo_slot_num <= 0:
+                    continue
+                
+                grouped_records: dict[tuple[int, int, TileSignature], list[tuple[int, int, int, int, int, TileSignature]]] = defaultdict(list)
+                for core_id in self.op_sig.core_group.core_ids:
+                    fixed_coord, moving_coord = _axis_key(core_id, axis)
+                    seq_idx = 0
+                    for plan_idx, (node_type, tiled_op, uop_idx, _) in enumerate(execution_plans[core_id]):
+                        if node_type != "uop":
+                            continue
+                        for tile in tiled_op.i_tiles[uop_idx]:
+                            if tile.buf_name != buf_name:
+                                continue
+                            grouped_records[(fixed_coord, seq_idx, tile)].append((moving_coord, plan_idx, core_id, tiled_op.tiled_op_id, uop_idx, tile))
+                            seq_idx += 1
+                
+                for records in grouped_records.values():
+                    if len(records) < 2:
+                        continue
+                    records.sort(key=lambda record: record[0])
+                    
+                    spatial_run = [records[0]]
+                    for record in records[1:]:
+                        if record[0] == spatial_run[-1][0] + 1:
+                            spatial_run.append(record)
+                        else:
+                            _apply_spatial_run(axis, spatial_run)
+                            spatial_run = [record]
+                    _apply_spatial_run(axis, spatial_run)
+            
+            spatial_links.sort(key=lambda link: (link[1], link[2]))
+            for axis, producer_core_id, _, producer_key, consumer_key in spatial_links:
+                slot_id = spatial_fifo_entry_counters[producer_core_id]
+                spatial_fifo_entry_counters[producer_core_id] += 1
+                
+                producer_schedule = spatial_schedule_maps[axis].setdefault(producer_key, {"src": None, "dst": None})
+                consumer_schedule = spatial_schedule_maps[axis].setdefault(consumer_key, {"src": None, "dst": None})
+                producer_schedule["dst"] = (producer_core_id, slot_id, 1)
+                consumer_schedule["src"] = (producer_core_id, slot_id, 1)
+            
+            cache_states: dict[int, dict[TileSignature, int]] = {core_id: {} for core_id in self.op_sig.core_group.core_ids}
+            cache_lru: dict[int, list[TileSignature]] = {core_id: [] for core_id in self.op_sig.core_group.core_ids}
+            
+            def _cache_schedule(core_id: int, tile: TileSignature) -> tuple[bool, int] | None:
+                if tile.buf_name not in _temporal_reuse_targets:
+                    return None
+                if self.cache_buffer_slot_num <= 0:
+                    return None
+                
+                states = cache_states[core_id]
+                lru = cache_lru[core_id]
+                
+                if tile in states:
+                    lru.remove(tile)
+                    lru.append(tile)
+                    return True, states[tile]
+                
+                if len(states) < self.cache_buffer_slot_num:
+                    used_slots = set(states.values())
+                    slot_id = next(slot_id for slot_id in range(self.cache_buffer_slot_num) if slot_id not in used_slots)
+                else:
+                    evicted_tile = lru.pop(0)
+                    slot_id = states.pop(evicted_tile)
+                
+                states[tile] = slot_id
+                lru.append(tile)
+                return False, slot_id
+            
+            def _add_scheduled_uop(thread: MCA_OperatorGraphCompiler.Thread, core_id: int, tiled_op: TiledOperatorSignature, uop_idx: int):
+                cache_schedule = {}
+                spatial_x_schedule = {}
+                spatial_y_schedule = {}
+                
+                for tile in tiled_op.i_tiles[uop_idx]:
+                    spatial_key = (core_id, tiled_op.tiled_op_id, uop_idx, tile)
+                    if spatial_key in spatial_schedule_maps[SPATIAL_X]:
+                        spatial_x_schedule[tile] = spatial_schedule_maps[SPATIAL_X][spatial_key]
+                    if spatial_key in spatial_schedule_maps[SPATIAL_Y]:
+                        spatial_y_schedule[tile] = spatial_schedule_maps[SPATIAL_Y][spatial_key]
+                    
+                    scheduled_cache = _cache_schedule(core_id, tile)
+                    if scheduled_cache is not None:
+                        cache_schedule[tile] = scheduled_cache
+                
+                thread.add_uop_node(
+                    self.op_sig.op_id,
+                    tiled_op.tiled_op_id,
+                    uop_idx,
+                    output=(uop_idx == tiled_op.n_uops - 1),
+                    cache_schedule=cache_schedule,
+                    spatial_x_schedule=spatial_x_schedule,
+                    spatial_y_schedule=spatial_y_schedule,
+                )
+            
+            for core_id in self.op_sig.core_group.core_ids:
+                thread = thread_mapping[core_id]
+                for node_type, tiled_op, uop_idx, slot_id in execution_plans[core_id]:
+                    if node_type == "ctx_load":
+                        thread.add_context_load(self.op_sig.op_id, tiled_op.tiled_op_id, uop_idx, slot_id)
+                    elif node_type == "ctx_store":
+                        thread.add_context_store(self.op_sig.op_id, tiled_op.tiled_op_id, uop_idx, slot_id)
+                    elif node_type == "uop":
+                        _add_scheduled_uop(thread, core_id, tiled_op, uop_idx)
+                    
             return thread_mapping
         
         def unfreeze(self):
             self.cache_buffer_size = 0
+            self.cache_buffer_slot_num = 0
+            
             self.thread_mapping = {}
             
             self.o_tile_store = self.op_sig.buffers[self.op_sig.output_buffer_name].is_allocated
@@ -1255,64 +1226,83 @@ class MCA_OperatorGraphCompiler:
             self._is_frozen = False
             
         def freeze(self, tiled_op_mapping: dict[int, list[TiledOperatorSignature]]=None) -> bool:
-            self.cache_buffer_size = self.spad_space_size_per_core - (self.ctx_buffer_size + self.bcast_fifo_size + self.ld_ex_fifo_size + self.ex_st_fifo_size)
-            if self.cache_buffer_size <= 0:
+            self.cache_buffer_size = self.spad_space_size_per_core - (self.ctx_buffer_size + self.bcast_fifo_size * 2 + self.ld_ex_fifo_size + self.ex_st_fifo_size)
+            self.cache_buffer_slot_num = self.cache_buffer_size // self.cache_buffer_slot_size
+            
+            if self.cache_buffer_size < 0:
                 self.unfreeze()
                 return False
             
             if tiled_op_mapping is None:
-                tiled_op_mapping = self._create_tiled_op_mapping()
-                
-            thread_mapping = self._create_thread_mapping(tiled_op_mapping)
-            if len(thread_mapping) == 0 and len(tiled_op_mapping) > 0:
+                tiled_op_mapping = self.create_tiled_op_mapping()
+            
+            thread_mapping = self.create_thread_mapping(tiled_op_mapping)
+            if len(thread_mapping) == 0 and len(self.op_sig.tiled_ops) > 0:
                 self.unfreeze()
                 return False
 
-            # If any core with assigned tiled-ops has no schedulable thread, fail freeze.
-            for core_id, mapped_tiled_ops in tiled_op_mapping.items():
-                if len(mapped_tiled_ops) == 0:
-                    continue
-                if core_id not in thread_mapping:
-                    self.unfreeze()
-                    return False
-                if thread_mapping[core_id].n_uop_nodes == 0:
-                    self.unfreeze()
-                    return False
-
-            self.thread_mapping = thread_mapping
+            for thread in thread_mapping.values():
+                if thread.n_uop_nodes > 0:
+                    self.thread_mapping = thread_mapping
+                    break
+            else:
+                self.unfreeze()
+                return False
             
             self._is_frozen = True
             return True
             
         @property
         def is_frozen(self):
-            return self._is_frozen
+            return self._is_frozen 
+        
+        @property
+        def ctx_buffer_size(self):
+            return self._context_buffer_size
+        
+        @property
+        def bcast_fifo_size(self):
+            return self._bcast_fifo_size
+        
+        @property
+        def ld_ex_fifo_size(self):
+            return self._ld_ex_fifo_size
+        
+        @property
+        def ex_st_fifo_size(self):
+            return self._ex_st_fifo_size
         
         @property
         def bcast_fifo_depth(self):
-            if self.bcast_fifo_size == 0:
-                return 0
-            return self.bcast_fifo_size // self.bcast_fifo_slot_size
+            return self._bcast_fifo_slot_num
         
         @property
         def ld_ex_fifo_depth(self):
-            if self.ld_ex_fifo_slot_size == 0:
-                return 0
-            return self.ld_ex_fifo_size // self.ld_ex_fifo_slot_size
+            return self._ld_ex_fifo_slot_num
         
         @property
         def ex_st_fifo_depth(self):
-            if self.ex_st_fifo_slot_size == 0:
-                return 0
-            return self.ex_st_fifo_size // self.ex_st_fifo_slot_size
+            return self._ex_st_fifo_slot_num
+        
+        @property
+        def bcast_fifo_slot_size(self):
+            return self._bcast_fifo_entry_size
+        
+        @property
+        def ld_ex_fifo_slot_size(self):
+            return self._ld_ex_fifo_entry_size
+        
+        @property
+        def ex_st_fifo_slot_size(self):
+            return self._ex_st_fifo_entry_size
+        
+        @property
+        def ctx_buffer_slot_size(self):
+            return self._context_buffer_slot_size
         
         @property
         def ctx_buffer_slot_num(self):
-            return self.ctx_buffer_size // self.ctx_buffer_slot_size
-        
-        @property
-        def cache_buffer_slot_num(self):
-            return self.cache_buffer_size // self.cache_buffer_slot_size  
+            return self._context_buffer_slot_num
     
     class Environment:
         def __init__(self, recipe: 'MCA_OperatorGraphCompiler.CompileRecipe'):
@@ -1398,105 +1388,6 @@ class MCA_OperatorGraphCompiler:
                 self.grouped_compile_targets.append([op_meta.op_sig.op_id])
             
             return self
-        
-    class MemoryState:
-        BCAST = "bcast"
-        LD_EX = "ld_ex"
-        EX_ST = "ex_st"
-        
-        def __init__(
-            self,
-            op_meta: 'MCA_OperatorGraphCompiler.OperatorMetadata',
-            recipe: 'MCA_OperatorGraphCompiler.CompileRecipe',
-        ):
-            op_sig = op_meta.op_sig
-            core_group = op_sig.core_group
-            device = recipe.device
-
-            l1_space = device.create_l1_mem_space(op_meta.spad_space_size_per_core, core_group.core_ids)
-           
-            # SPMs
-            self.ctx_descriptors    = {core_id:  MCA_CompiledOperator.IR.SPMDescriptor (f"CORE{core_id}_{op_meta.op_sig.op_id}_CTX",   l1_space.allocate(core_id, op_meta.ctx_buffer_size))   for core_id in core_group.core_ids}
-            self.cache_descriptors  = {core_id:  MCA_CompiledOperator.IR.SPMDescriptor (f"CORE{core_id}_{op_meta.op_sig.op_id}_CACHE", l1_space.allocate(core_id, op_meta.cache_buffer_size)) for core_id in core_group.core_ids}
-            
-            # FIFOs
-            self.bcast_descriptors  = {core_id:  MCA_CompiledOperator.IR.FIFODescriptor(f"CORE{core_id}_{op_meta.op_sig.op_id}_BCAST", l1_space.allocate(core_id, op_meta.bcast_fifo_size), op_meta.bcast_fifo_slot_size, op_meta.bcast_fifo_depth) for core_id in core_group.core_ids}
-            self.ld_ex_descriptors  = {core_id:  MCA_CompiledOperator.IR.FIFODescriptor(f"CORE{core_id}_{op_meta.op_sig.op_id}_LD_EX", l1_space.allocate(core_id, op_meta.ld_ex_fifo_size), op_meta.ld_ex_fifo_slot_size, op_meta.ld_ex_fifo_depth) for core_id in core_group.core_ids}
-            self.ex_st_descriptors  = {core_id:  MCA_CompiledOperator.IR.FIFODescriptor(f"CORE{core_id}_{op_meta.op_sig.op_id}_EX_ST", l1_space.allocate(core_id, op_meta.ex_st_fifo_size), op_meta.ex_st_fifo_slot_size, op_meta.ex_st_fifo_depth) for core_id in core_group.core_ids}
-            
-            # Off-chip Buffers
-            self.tensor_descriptors = {buf_name: MCA_CompiledOperator.IR.TensorBufferDescriptor(buf_name) for buf_name in op_sig.buffer_names}
-            
-            # States
-            self._ctx_states: dict[int, dict[int, TileSignature]] = {core_id: {slot_id: None for slot_id in range(op_meta.ctx_buffer_slot_num)} for core_id in core_group.core_ids}
-            
-            self._cache_slot_size = op_meta.cache_buffer_slot_size
-            self._cache_states: dict[int, dict[int, tuple[TileSignature, int, MCA_CompiledOperator.IR.MEM_COPY_TILE]]] = {core_id: {slot_id: [None, slot_id, None] for slot_id in range(op_meta.cache_buffer_slot_num)} for core_id in core_group.core_ids}  # {core_id: {slot_id: [tile_signature, lru_cnt, last_used_ir]}}
-            
-            self._ld_ex_states: dict[int, int] = {core_id: 0 for core_id in core_group.core_ids}  # {core_id: slot_num}
-            self._ld_ex_tile_to_slot_id: dict[int, dict[TileSignature, int]] = {core_id: {} for core_id in core_group.core_ids}  # {core_id: {tile_signature: slot_id}}
-            
-            self._ex_st_states: dict[int, int] = {core_id: 0 for core_id in core_group.core_ids}  # {core_id: slot_num}
-            self._ex_st_tile_to_slot_id: dict[int, dict[TileSignature, int]] = {core_id: {} for core_id in core_group.core_ids}  # {core_id: {tile_signature: slot_id}}
-            
-            l1_space.remove()
-            
-        def ctx_push(self, core_id: int, slot_id: int, tile: TileSignature):
-            if self._ctx_states[core_id][slot_id] is not None:
-                raise Exception(f"Context slot {slot_id} in core {core_id} is already occupied. Cannot store tile {tile}.")
-            self._ctx_states[core_id][slot_id] = tile
-        
-        def ctx_pop(self, core_id: int, slot_id: int) -> TileSignature:
-            tile = self._ctx_states[core_id][slot_id]
-            if tile is None:
-                raise Exception(f"Context slot {slot_id} in core {core_id} is empty. Cannot load context.")
-            self._ctx_states[core_id][slot_id] = None
-            return tile
-        
-        def cache_write(self, core_id: int, tile_sig: TileSignature, slot_id: int, ir: MCA_CompiledOperator.IR.MEM_COPY_TILE):
-            evicted_tile_sig, _, evicted_ir = self._cache_states[core_id][slot_id]
-            
-            if evicted_ir is not None:
-                ir.wait_ir_idx.append(evicted_ir.ir_idx)
-            
-            self._cache_states[core_id][slot_id][0] = tile_sig
-            self._cache_states[core_id][slot_id][2] = ir
-            
-            ir.dsts.append(self.cache_descriptors[core_id].ref(tile_sig=tile_sig, offset=slot_id * self._cache_slot_size))
-            
-        def cache_read(self, core_id: int, tile_sig: TileSignature, slot_id: int, ir: MCA_CompiledOperator.IR.MEM_COPY_TILE) -> bool:
-            cached_tile_sig, _, last_used_ir = self._cache_states[core_id][slot_id]
-            if cached_tile_sig == tile_sig:
-                if last_used_ir is not None:
-                    ir.wait_ir_idx.append(last_used_ir.ir_idx)
-                    
-                ir.src = self.cache_descriptors[core_id].ref(tile_sig=tile_sig, offset=slot_id * self._cache_slot_size)
-                return True
-            return False
-        
-        def ld_ex_push(self, core_id: int, tile_sig: TileSignature) -> int:
-            slot_id = self._ld_ex_states[core_id]
-            self._ld_ex_tile_to_slot_id[core_id][tile_sig] = slot_id
-            self._ld_ex_states[core_id] += 1
-            return slot_id
-        
-        def ld_ex_pop(self, core_id: int, tile_sig: TileSignature) -> int:
-            if tile_sig not in self._ld_ex_tile_to_slot_id[core_id]:
-                raise Exception(f"Tile {tile_sig} is not found in the load-execute buffer of core {core_id}.")
-            slot_id = self._ld_ex_tile_to_slot_id[core_id][tile_sig]
-            return slot_id
-        
-        def ex_st_push(self, core_id: int, tile_sig: TileSignature) -> int:
-            slot_id = self._ex_st_states[core_id]
-            self._ex_st_tile_to_slot_id[core_id][tile_sig] = slot_id
-            self._ex_st_states[core_id] += 1
-            return slot_id
-        
-        def ex_st_pop(self, core_id: int, tile_sig: TileSignature) -> int:
-            if tile_sig not in self._ex_st_tile_to_slot_id[core_id]:
-                raise Exception(f"Tile {tile_sig} is not found in the execute-store buffer of core {core_id}.")
-            slot_id = self._ex_st_tile_to_slot_id[core_id][tile_sig]
-            return slot_id
 
     def __init__(self):
         self._op_sigs: dict[str, MCA_OperatorSignature] = {}
@@ -1519,111 +1410,261 @@ class MCA_OperatorGraphCompiler:
         op_metas = {target_op_id: env.op_meta[target_op_id] for target_op_id in op_ids}
         
         compiled_ops    = {op_id: MCA_CompiledOperator(env, op_meta) for op_id, op_meta in op_metas.items()}
-        mem_states      = {op_id: MCA_OperatorGraphCompiler.MemoryState(op_meta, env.recipe) for op_id, op_meta in op_metas.items()} 
         thread_mappings = {op_id: op_meta.thread_mapping for op_id, op_meta in op_metas.items()}
+        
+        mem_states = {
+            op_id: MCA_OperatorGraphCompiler.MemoryState(env, op_meta)
+            for op_id, op_meta in op_metas.items()
+        }
+        for mem_state in mem_states.values():
+            mem_state.register_fifos()
+        
+        max_uop_nodes_per_stage = max(1, env.recipe.fifo_buffer_slot_num // 2)
+        
+        def _spatial_src(schedule: dict[TileSignature, dict[str, tuple[int, int, int]]], tile: TileSignature):
+            if tile not in schedule:
+                return None
+            return schedule[tile].get("src", None)
+        
+        def _spatial_dst(schedule: dict[TileSignature, dict[str, tuple[int, int, int]]], tile: TileSignature):
+            if tile not in schedule:
+                return None
+            return schedule[tile].get("dst", None)
+        
+        def _add_or_merge_load_ir(
+            compiled_op: MCA_CompiledOperator,
+            core_id: int,
+            stage: MCA_CompiledOperator.Stage,
+            load_ir: MCA_CompiledOperator.IR.MEM_COPY_TILE,
+        ) -> MCA_CompiledOperator.IR.MEM_COPY_TILE:
+            def _can_merge_src(existing_src: MCA_CompiledOperator.IR.Reference, new_src: MCA_CompiledOperator.IR.Reference) -> bool:
+                if existing_src == new_src:
+                    return True
+                if not existing_src.is_fifo() and not new_src.is_fifo():
+                    return True
+                if existing_src.is_fifo() and not new_src.is_fifo():
+                    return True
+                return False
+            
+            def _stage_load_ir_indices() -> set[int]:
+                return {
+                    ir.ir_idx
+                    for ir in stage.loads
+                    if isinstance(ir, MCA_CompiledOperator.IR.MEM_COPY_TILE) and ir.ir_idx is not None
+                }
+            
+            def _would_create_wait_cycle(
+                existing_ir: MCA_CompiledOperator.IR.MEM_COPY_TILE,
+                merged_wait_ir_idx: set[int],
+            ) -> bool:
+                if existing_ir.ir_idx is None:
+                    return False
+                
+                stage_ir_indices = _stage_load_ir_indices()
+                if existing_ir.ir_idx not in stage_ir_indices:
+                    return False
+                
+                graph: dict[int, set[int]] = {ir_idx: set() for ir_idx in stage_ir_indices}
+                for ir in stage.loads:
+                    if not isinstance(ir, MCA_CompiledOperator.IR.MEM_COPY_TILE):
+                        continue
+                    if ir.ir_idx is None or ir.ir_idx not in stage_ir_indices:
+                        continue
+                    wait_ir_idx = merged_wait_ir_idx if ir is existing_ir else set(ir.wait_ir_idx)
+                    graph[ir.ir_idx].update(wait_ir_idx & stage_ir_indices)
+                
+                visited: set[int] = set()
+                visiting: set[int] = set()
+                
+                def _visit(ir_idx: int) -> bool:
+                    if ir_idx in visiting:
+                        return True
+                    if ir_idx in visited:
+                        return False
+                    visiting.add(ir_idx)
+                    for wait_ir_idx in graph.get(ir_idx, ()):
+                        if _visit(wait_ir_idx):
+                            return True
+                    visiting.remove(ir_idx)
+                    visited.add(ir_idx)
+                    return False
+                
+                return any(_visit(ir_idx) for ir_idx in stage_ir_indices)
+            
+            def _would_create_forward_wait(
+                existing_ir: MCA_CompiledOperator.IR.MEM_COPY_TILE,
+                merged_wait_ir_idx: set[int],
+            ) -> bool:
+                if existing_ir.ir_idx is None:
+                    return False
+                stage_ir_indices = _stage_load_ir_indices()
+                return any(
+                    wait_ir_idx in stage_ir_indices and wait_ir_idx > existing_ir.ir_idx
+                    for wait_ir_idx in merged_wait_ir_idx
+                )
+            
+            if load_ir.src is not None:
+                for existing_ir in stage.loads:
+                    if not isinstance(existing_ir, MCA_CompiledOperator.IR.MEM_COPY_TILE):
+                        continue
+                    if existing_ir.src is None:
+                        continue
+                    if existing_ir.src.tile_sig != load_ir.src.tile_sig:
+                        continue
+                    if not _can_merge_src(existing_ir.src, load_ir.src):
+                        continue
+                    
+                    wait_ir_idx = set(existing_ir.wait_ir_idx)
+                    wait_ir_idx.update(load_ir.wait_ir_idx)
+                    if existing_ir.ir_idx is not None:
+                        wait_ir_idx.discard(existing_ir.ir_idx)
+                    if _would_create_forward_wait(existing_ir, wait_ir_idx):
+                        continue
+                    if _would_create_wait_cycle(existing_ir, wait_ir_idx):
+                        continue
+                    
+                    for dst in load_ir.dsts:
+                        if not any(dst == existing_dst for existing_dst in existing_ir.dsts):
+                            existing_ir.dsts.append(dst)
+                    existing_ir.wait_ir_idx = sorted(wait_ir_idx)
+                    return existing_ir
+            
+            compiled_op.add_load_ir(core_id, load_ir)
+            return load_ir
         
         for op_id in op_ids:
             op_meta = op_metas[op_id]
             op_sig = op_meta.op_sig
-            core_group = op_sig.core_group
+            compiled_op = compiled_ops[op_id]
             mem_state = mem_states[op_id]
-            
-            for core_id in core_group.core_ids:
-                env.add_fifo_buffer(mem_state.bcast_descriptors[core_id].buf_name, op_meta.bcast_fifo_depth, op_meta.bcast_fifo_slot_size, mem_state.bcast_descriptors[core_id].ptr)
-                env.add_fifo_buffer(mem_state.ld_ex_descriptors[core_id].buf_name, op_meta.ld_ex_fifo_depth, op_meta.ld_ex_fifo_slot_size, mem_state.ld_ex_descriptors[core_id].ptr)
-                env.add_fifo_buffer(mem_state.ex_st_descriptors[core_id].buf_name, op_meta.ex_st_fifo_depth, op_meta.ex_st_fifo_slot_size, mem_state.ex_st_descriptors[core_id].ptr)
-        
-        # STAGE 2: Create compiled ops and update memory states while iteratively resolving tile-level dependencies
-        for op_id in op_ids:
-            op_meta = op_metas[op_id]
             thread_mapping = thread_mappings[op_id]
-            mem_state = mem_states[op_id]
             
-            for core_id, thread in tqdm.tqdm(thread_mapping.items(), desc=f"Compiling operator {op_id} on cores", leave=False, disable=not logger.is_current_debug_log_level()):           
-                for iii, uop_node in enumerate(thread.uop_nodes):
-                    if isinstance(uop_node, MCA_OperatorGraphCompiler.Thread.ContextLoadNode):
-                        slot_id = uop_node.slot_id
-                        tiled_op_idx = uop_node.tiled_op_idx
-                        uop_idx = uop_node.uop_idx
-                        tile = mem_state.ctx_pop(core_id, slot_id)
-
-                        if tile != op_meta.op_sig.tiled_ops[tiled_op_idx].o_tile or tile is None:
-                            raise Exception(f"Context slot {slot_id} in core {core_id} does not contain the expected tile for operator {op_id}. tile: {tile}, expected: {op_meta.op_sig.tiled_ops[tiled_op_idx].o_tile}.")
+            for core_id, thread in thread_mapping.items():
+                uop_nodes_in_stage = 0
+                
+                for node in thread.uop_nodes:
+                    if isinstance(node, MCA_OperatorGraphCompiler.Thread.ContextLoadNode):
+                        if uop_nodes_in_stage >= max_uop_nodes_per_stage:
+                            compiled_op.new_stage(core_id)
+                            uop_nodes_in_stage = 0
                         
-                        compiled_ops[op_id].add_execute_ir(core_id, MCA_CompiledOperator.IR.EXE_CTX_LOAD(
-                            op_id, tiled_op_idx, uop_idx, tile, mem_state.ctx_descriptors[core_id].ref(tile, offset=slot_id * op_meta.ctx_buffer_slot_size)
+                        tile = mem_state.ctx_pop(core_id, node.slot_id)
+                        expected_tile = op_sig.tiled_ops[node.tiled_op_idx].o_tile
+                        if tile != expected_tile:
+                            raise Exception(f"Context load mismatch on core {core_id}: expected {expected_tile}, got {tile}.")
+                        
+                        compiled_op.add_execute_ir(core_id, MCA_CompiledOperator.IR.EXE_CTX_LOAD(
+                            op_id,
+                            node.tiled_op_idx,
+                            node.uop_idx,
+                            tile,
+                            mem_state.ctx_descriptors[core_id].ref(tile, offset=node.slot_id * op_meta.ctx_buffer_slot_size),
                         ))
-                        
-                    elif isinstance(uop_node, MCA_OperatorGraphCompiler.Thread.ContextStoreNode):
-                        slot_id = uop_node.slot_id
-                        tiled_op_idx = uop_node.tiled_op_idx
-                        uop_idx = uop_node.uop_idx
-                        tile = op_meta.op_sig.tiled_ops[tiled_op_idx].o_tile
-                        
-                        mem_state.ctx_push(core_id, slot_id, tile)
-                        
-                        compiled_ops[op_id].add_execute_ir(core_id, MCA_CompiledOperator.IR.EXE_CTX_STORE(
-                            op_id, tiled_op_idx, uop_idx, tile, mem_state.ctx_descriptors[core_id].ref(tile, offset=slot_id * op_meta.ctx_buffer_slot_size)
-                        ))
-                        
-                        compiled_ops[op_id].new_stage(core_id)  # add new stage to reduce the size of kernel object (compile time overhead issue)
+                        continue
                     
-                    elif isinstance(uop_node, MCA_OperatorGraphCompiler.Thread.UopNode):
-                        tiled_op_sig = op_meta.op_sig.tiled_ops[uop_node.tiled_op_idx]
-                        i_tiles = tiled_op_sig.i_tiles[uop_node.uop_idx]
-                        o_tile = tiled_op_sig.o_tile
-                        
-                        for i_tile in i_tiles:
-                            dst = mem_state.ld_ex_descriptors[core_id].ref(i_tile, slot_id=mem_state.ld_ex_push(core_id, i_tile), ref_cnt=1)
-                            ir = MCA_CompiledOperator.IR.MEM_COPY_TILE(None, dst)   # src undefined until the cache hit is verified
-                            
-                            _is_cache_schedule_valid, _is_cache_hit, _cache_slot_id = False, None, None
-                            _is_bcast_schedule_valid, _bcast_core_id, _bcast_slot_id, _bcast_ref_cnt = False, None, None, None
-                                
-                            if i_tile in uop_node.cache_schedule:
-                                _is_cache_hit, _cache_slot_id = uop_node.cache_schedule[i_tile]
-                                _is_cache_schedule_valid = True
-                            
-                            if i_tile in uop_node.bcast_schedule:
-                                _bcast_core_id, _bcast_slot_id, _bcast_ref_cnt = uop_node.bcast_schedule[i_tile]
-                                _is_bcast_schedule_valid = True
-                            
-                            # CASE: cache hit
-                            if _is_cache_schedule_valid and _is_cache_hit:
-                                mem_state.cache_read(core_id, i_tile, _cache_slot_id, ir)
-                            # CASE: broadcast target (spatial reuse)
-                            elif _is_bcast_schedule_valid:
-                                if _bcast_core_id == core_id:
-                                    ir.src = mem_state.tensor_descriptors[i_tile.buf_name].ref(i_tile)
-                                    ir.dsts.append(mem_state.bcast_descriptors[_bcast_core_id].ref(i_tile, _bcast_slot_id, _bcast_ref_cnt - 1))
-                                else:
-                                    ir.src = mem_state.bcast_descriptors[_bcast_core_id].ref(i_tile, _bcast_slot_id, 1)
-                            else:
-                                ir.src = mem_state.tensor_descriptors[i_tile.buf_name].ref(i_tile)
-                            
-                            # Write to cache if scheduled, regardless of hit or miss, to update the cache state and enable subsequent hits
-                            if _is_cache_schedule_valid and not _is_cache_hit:
-                                mem_state.cache_write(core_id, i_tile, _cache_slot_id, ir)
-                                
-                            compiled_ops[op_id].add_load_ir(core_id, ir)
-                        
-                        compiled_ops[op_id].add_execute_ir(core_id, MCA_CompiledOperator.IR.EXE_UOP(
-                            op_id, uop_node.tiled_op_idx, uop_node.uop_idx,
-                            i_tile_refs=[mem_state.ld_ex_descriptors[core_id].ref(i_tile, slot_id=mem_state.ld_ex_pop(core_id, i_tile), ref_cnt=1) for i_tile in i_tiles],
-                            o_tile_ref=mem_state.ex_st_descriptors[core_id].ref(o_tile, slot_id=mem_state.ex_st_push(core_id, o_tile), ref_cnt=1) if uop_node.output else None,
-                            dtype=i_tiles[0].dtype if len(i_tiles) > 0 else None,
-                            acc_dtype=o_tile.dtype
+                    if isinstance(node, MCA_OperatorGraphCompiler.Thread.ContextStoreNode):
+                        tile = op_sig.tiled_ops[node.tiled_op_idx].o_tile
+                        mem_state.ctx_push(core_id, node.slot_id, tile)
+                        compiled_op.add_execute_ir(core_id, MCA_CompiledOperator.IR.EXE_CTX_STORE(
+                            op_id,
+                            node.tiled_op_idx,
+                            node.uop_idx,
+                            tile,
+                            mem_state.ctx_descriptors[core_id].ref(tile, offset=node.slot_id * op_meta.ctx_buffer_slot_size),
                         ))
+                        continue
+                    
+                    if not isinstance(node, MCA_OperatorGraphCompiler.Thread.UopNode):
+                        raise Exception(f"Unsupported thread node type: {type(node).__name__}")
+                    
+                    if uop_nodes_in_stage >= max_uop_nodes_per_stage:
+                        compiled_op.new_stage(core_id)
+                        uop_nodes_in_stage = 0
+                    
+                    tiled_op = op_sig.tiled_ops[node.tiled_op_idx]
+                    i_tiles = tiled_op.i_tiles[node.uop_idx]
+                    o_tile = tiled_op.o_tile
+                    current_stage = compiled_op.current_stage(core_id)
+                    
+                    for i_tile in i_tiles:
+                        ld_ex_entry_id = mem_state.ld_ex_push(core_id, i_tile)
+                        ld_ex_ref = mem_state.ld_ex_descriptors[core_id].ref(i_tile, slot_id=ld_ex_entry_id, ref_cnt=1)
+                        load_ir = MCA_CompiledOperator.IR.MEM_COPY_TILE(None, ld_ex_ref)
+                        cache_write_slot_id = None
                         
-                        if uop_node.output:
-                            src = mem_state.ex_st_descriptors[core_id].ref(o_tile, slot_id=mem_state.ex_st_pop(core_id, o_tile), ref_cnt=1)
-                            ir = MCA_CompiledOperator.IR.MEM_COPY_TILE(src)
-                            
-                            if op_meta.o_tile_store:
-                                ir.dsts.append(mem_state.tensor_descriptors[o_tile.buf_name].ref(o_tile))
-
-                            compiled_ops[op_id].add_store_ir(core_id, ir)
-                            compiled_ops[op_id].new_stage(core_id)  # add new stage to reduce the size of kernel object (compile time overhead issue)
+                        spatial_x_src = _spatial_src(node.spatial_x_schedule, i_tile)
+                        spatial_y_src = _spatial_src(node.spatial_y_schedule, i_tile)
+                        if spatial_x_src is not None and spatial_y_src is not None:
+                            raise Exception(f"Tile {i_tile} has both SPATIAL_X and SPATIAL_Y sources on core {core_id}.")
+                        
+                        if spatial_x_src is not None:
+                            src_core_id, src_entry_id, src_ref_cnt = spatial_x_src
+                            load_ir.src = mem_state.spatial_x_descriptors[src_core_id].ref(i_tile, src_entry_id, src_ref_cnt)
+                        elif spatial_y_src is not None:
+                            src_core_id, src_entry_id, src_ref_cnt = spatial_y_src
+                            load_ir.src = mem_state.spatial_y_descriptors[src_core_id].ref(i_tile, src_entry_id, src_ref_cnt)
+                        elif i_tile in node.cache_schedule and node.cache_schedule[i_tile][0]:
+                            _, cache_slot_id = node.cache_schedule[i_tile]
+                            mem_state.cache_read(core_id, i_tile, cache_slot_id, current_stage, load_ir)
+                        else:
+                            load_ir.src = mem_state.tensor_descriptors[i_tile.buf_name].ref(i_tile)
+                        
+                        spatial_x_dst = _spatial_dst(node.spatial_x_schedule, i_tile)
+                        spatial_y_dst = _spatial_dst(node.spatial_y_schedule, i_tile)
+                        if spatial_x_dst is not None:
+                            dst_core_id, dst_entry_id, dst_ref_cnt = spatial_x_dst
+                            if dst_core_id != core_id:
+                                raise Exception(f"SPATIAL_X destination core mismatch: scheduled={dst_core_id}, current={core_id}.")
+                            load_ir.dsts.append(mem_state.spatial_x_descriptors[dst_core_id].ref(i_tile, dst_entry_id, dst_ref_cnt))
+                        if spatial_y_dst is not None:
+                            dst_core_id, dst_entry_id, dst_ref_cnt = spatial_y_dst
+                            if dst_core_id != core_id:
+                                raise Exception(f"SPATIAL_Y destination core mismatch: scheduled={dst_core_id}, current={core_id}.")
+                            load_ir.dsts.append(mem_state.spatial_y_descriptors[dst_core_id].ref(i_tile, dst_entry_id, dst_ref_cnt))
+                        
+                        if i_tile in node.cache_schedule and not node.cache_schedule[i_tile][0]:
+                            _, cache_slot_id = node.cache_schedule[i_tile]
+                            mem_state.cache_write(core_id, i_tile, cache_slot_id, current_stage, load_ir)
+                            cache_write_slot_id = cache_slot_id
+                        
+                        merged_load_ir = _add_or_merge_load_ir(compiled_op, core_id, current_stage, load_ir)
+                        if cache_write_slot_id is not None and merged_load_ir is not load_ir:
+                            mem_state.replace_cache_writer(core_id, i_tile, cache_write_slot_id, load_ir, merged_load_ir, current_stage)
+                    
+                    execute_ir = MCA_CompiledOperator.IR.EXE_UOP(
+                        op_id,
+                        node.tiled_op_idx,
+                        node.uop_idx,
+                        i_tile_refs=[
+                            mem_state.ld_ex_descriptors[core_id].ref(
+                                i_tile,
+                                slot_id=mem_state.ld_ex_pop(core_id, i_tile),
+                                ref_cnt=1,
+                            )
+                            for i_tile in i_tiles
+                        ],
+                        o_tile_ref=mem_state.ex_st_descriptors[core_id].ref(
+                            o_tile,
+                            slot_id=mem_state.ex_st_push(core_id, o_tile),
+                            ref_cnt=1,
+                        ) if node.output else None,
+                        dtype=i_tiles[0].dtype if len(i_tiles) > 0 else None,
+                        acc_dtype=o_tile.dtype,
+                    )
+                    compiled_op.add_execute_ir(core_id, execute_ir)
+                    
+                    if node.output:
+                        store_src = mem_state.ex_st_descriptors[core_id].ref(
+                            o_tile,
+                            slot_id=mem_state.ex_st_pop(core_id, o_tile),
+                            ref_cnt=1,
+                        )
+                        store_ir = MCA_CompiledOperator.IR.MEM_COPY_TILE(store_src)
+                        if op_meta.o_tile_store:
+                            store_ir.dsts.append(mem_state.tensor_descriptors[o_tile.buf_name].ref(o_tile))
+                        compiled_op.add_store_ir(core_id, store_ir)
+                    
+                    uop_nodes_in_stage += 1
         
         return compiled_ops
         

@@ -18,7 +18,7 @@ __all__ = [
     "get_global_program",
     "jit_program_prototype",
     "check_jit_program_prototype",
-    
+
     "set_global_context",
     "get_global_core_context",
     "get_global_kernel_context",
@@ -30,7 +30,7 @@ __all__ = [
     "RPCMessage",
     "Command",
     "ConditionalCommand",
-    
+
     "KernelPrototype",
     "ThreadGroup",
     "Kernel",
@@ -38,10 +38,10 @@ __all__ = [
     "CoreCycleModel",
     "Core",
     "SimulationMode",
-    
+
     "jit_prototype",
     "check_jit_prototype",
-    
+
     "core_command_method",
     "core_conditional_command_method",
     "new_parallel_thread",
@@ -56,7 +56,7 @@ _global_program: 'Program' = None
 def set_global_program(program: 'Program'):
     global _global_program
     _global_program = program
-    
+
 def get_global_program() -> 'Program':
     global _global_program
     return _global_program
@@ -64,25 +64,25 @@ def get_global_program() -> 'Program':
 class Program:
     def __init__(self):
         self._kernel_map: list[KernelPrototype] = []
-        
+
     def merge(self, other: 'Program') -> None:
-        self._kernel_map.extend(other._kernel_map) 
-            
+        self._kernel_map.extend(other._kernel_map)
+
     def add_kernel(self, kernel: 'KernelPrototype', slot_id: str="MAIN"):
         self._kernel_map.append(kernel)
         return self
-    
+
     def dispatch(self, slot_id: str="MAIN"):
         for kernel in self._kernel_map:
             kernel.dispatch(slot_id=slot_id)
-                
+
     def __enter__(self):
         set_global_program(self)
         return self
-    
+
     def __exit__(self, exc_type, exc_value, traceback):
         set_global_program(None)
-        
+
 
 def jit_program_prototype(_func: Callable):
     @functools.wraps(_func)
@@ -106,18 +106,18 @@ class GlobalContextMode(enum.Enum):
     IDLE    = enum.auto()
     COMPILE = enum.auto()
     EXECUTE = enum.auto()
-    
+
 _context_mode: GlobalContextMode = GlobalContextMode.IDLE
 _core_context: 'Core' = None
 _kernel_context: 'Kernel' = None
 _parent_kernel_callstack: list[tuple['GlobalContextMode', 'Core', 'Kernel']] = []
-    
+
 class new_global_context:
     def __init__(self, context_mode: GlobalContextMode, core_context: 'Core' = None, kernel_context: 'Kernel' = None):
         self.context_mode = context_mode
         self.core_context = core_context
         self.kernel_context = kernel_context
-        
+
         self._history_context_mode   = None
         self._history_core_context   = None
         self._history_kernel_context = None
@@ -126,7 +126,7 @@ class new_global_context:
         self._history_context_mode   = get_global_context_mode()
         self._history_core_context   = get_global_core_context()
         self._history_kernel_context = get_global_kernel_context()
-        
+
         set_global_context(self.context_mode, self.core_context, self.kernel_context)
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -134,16 +134,16 @@ class new_global_context:
 
 def set_global_context(context_mode: GlobalContextMode, core: 'Core', kernel: 'Kernel'):
     global _core_context, _kernel_context, _context_mode
-    
+
     if isinstance(context_mode, str):
         context_mode = GlobalContextMode.__members__.get(context_mode.upper())
     if context_mode == GlobalContextMode.COMPILE and not isinstance(kernel, Kernel):
         raise Exception(f"Cannot set global context to COMPILE mode with a non-Kernel object: {kernel}")
-    
+
     _context_mode = context_mode
     _core_context = core
     _kernel_context = kernel
-    
+
 def get_global_context_mode() -> GlobalContextMode:
     global _context_mode
     return _context_mode
@@ -163,7 +163,7 @@ def get_global_pid() -> str:
 
 def store_global_parent_kernel_callstack():
     global _parent_kernel_callstack
-    
+
     context_mode = get_global_context_mode()
     core_context = get_global_core_context()
     kernel_context = get_global_kernel_context()
@@ -173,19 +173,19 @@ def store_global_parent_kernel_callstack():
 
 def restore_global_parent_kernel_callstack() -> 'Kernel':
     global _parent_kernel_callstack
-    
+
     if len(_parent_kernel_callstack) == 0:
         raise Exception("[ERROR] Cannot pop from parent kernel callstack since it is empty")
 
     history = _parent_kernel_callstack.pop()
     set_global_context(*history)
-    
+
 def get_global_current_parent_kernel_callstack() -> tuple[GlobalContextMode, 'Core', 'Kernel']:
     global _parent_kernel_callstack
-    
+
     if len(_parent_kernel_callstack) == 0:
         raise Exception("[ERROR] Cannot get current parent kernel callstack since it is empty")
-    
+
     return _parent_kernel_callstack[-1]
 
 
@@ -204,10 +204,10 @@ def jit_prototype(_func: Callable):
         if get_global_context_mode() == GlobalContextMode.COMPILE:  # the jit prototype is called inside another kernel function
             kernel_context = get_global_kernel_context()
             kernel_context.add_execution_step(prototype)
-            
+
         if get_global_program() is not None:
             get_global_program().add_kernel(prototype)
-        
+
         return prototype
     __jit_prototype_wrapper._is_jit_prototype = True  # mark this function as a jit prototype
     return __jit_prototype_wrapper
@@ -223,28 +223,28 @@ def core_command_method(_func: Callable):
 
         if not isinstance(core, Core):
             raise Exception(f"Command method '{_func.__name__}' can only be called on an instance of Core")
-        
+
         kernel_context = get_global_kernel_context()
-        
+
         if kernel_context is None:
             raise Exception(f"Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function")
         elif not isinstance(kernel_context, Kernel):
             raise Exception(f"Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function. The current kernel context is not an instance of Kernel, but {type(kernel_context).__name__}")
-        
+
         cmd = Command(
             _func.__name__,     # the command ID is the name of the function
             *_args,             # the arguments of the command
             **_kwargs           # the keyword arguments of the command
         )
-        
+
         if get_global_context_mode() == GlobalContextMode.COMPILE:
             kernel_context.add_execution_step(cmd)
         else:
             logger.warning(f"Command method '{_func.__name__}' is called outside of the compile or idle context. It implies that the command is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
             raise Exception(f"Command method '{_func.__name__}' is called outside of the compile or idle context.")
-        
+
         return cmd
-    
+
     __core_command_method_wrapper._is_command_method = True  # mark this function as a command method
     __core_command_method_wrapper._is_conditional = False  # mark this function as a non-conditional command method
     return __core_command_method_wrapper
@@ -259,9 +259,9 @@ def core_conditional_command_method(_func: Callable):
 
         if not isinstance(core, Core):
             raise Exception(f"Command method '{_func.__name__}' can only be called on an instance of Core")
-        
+
         kernel_context = get_global_kernel_context()
-        
+
         if kernel_context is None:
             raise Exception(f"Cannot register command '{_func.__name__}' to the compiled kernel since it is called outside of a low-level kernel function")
         elif not isinstance(kernel_context, Kernel):
@@ -272,15 +272,15 @@ def core_conditional_command_method(_func: Callable):
             *_args,             # the arguments of the command
             **_kwargs           # the keyword arguments of the command
         )
-        
+
         if get_global_context_mode() == GlobalContextMode.COMPILE:
             kernel_context.add_execution_step(cmd)
         else:
             logger.warning(f"Command method '{_func.__name__}' is called outside of the compile or idle context. It implies that the command is called inside the command execution context, which is strictly prohibited. This is mainly because of the faulty implementation of the command method.")
             raise Exception(f"Command method '{_func.__name__}' is called outside of the compile or idle context.")
-        
+
         return cmd
-    
+
     __core_command_method_wrapper._is_command_method = True  # mark this function as a command method
     __core_command_method_wrapper._is_conditional = True  # mark this function as a conditional command method
     return __core_command_method_wrapper
@@ -288,17 +288,17 @@ def core_conditional_command_method(_func: Callable):
 class new_parallel_thread:
     def __init__(self, p_kernel_id: str=None):
         self.p_kernel_id = p_kernel_id
-    
+
     def __enter__(self):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception("[ERROR] Cannot create a parallel kernel since the global context mode is not COMPILE")
-        
+
         kernel_context = get_global_kernel_context()
         parallel_kernel = kernel_context.add_parallel_kernel_step(p_kernel_id=self.p_kernel_id)
-        
+
         store_global_parent_kernel_callstack()
         set_global_context(GlobalContextMode.COMPILE, get_global_core_context(), parallel_kernel)
-    
+
     def __exit__(self, exc_type, exc_value, traceback):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception("[ERROR] Cannot end parallel kernel since the global context mode is not COMPILE")
@@ -309,13 +309,13 @@ class new_parallel_thread:
 #################################################
 # Implementation
 #################################################
-        
+
 class RPCMessage:
     def __init__(self, src_core_id: str, dst_core_id: str, cmd_id: str):
         self.msg_type = 0        # 0 for request, 1 for response
         self.src_core_id = src_core_id
         self.dst_core_id = dst_core_id
-        
+
         kernel_context = get_global_kernel_context()
         if kernel_context is None:
             self.kernel_id = "UNKNOWN"
@@ -323,11 +323,11 @@ class RPCMessage:
         else:
             self.kernel_id = kernel_context.kernel_id
             self.root_kernel_id = kernel_context.root_callstack
-        
+
         self.cmd_id = cmd_id
         self.args = []
         self.kwargs = {}
-        
+
         self.msg_id:  str = None  # message ID is None by default
         self.slot_id: str = None  # slot ID is None by default
         self.callstack: str = None  # callstack is None by default, but it can be set to any string for debugging purposes
@@ -336,7 +336,7 @@ class RPCMessage:
         self.args = list(args)
         self.kwargs = kwargs
         return self
-        
+
     def response(self, rpc_kernel: 'Kernel') -> 'RPCMessage':
         msg = RPCMessage(
             src_core_id=self.src_core_id,
@@ -346,25 +346,25 @@ class RPCMessage:
             *self.args,
             **self.kwargs
         )
-        
+
         msg.msg_id = self.msg_id
-        
+
         return msg
-        
+
     def copy_args_from_rsp(self, rsp_msg: 'RPCMessage'):
         self.args = rsp_msg.args
         self.kwargs = rsp_msg.kwargs
-    
+
     def __repr__(self):
         return f"RPCMessage(msg_id={self.msg_id}, src_core_id={self.src_core_id}, dst_core_id={self.dst_core_id}, kernel_id={self.kernel_id}, cmd_id={self.cmd_id})"
-    
+
     def __str__(self):
         return self.__repr__()
 
 
 class Command:
     def __init__(
-        self, 
+        self,
         cmd_id: str,
         *args,
         **kwargs
@@ -378,14 +378,14 @@ class Command:
         self._cached_issue_time: int = None
         self._cached_commit_time: int = None
         self._is_behavioral_model_called: bool = False
-        
+
     def get_remaining_cycles(self, core: 'Core', kernel: 'Kernel') -> int:
         if self._cached_cycle is None:
             self._cached_cycle = self.run_cycle_model(core, kernel)
-            
+
             if self._cached_cycle is None:
                 self._cached_cycle = 1
-            
+
             self._cached_cycle = max(0, self._cached_cycle)  # ensure at least 1 cycle
 
         return max(0, self._cached_cycle - self._cached_cycle_slack)
@@ -393,7 +393,7 @@ class Command:
     def update_cycle_time(self, core: 'Core', kernel: 'Kernel', cycle_time: int):
         if self._cached_issue_time is None:
             self._cached_issue_time = core.timestamp
-            
+
         if cycle_time < 0:
             raise ValueError(f"Cycle time cannot be negative: {cycle_time}")
 
@@ -401,10 +401,10 @@ class Command:
         # independent from cycle estimation.
         if not self._is_behavioral_model_called:
             flag = self.run_behavioral_model(core, kernel)
-            
+
             if flag is not None:
                 raise Exception(f"Behavioral model for command '{self.cmd_id}' returned '{flag}' even though the command is not conditional. Use 'core_conditional_command_method' instead if you want to implement any retry operation.")
-            
+
             if kernel.is_blocked:
                 # Do not advance cycle slack while blocked.
                 return
@@ -426,7 +426,7 @@ class Command:
                 logger.error(f"Exception occurred while executing behavioral model for command '{self.cmd_id}': {e}")
                 logger.error(f"  - Core: {type(core).__name__}(id={core.core_id}) | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
                 raise e
-            
+
     def run_cycle_model(self, core: 'Core', kernel: 'Kernel') -> int:
         with new_global_context(GlobalContextMode.EXECUTE, core, kernel):
             model = core.get_cycle_model(self.cmd_id)
@@ -442,33 +442,33 @@ class Command:
                     logger.error(f"Exception occurred while executing cycle model for command '{self.cmd_id}': {e}")
                     logger.error(f"  - Core: {type(core).__name__}(id={core.core_id}) | kernel: {kernel.callstack} | args: {self.args} | kwargs: {self.kwargs}")
                     raise e
-            
+
             return None
-        
+
     def is_finished(self, core: 'Core', kernel: 'Kernel') -> bool:
         return self.get_remaining_cycles(core, kernel) <= 0 and self._is_behavioral_model_called
-    
+
     @property
     def issue_time(self) -> int:
         return self._cached_issue_time
-    
+
     @property
     def commit_time(self) -> int:
         return self._cached_commit_time
 
     def __repr__(self):
         return f"Command[cmd_id={self.cmd_id}](args=({', '.join(map(str, self.args))}), kwargs={{{', '.join(f'{k}={v}' for k, v in self.kwargs.items())}}})"
-    
+
     def __str__(self):
         return self.__repr__()
-    
-    
+
+
 class ConditionalCommand(Command):
     def __init__(self, cmd_id: str, *args, **kwargs):
         super().__init__(cmd_id, *args, **kwargs)
-        
+
         self._is_async_finished = False
-    
+
     def get_remaining_cycles(self, core: 'Core', kernel: 'Kernel') -> int:
         return None  # TODO: currently, the conditional command is not used for remaining cycle estimation. However, it would be better if we can predict the execution time of the conditional command...
 
@@ -488,7 +488,7 @@ class ConditionalCommand(Command):
 class ThreadGroup(list['Kernel']):
     def __init__(self):
         super().__init__()
-    
+
     def append(self, kernel: 'Kernel'):
         if not isinstance(kernel, Kernel):
             raise TypeError(f"Cannot add kernel '{kernel}' to the parallel kernel group since it is not an instance of Kernel")
@@ -503,18 +503,18 @@ class ThreadGroup(list['Kernel']):
             elif tmp is not None:
                 remaining_cycles = min(remaining_cycles, tmp)
         return remaining_cycles
- 
+
     def update_cycle_time(self, core: 'Core', cycle_time: int):
         for kernel in self:
             kernel.update_cycle_time(core, cycle_time)
-    
+
     def is_finished(self, core: 'Core') -> bool:
         for kernel in self:
             if not kernel.is_finished(core):
                 return False
         return True
-    
-    
+
+
 class KernelPrototype:
     def __init__(self, core: 'Core', func: Callable, args: Sequence[Any], kwargs: dict[str, Any]):
         self.core = core
@@ -524,12 +524,12 @@ class KernelPrototype:
         self.compiled_kernel_id = func.__name__
         self._slot_id = None
         self._slot_level = None
-        
+
     def dispatch(self, slot_id: str="MAIN"):
         self.core.dispatch_main_kernel(slot_id, self)
-        
+
         return self
-        
+
     def compile(self) -> 'Kernel':
         kernel = Kernel(kernel_id=self.compiled_kernel_id)
         with kernel:
@@ -543,19 +543,19 @@ class KernelPrototype:
         kernel.slot_id = self.slot_id
         kernel.slot_level = self.slot_level if self.slot_level is not None else 0
         return kernel
-    
+
     @property
     def slot_id(self):
         return self._slot_id
-    
+
     @slot_id.setter
     def slot_id(self, value: str):
         self._slot_id = value
-        
+
     @property
     def slot_level(self):
         return self._slot_level
-    
+
     @slot_level.setter
     def slot_level(self, value: int):
         self._slot_level = value
@@ -565,59 +565,60 @@ class Kernel:
     def __init__(self, kernel_id: str):
         self.kernel_id = kernel_id
         self.root_kernel: Kernel = None
-        
+
         self._execution_steps: list[Command | ThreadGroup | KernelPrototype] = []
         self._execution_cursor: int = 0
-        
+
         self._n_blocked_cnt: int = 0
-        
+
         self._slot_id: str = None
         self._slot_level: int = None
         self._issue_time: int | None = None
         self._commit_time: int | None = None
         # self._activated_cnt: int = 0
-    
+
     def set_blocked(self, core: 'Core', flag: bool):
         if flag:
             self._n_blocked_cnt += 1
         else:
             self._n_blocked_cnt = max(0, self._n_blocked_cnt - 1)
-            
+        core._notify_scheduler("kernel_blocked" if flag else "kernel_unblocked", self)
+
         if self.is_finished(core) and self._commit_time is None:
             self._commit_time = core.timestamp
             core.run_kernel_debug_hook(self)
-        
+
     @property
     def is_blocked(self) -> bool:
         return self._n_blocked_cnt > 0
-        
+
     def __enter__(self):
         if get_global_context_mode() == GlobalContextMode.COMPILE:
             raise Exception(f"Cannot enter kernel '{self.kernel_id}' since the global context mode is already COMPILE")
-        
+
         store_global_parent_kernel_callstack()
         set_global_context(GlobalContextMode.COMPILE, get_global_core_context(), self)
-        
+
         return self
-        
+
     def __exit__(self, exc_type, exc_value, traceback):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception(f"Cannot exit kernel '{self.kernel_id}' since the global context mode is not COMPILE")
-        
+
         restore_global_parent_kernel_callstack()
-        
+
     def add_execution_step(self, step: Command | ThreadGroup | KernelPrototype):
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception(f"Cannot add execution step '{step}' to the kernel '{self.kernel_id}' since it is not in compile mode")
         if isinstance(step, Kernel):
             raise Exception(f"Cannot add a kernel '{step.kernel_id}' as an execution step to the kernel '{self.kernel_id}'. Use 'add_parallel_kernel_step()' instead to add a parallel kernel step.")
-        
+
         self._execution_steps.append(step)
-            
+
     def add_parallel_kernel_step(self, p_kernel_id: str=None) -> 'Kernel':
         if get_global_context_mode() != GlobalContextMode.COMPILE:
             raise Exception(f"Cannot add parallel kernel step to the kernel '{self.kernel_id}' since it is not in compile mode")
-        
+
         if len(self._execution_steps) == 0:
             self._execution_steps.append(ThreadGroup())
         elif not isinstance(self._execution_steps[-1], ThreadGroup):
@@ -633,14 +634,14 @@ class Kernel:
         self._execution_steps[-1].append(parallel_kernel)
 
         return parallel_kernel
-        
+
     def get_remaining_cycles(self, core: 'Core') -> int:
         if self.is_blocked:
             return None
-        
+
         cycle = None
-        
-        while not self.is_finished(core):        
+
+        while not self.is_finished(core):
             step = self.current_step(core)
 
             if isinstance(step, ConditionalCommand):
@@ -649,28 +650,28 @@ class Kernel:
                 cycle = step.get_remaining_cycles(core, kernel=self)
             else:
                 cycle = step.get_remaining_cycles(core=core)
-                
+
             if cycle is None:
                 break
             elif cycle == 0:
                 self.update_cycle_time(core, cycle_time=0)
             else:
                 break
-            
+
         return cycle
 
     def update_cycle_time(self, core: 'Core', cycle_time: int):
         # with print_log_execution_time(f"  - PREPROC  for {type(self).__name__} '{self.callstack}'", disable=core.core_id != 24 or self.slot_id != "LD"):
         if self._issue_time is None:
             self._issue_time = core.timestamp
-        
+
         if self.is_finished(core):
             return
         if self.is_blocked:
             return
-    
+
         step = self.current_step(core)
-        
+
         step_id = "undefined"
         if isinstance(step, Command):
             step_id = step.cmd_id
@@ -688,36 +689,36 @@ class Kernel:
             step.update_cycle_time(core, cycle_time)
             if step.is_finished(core):
                 self._execution_cursor += 1
-        
+
         # with print_log_execution_time(f"  - FINAL    for {type(self).__name__} '{self.callstack}' (step: {type(step).__name__}({step_id}))", disable=core.core_id != 24 or self.slot_id != "LD" or self.kernel_id != "LD_THREAD"):
         if self._commit_time is None and self.is_finished(core):
             self._commit_time = core.timestamp + cycle_time
             core.run_kernel_debug_hook(self)
-            
+
     def current_step(self, core: 'Core') -> 'Command | ThreadGroup':
         if self._execution_cursor >= len(self._execution_steps):
             return None
-        
+
         if isinstance(self._execution_steps[self._execution_cursor], KernelPrototype):
             # if core.core_id == 24 and self.slot_id == "LD":
             #     logger.debug(f"== KernelPrototype detected. compiling ...")
             kernel_step = self._execution_steps[self._execution_cursor].compile()
             kernel_step.root_kernel = self
             self._execution_steps[self._execution_cursor] = kernel_step
-        
+
         return self._execution_steps[self._execution_cursor]
-    
+
     def is_finished(self, core: 'Core') -> bool:
         if self.current_step(core) is not None:
             return False
         return True
-    
+
     @property
     def root_callstack(self) -> str | None:
         if self.root_kernel is None:
             return None
         return self.root_kernel.callstack
-    
+
     @property
     def root_kernel_id(self) -> str | None:
         if self.root_kernel is None:
@@ -725,30 +726,30 @@ class Kernel:
         if self.root_kernel.root_kernel is None:
             return self.root_kernel.kernel_id
         return self.root_kernel.root_kernel_id
-    
+
     @root_kernel_id.setter
     def root_kernel_id(self, value):
         if isinstance(value, str):
             self.root_kernel = Kernel(kernel_id=value)
         else:
             self.root_kernel = None
-            
+
     @property
     def callstack(self) -> str:
         if self.root_callstack is None:
             return self.kernel_id
         return f"{self.root_callstack}::{self.kernel_id}"
-    
+
     @property
     def slot_id(self) -> str | None:
         if self.root_callstack is None:
             return None
         return self.root_callstack.split("::")[0]
-    
+
     @property
     def slot_id(self) -> str:
         return self._slot_id
-    
+
     @slot_id.setter
     def slot_id(self, value: str):
         self._slot_id = value
@@ -758,11 +759,11 @@ class Kernel:
             elif isinstance(step, ThreadGroup):
                 for k in step:
                     k.slot_id = value
-                    
+
     @property
     def slot_level(self) -> int:
         return self._slot_level
-    
+
     @slot_level.setter
     def slot_level(self, value: int):
         self._slot_level = value
@@ -772,21 +773,21 @@ class Kernel:
             elif isinstance(step, ThreadGroup):
                 for k in step:
                     k.slot_level = value + 1
-    
+
     @property
     def issue_time(self) -> int | None:
         return self._issue_time
-    
+
     @property
     def commit_time(self) -> int | None:
         return self._commit_time
-    
+
     def check_all_blocked(self, core: 'Core') -> bool:
         if self.is_blocked:
             return True
-        
+
         step = self.current_step(core)
-        
+
         if isinstance(step, Command):
             return False
         elif isinstance(step, Kernel):
@@ -803,7 +804,6 @@ class CoreCycleModel:
 class Core:
     def __init__(self, core_id: int, cycle_model: CoreCycleModel=None):
         self.core_id = core_id
-        self.mem_handle: MemoryHandle = None
 
         self._cycle_model: CoreCycleModel = cycle_model
         self._simulation_mode: SimulationMode = get_global_simulation_mode()
@@ -824,30 +824,27 @@ class Core:
 
         self._registered_command_debug_hooks: dict[str, Callable, int] = {}
         self._registered_kernel_debug_hooks: dict[str, tuple[Callable, str]] = {}
-        
+        self._scheduler_callback: Callable[['Core', str, Any], None] = None
+
         self._use_cycle_model = True
         self._use_functional_model = True
 
         self._timestamp = 0
-        
-        # ticket lock for local memory read/write operations, ensuring mutual exclusion
-        self._mem_handle_curr_lock   = VariableHandle(f"core_{core_id}_mem_handle_lock",   initial_value=0)  # binary lock for memory handle access
-        self._mem_handle_curr_ticket = VariableHandle(f"core_{core_id}_mem_handle_ticket", initial_value=0)  # ticket for memory handle access
-        
-    def set_mem_handle(self, mem_handle):
-        self.mem_handle = mem_handle
 
     ###########################################################################
     # Initialization
     ###########################################################################
-    
+
     def initialize_kernel_dispatch_queue(self):
         self._dispatched_main_kernels.clear()
         self._dispatched_rpc_kernels.clear()
         self._dispatched_rpc_msg_mappings.clear()
         self._suspended_main_kernels.clear()
         self._suspended_rpc_req_msg.clear()
-        
+        self._suspended_rpc_to_main_kernels_mapping.clear()
+        self._suspended_rpc_kernel_blocking_condition.clear()
+        self._notify_scheduler("reset")
+
         return self
 
     def initialize_mp_queue_inbox(self, rpc_req_send_inbox: dict[str, list[RPCMessage]] = None, rpc_rsp_send_inbox: dict[str, list[RPCMessage]] = None):
@@ -857,7 +854,15 @@ class Core:
         self._rpc_rsp_send_inbox = rpc_rsp_send_inbox
 
         return self
-        
+
+    def set_scheduler_callback(self, callback: Callable[['Core', str, Any], None] = None):
+        self._scheduler_callback = callback
+        return self
+
+    def _notify_scheduler(self, event: str, payload: Any = None):
+        if self._scheduler_callback is not None:
+            self._scheduler_callback(self, event, payload)
+
     def change_sim_model_options(self, use_cycle_model: bool = None, use_functional_model: bool = None):
         self._use_cycle_model = use_cycle_model if use_cycle_model is not None else self._use_cycle_model
         self._use_functional_model = use_functional_model if use_functional_model is not None else self._use_functional_model
@@ -877,18 +882,19 @@ class Core:
     def reset_simulation(self):
         self.initialize_kernel_dispatch_queue()
         self._timestamp = 0
-    
+        self._notify_scheduler("reset")
+
     ###########################################################################
     # Kernel Dispatch / Execute / Update Timestamp
     ###########################################################################
-    
+
     def dispatch_main_kernel(self, slot_id: Any, kernel: Kernel | KernelPrototype):
         if not isinstance(kernel, (Kernel, KernelPrototype)):
             raise Exception(f"Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
-        
+
         kernel.slot_id = slot_id
         kernel.slot_level = 0
-        
+
         if slot_id in self._dispatched_main_kernels:
             if slot_id not in self._suspended_main_kernels:
                 self._suspended_main_kernels[slot_id] = []
@@ -898,49 +904,51 @@ class Core:
                 kernel = kernel.compile()
             kernel.root_kernel_id = f"MAIN<{slot_id}>"
             self._dispatched_main_kernels[slot_id] = kernel
-            
+            self._notify_scheduler("main_dispatch", slot_id)
+
     def dispatch_rpc_kernel(self, kernel: Kernel, msg: RPCMessage):
         if not isinstance(kernel, Kernel):
             raise Exception(f"Cannot dispatch kernel '{kernel}' to the core since it is not an instance of Kernel")
-        
+
         kernel_name = f"{kernel.kernel_id}.0"
         i = 0
-        
+
         while kernel_name in self._dispatched_rpc_kernels.keys():
             kernel_name = f"{kernel.kernel_id}.{i}"
             i += 1
-        
+
         kernel.slot_id = kernel_name
         kernel.slot_level = 0
         kernel.kernel_id = kernel_name  # rename the kernel ID to avoid name collision
         self._dispatched_rpc_kernels[kernel_name] = kernel
         self._dispatched_rpc_msg_mappings[kernel_name] = msg
-    
+        self._notify_scheduler("rpc_dispatch", kernel_name)
+
     @core_command_method
     def dispatch_process_kernel(self, slot_id: str, kernel: Kernel):
         self.dispatch_main_kernel(slot_id, kernel)
-        
-    def get_remaining_cycles(self) -> int:        
+
+    def get_remaining_cycles(self) -> int:
         remaining_cycles = None
-        
+
         for kernel in itertools.chain(self._dispatched_main_kernels.values(), self._dispatched_rpc_kernels.values()):
             kernel_remaining_cycles = kernel.get_remaining_cycles(self)
-            
+
             if remaining_cycles is None:
                 remaining_cycles = kernel_remaining_cycles
             elif kernel_remaining_cycles is not None:
                 remaining_cycles = min(remaining_cycles, kernel_remaining_cycles)
-                
+
         return remaining_cycles
-    
+
     def rpc_update_routine(self):
         self._rpc_req_kernel_dispatch_routine()  # dispatch RPC kernel if the RPC request queue is not empty
         self._rpc_rsp_msg_receive_routine()      # receive RPC response message and register them as suspended
-        
+
     def update_cycle_time(self, cycle_time: int):
         # with print_log_execution_time(f"  - CORE {self.core_id} TOP", disable=self.core_id != 24):
         main_kernel_slot_ids = list(self._dispatched_main_kernels.keys())
-        
+
         for slot_id in main_kernel_slot_ids:
             # with print_log_execution_time(f"CORE {self.core_id} MAIN UPDATE SLOT {slot_id}", disable=self.core_id != 24 or self.timestamp < 15000):
             kernel = self._dispatched_main_kernels[slot_id]
@@ -948,7 +956,7 @@ class Core:
 
             if kernel.is_finished(self):
                 self._dispatched_main_kernels.pop(slot_id) # if the kernel is main kernel, simply remove the kernel from the "dispatched_kernels" dictionary
-                
+
                 if slot_id in self._suspended_main_kernels:
                     if len(self._suspended_main_kernels[slot_id]) > 0:
                         suspended_kernel = self._suspended_main_kernels[slot_id].pop(0)
@@ -956,9 +964,11 @@ class Core:
                             suspended_kernel = suspended_kernel.compile()
                         suspended_kernel.root_kernel_id = f"MAIN<{slot_id}>"
                         self._dispatched_main_kernels[slot_id] = suspended_kernel  # TODO: directly dispatch the suspended kernel without going through the dispatch_main_kernel() method
-        
+                        self._notify_scheduler("main_dispatch", slot_id)
+                self._notify_scheduler("kernel_finish", slot_id)
+
         rpc_kernel_slot_ids  = list(self._dispatched_rpc_kernels.keys())
-        
+
         for slot_id in rpc_kernel_slot_ids:
             kernel = self._dispatched_rpc_kernels[slot_id]
             kernel.update_cycle_time(self, cycle_time)
@@ -967,46 +977,47 @@ class Core:
                 self._rpc_req_kernel_remove_and_rsp_send_routine(slot_id)  # generate RPC response if the current ongoing RPC message is properly handled
 
         self._timestamp += cycle_time
-        
+        self._notify_scheduler("state_may_change")
+
     def check_all_blocked(self) -> bool:
         for kernel in self._dispatched_main_kernels.values():
             if kernel.is_finished(self):
                 continue
             if not kernel.check_all_blocked(self):
                 return False
-        
+
         for kernel in self._dispatched_rpc_kernels.values():
             if kernel.is_finished(self):
                 continue
             if not kernel.check_all_blocked(self):
                 return False
-        
+
         return True
-        
+
     ###########################################################################
     # Debugging Methods
     ###########################################################################
-    
+
     def register_command_debug_hook(self, hook: 'Callable[[Core, Kernel, Command, int, int], None]') -> str:
         def create_hook_id(i: int) -> str:
             return f"hook_{i}"
-        
+
         MAX_HOOK_NUM = 1000
-        
+
         for i in range(MAX_HOOK_NUM):
             hook_id = create_hook_id(i)
             if hook_id not in self._registered_command_debug_hooks:
                 self._registered_command_debug_hooks[hook_id] = hook
                 return hook_id
-        
+
         raise Exception(f"Cannot register command debug hook since the maximum number of hooks ({MAX_HOOK_NUM}) is reached. Please remove some hooks before adding new ones.")
-            
+
     def unregister_command_debug_hook(self, hook_id: str):
         if hook_id in self._registered_command_debug_hooks:
             del self._registered_command_debug_hooks[hook_id]
         else:
             raise Exception(f"Hook ID '{hook_id}' is not registered")
-        
+
     def run_command_debug_hook(self, kernel: Kernel, cmd: Command, issue_time: int, commit_time: int):
         for hook_id, hook in self._registered_command_debug_hooks.items():
             try:
@@ -1014,27 +1025,27 @@ class Core:
             except Exception as e:
                 logger.error(f"Command debug hook '{hook_id}' failed with error: {e}")
                 raise e
-            
+
     def register_kernel_debug_hook(self, hook: 'Callable[[Core, Kernel], None]', slot_id: str=None, slot_level: int=-1, filter_rpc: bool=True) -> str:
         def create_hook_id(i: int) -> str:
             return f"hook_{i}"
-        
+
         MAX_HOOK_NUM = 1000
-        
+
         for i in range(MAX_HOOK_NUM):
             hook_id = create_hook_id(i)
             if hook_id not in self._registered_kernel_debug_hooks:
                 self._registered_kernel_debug_hooks[hook_id] = (hook, slot_id, slot_level, filter_rpc)
                 return hook_id
-        
+
         raise Exception(f"Cannot register kernel debug hook since the maximum number of hooks ({MAX_HOOK_NUM}) is reached. Please remove some hooks before adding new ones.")
-    
+
     def unregister_kernel_debug_hook(self, hook_id: str):
         if hook_id in self._registered_kernel_debug_hooks:
             del self._registered_kernel_debug_hooks[hook_id]
         else:
             raise Exception(f"Hook ID '{hook_id}' is not registered")
-        
+
     def run_kernel_debug_hook(self, kernel: Kernel):
         for hook_id, (hook, slot_id, slot_level, filter_rpc) in self._registered_kernel_debug_hooks.items():
             try:
@@ -1046,18 +1057,18 @@ class Core:
             except Exception as e:
                 logger.error(f"Kernel debug hook '{hook_id}' failed with error: {e}")
                 raise e
-                
+
     @core_command_method
     def debug_core_with_ambiguous_func(self, func: Callable, *args, **kwargs):
         if isinstance(func, str):
             logger.debug(f"{func} args: {args} kwargs: {kwargs}")
         else:
             func(*args, **kwargs)
-    
+
     ###########################################################################
     # Cycle / Behavioral Model
     ###########################################################################
-      
+
     def get_cycle_model(self, cmd_id: str) -> Callable:
         return getattr(self._cycle_model, cmd_id) if (self._use_cycle_model and hasattr(self._cycle_model, cmd_id)) else None
 
@@ -1065,16 +1076,16 @@ class Core:
         if not hasattr(self, cmd_id):
             raise Exception(f"Command '{cmd_id}' is not registered in the core '{self.core_id}'")
         return getattr(self, cmd_id)
-    
+
     ###########################################################################
     # Parallelization
     ###########################################################################
-    
+
     @core_command_method
     def parallel_merge(self):
         # NOTE: This command is a dummy command for merging parallel threads. Since the core executes the command in order, this command will be executed
         # after all the parallel threads are successfully executed. This command does not actually merges all the preceding parallel threads. However, this
-        # command will automatically be dispatched as a new step for the current kernel context, preventing other subsequent steps from being executed until 
+        # command will automatically be dispatched as a new step for the current kernel context, preventing other subsequent steps from being executed until
         # this command is finished.
         # return True  # dummy: always conditional true!
         return None
@@ -1082,7 +1093,7 @@ class Core:
     ###########################################################################
     # Asynchronous RPC Methods (Inter-Core Communication)
     ###########################################################################
-    
+
     def check_rpc_inbox(self, target_core_id: str):
         return target_core_id in self._rpc_req_send_inbox
 
@@ -1100,40 +1111,41 @@ class Core:
         req_msg.msg_id = msg_id
         req_msg.slot_id = context.slot_id
         req_msg.callstack = context.callstack
-        
+
         if req_msg.src_core_id != self.core_id:
             logger.warning(f"Mismatch between the source core ID of the RPC request message '{req_msg.src_core_id}' and the current core ID '{self.core_id}'")
             logger.warning(f"  - This may caused by the faulty dispatch of the kernel to the incorrect core.")
             raise Exception(f"Source core ID of the RPC request message '{req_msg}' does not match the current core ID '{self.core_id}'")
-        
+
         self._rpc_req_send_inbox[req_msg.dst_core_id].append(req_msg)
         self._suspended_rpc_req_msg[msg_id] = req_msg
         self._suspended_rpc_to_main_kernels_mapping[msg_id] = context.root_kernel_id
-        
+        self._notify_scheduler("rpc_request_sent", req_msg.dst_core_id)
+
     @core_command_method
     def async_rpc_wait_rsp_msg(self, req_msg: RPCMessage, _debug: bool=False):
         msg_id = req_msg.msg_id
-        
+
         if msg_id not in self._suspended_rpc_req_msg:
             return  # the response message is already received before the wait command is issued
-        
+
         if msg_id not in self._suspended_rpc_kernel_blocking_condition:
             self._suspended_rpc_kernel_blocking_condition[msg_id] = []
-            
+
         context = get_global_kernel_context()
-        
+
         if _debug:
             print(f"[RPC WAIT MSG] called in {context.callstack} -> waiting for {req_msg.msg_id}")
-        
+
         if context is None:
             raise Exception(f"Cannot suspend the current kernel since there is no kernel context")
         elif not isinstance(context, Kernel):
             raise Exception(f"Cannot suspend the current kernel since the current context is not an instance of Kernel, but {type(context).__name__}")
-        
+
         self._suspended_rpc_kernel_blocking_condition[msg_id].append(context)
-        
+
         context.set_blocked(self, True)
-        
+
     @core_command_method
     def async_rpc_wait_all(self, _debug: bool=False):
         context = get_global_kernel_context()
@@ -1141,13 +1153,13 @@ class Core:
             raise Exception(f"Cannot suspend the current kernel since there is no kernel context")
         elif not isinstance(context, Kernel):
             raise Exception(f"Cannot suspend the current kernel since the current context is not an instance of Kernel, but {type(context).__name__}")
-        
+
         if _debug:
             _target_suspended_rpc_req_msgs = [msg_id for msg_id, req_msg in self._suspended_rpc_req_msg.items() if req_msg.slot_id == context.slot_id and (context.callstack in req_msg.callstack)]
             _nontarget_suspended_rpc_req_msgs = [msg_id for msg_id, req_msg in self._suspended_rpc_req_msg.items() if req_msg.slot_id == context.slot_id and (context.callstack not in req_msg.callstack)]
             logger.debug(f"CORE {self.core_id} - RPC WAIT ALL")
             print(f"[RPC WAIT ALL] called in {context.callstack} -> waiting for {_target_suspended_rpc_req_msgs} - {_nontarget_suspended_rpc_req_msgs}")
-        
+
         for msg_id, req_msg in self._suspended_rpc_req_msg.items():
             if req_msg.slot_id is None:
                 raise Exception(f"RPC request message '{req_msg}' does not have a valid slot ID to match with the current kernel context")
@@ -1155,14 +1167,14 @@ class Core:
                 continue
             if context.callstack not in req_msg.callstack:
                 continue
-            
+
             if msg_id not in self._suspended_rpc_kernel_blocking_condition:
                 self._suspended_rpc_kernel_blocking_condition[msg_id] = []
-            
+
             self._suspended_rpc_kernel_blocking_condition[msg_id].append(context)
-            
+
             context.set_blocked(self, True)
-            
+
     @core_command_method
     def print_rpc_wait_info(self):
         logger.debug(f"CORE {self.core_id} - RPC WAIT INFO")
@@ -1172,7 +1184,7 @@ class Core:
         print(f"Current suspended RPC kernel blocking conditions:")
         for msg_id, kernels in self._suspended_rpc_kernel_blocking_condition.items():
             print(f"  - {msg_id}: {[kernel.callstack for kernel in kernels]}")
-            
+
         input("Press Enter to continue...")
 
     def _rpc_req_kernel_dispatch_routine(self):
@@ -1183,9 +1195,9 @@ class Core:
                 raise Exception(f"Received message is not an instance of RPCMessage: {type(msg).__name__}")
             if msg.msg_type != 0:
                 raise Exception(f"Received message is not a request message: {msg.msg_type}. This exception may caused by the faulty implementation of RPC.")
-            
+
             func = getattr(self, msg.cmd_id, None)
-            
+
             if func is None:
                 raise Exception(f"Command '{msg.cmd_id}' is not registered in the core '{type(self).__name__}(core_id={self.core_id})' for RPC processing")
             elif hasattr(func, "_is_command_method") and func._is_command_method:
@@ -1202,9 +1214,10 @@ class Core:
                 with new_global_context(GlobalContextMode.COMPILE, self, kernel):
                     func(*msg.args, **msg.kwargs)
                 kernel.root_kernel_id = f"RPC<{msg.msg_id}>"
-            
+
             self.dispatch_rpc_kernel(kernel=kernel, msg=msg)
-        
+        self._notify_scheduler("rpc_request_queue_drained")
+
     def _rpc_rsp_msg_receive_routine(self):
         while len(self.rpc_rsp_recv_queue):
             rsp_msg: RPCMessage = self.rpc_rsp_recv_queue.pop(0)
@@ -1214,181 +1227,39 @@ class Core:
 
             self._suspended_rpc_req_msg.pop(msg_id)  # remove the request message from the suspended RPC request message list
             self._suspended_rpc_to_main_kernels_mapping.pop(msg_id)  # remove the mapping from the suspended RPC to main kernel mapping
-            
+
             if msg_id in self._suspended_rpc_kernel_blocking_condition:
                 for kernel in self._suspended_rpc_kernel_blocking_condition[msg_id]:
                     kernel.set_blocked(self, False)  # unblock the RPC kernel
                 self._suspended_rpc_kernel_blocking_condition.pop(msg_id)
-                
+
             # logger.info(f"[RPC] [{self.timestamp}] RECEIVED RESPONSE: '{msg_id}'")
-        
+        self._notify_scheduler("rpc_response_queue_drained")
+
     def _rpc_req_kernel_remove_and_rsp_send_routine(self, slot_id: str):
         kernel = self._dispatched_rpc_kernels[slot_id]
         req_msg = self._dispatched_rpc_msg_mappings[slot_id]
         rsp_msg = req_msg.response(rpc_kernel=kernel)
 
         self._rpc_rsp_send_inbox[req_msg.src_core_id].append(rsp_msg)
+        self._notify_scheduler("rpc_response_sent", req_msg.src_core_id)
 
         self._dispatched_rpc_kernels.pop(slot_id)       # remove the kernel from the dispatched RPC kernels
         self._dispatched_rpc_msg_mappings.pop(slot_id)  # remove the message
-        
-    
-    ###########################################################################
-    # Memory Handle Management
-    ###########################################################################
+        self._notify_scheduler("kernel_finish", slot_id)
 
-    def check_ptr_belonging(self, ptr: Pointer) -> bool:
-        mem_st = self.mem_handle.base_addr
-        mem_ed = self.mem_handle.base_addr + self.mem_handle.size
-        
-        if isinstance(ptr, Pointer):
-            addr = ptr.addr
-            
-        return mem_st <= addr < mem_ed
-    
-    @core_command_method
-    def local_data_container_init(self, container: DataContainer[torch.Tensor], shape: tuple[int, ...], dtype: torch.dtype):
-        if self.is_performance_mode:
-            container.set_metadata(shape=shape, dtype=dtype)
-            return
-        data = torch.zeros(shape, dtype=dtype)
-        container.data = data
-        
-    @core_command_method
-    def local_mem_init(self, ptr: Pointer, size: int, init_data: torch.Tensor=None):
-        tmp_lock = VariableHandle.tmp(initial_value=0)
-        self.var_atomic_copy_and_increment(tmp_lock, self._mem_handle_curr_ticket, 1)
-        self.var_conditional_wait(self._mem_handle_curr_lock, self._mem_handle_curr_lock.equals_to(tmp_lock))
-        
-        if not self.check_ptr_belonging(ptr):
-            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_init' method.")
-        
-        if not self.is_performance_mode:
-            if init_data is None:
-                init_data = torch.zeros((size,), dtype=torch.uint8)
-            self.mem_handle.set_data(ptr, size=size, data=init_data)
-        
-        self.var_atomic_increase(self._mem_handle_curr_lock, 1)
-        
-    @core_command_method
-    def local_mem_page_read(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0, cont_row_zero_pad: int=0):
-        tmp_lock = VariableHandle.tmp(initial_value=0)
-        self.var_atomic_copy_and_increment(tmp_lock, self._mem_handle_curr_ticket, 1)
-        self.var_conditional_wait(self._mem_handle_curr_lock, self._mem_handle_curr_lock.equals_to(tmp_lock))
-        
-        if not self.check_ptr_belonging(ptr):
-            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_read' method.")
-        
-        if mem_row_stride is None:
-            mem_row_stride = row_size
-        if cont_row_stride is None:
-            cont_row_stride = row_size
-            
-        if self.is_performance_mode:
-            if container.shape is None or container.dtype is None:
-                container.set_metadata(shape=(row_num, cont_row_stride), dtype=torch.uint8)
-            else:
-                container.set_metadata(shape=container.shape, dtype=container.dtype)
-            self.var_atomic_increase(self._mem_handle_curr_lock, 1)
-            return
-            
-        if container.is_mem_segment:
-            container.data = container.data.flatten().view(torch.uint8).reshape(-1, cont_row_stride)
-        else:
-            container.data = torch.zeros((row_num * cont_row_stride,), dtype=torch.uint8).reshape(row_num, cont_row_stride)
-
-        row_slice = slice(cont_row_offset, cont_row_offset + row_size)
-        zero_slice = slice(cont_row_offset + row_size, cont_row_offset + row_size + cont_row_zero_pad)
-        base_ptr = ptr
-
-        if row_pattern is None:
-            # Fast path: contiguous row copy can be served by a single get_data call.
-            if mem_row_stride == row_size and row_num > 0:
-                bulk_size = row_num * row_size
-                src_data = self.mem_handle.get_data(base_ptr, size=bulk_size, dtype=torch.uint8).reshape(row_num, row_size)
-                container.data[:row_num, row_slice] = src_data
-            else:
-                for r in range(row_num):
-                    src_data = self.mem_handle.get_data(base_ptr + (r * mem_row_stride), size=row_size, dtype=torch.uint8)
-                    container.data[r, row_slice] = src_data
-
-            if cont_row_zero_pad > 0 and row_num > 0:
-                container.data[:row_num, zero_slice] = 0
-        else:
-            for d, s in row_pattern.items():
-                src_data = self.mem_handle.get_data(base_ptr + (s * mem_row_stride), size=row_size, dtype=torch.uint8)
-                container.data[d, row_slice] = src_data
-
-                if cont_row_zero_pad > 0:
-                    container.data[d, zero_slice] = 0
-                    
-        self.var_atomic_increase(self._mem_handle_curr_lock, 1)
-        
-    @core_command_method
-    def local_mem_page_write(self, ptr: Pointer, container: DataContainer[torch.Tensor], row_size: int, row_num: int=1, mem_row_stride: int=None, cont_row_stride: int=None, row_pattern: dict[int, int]=None, cont_row_offset: int=0):
-        tmp_lock = VariableHandle.tmp(initial_value=0)
-        self.var_atomic_copy_and_increment(tmp_lock, self._mem_handle_curr_ticket, 1)
-        self.var_conditional_wait(self._mem_handle_curr_lock, self._mem_handle_curr_lock.equals_to(tmp_lock))
-        
-        if not self.check_ptr_belonging(ptr):
-            raise Exception(f"Pointer {ptr} does not belong to core {self.core_id} during 'local_mem_page_write' method.")
-
-        if mem_row_stride is None:
-            mem_row_stride = row_size
-        if cont_row_stride is None:
-            cont_row_stride = row_size
-
-        if self.is_performance_mode:
-            self.var_atomic_increase(self._mem_handle_curr_lock, 1)
-            return
-
-        if not container.is_mem_segment:
-            raise ValueError("container.data must be a Tensor for local_mem_page_write.")
-
-        cont_data = container.data.flatten().view(torch.uint8)[:row_num * cont_row_stride].reshape(row_num, cont_row_stride)
-        row_slice = slice(cont_row_offset, cont_row_offset + row_size)
-        base_ptr = ptr
-
-        if row_pattern is None:
-            # Fast path: contiguous rows can be committed with a single set_data call.
-            if mem_row_stride == row_size and row_num > 0:
-                bulk_data = cont_data[:row_num, row_slice].reshape(-1)
-                self.mem_handle.set_data(base_ptr, size=row_num * row_size, data=bulk_data)
-            else:
-                for r in range(row_num):
-                    dst_data = cont_data[r, row_slice]
-                    self.mem_handle.set_data(base_ptr + (r * mem_row_stride), size=row_size, data=dst_data)
-        else:
-            for d, s in row_pattern.items():
-                dst_data = cont_data[d, row_slice]
-                self.mem_handle.set_data(base_ptr + (s * mem_row_stride), size=row_size, data=dst_data)
-                
-        self.var_atomic_increase(self._mem_handle_curr_lock, 1)
-
-    ###########################################################################
-    # Static Memory Space Management
-    ###########################################################################
-                
-    @core_command_method
-    def allocate_static_mem_space(self, ptr: Pointer, size: int):
-        self.mem_handle.allocate_static_mem_space(ptr=ptr, size=size)
-
-    @core_command_method
-    def deallocate_static_mem_space(self, ptr: Pointer):
-        self.mem_handle.deallocate_static_mem_space(ptr=ptr)
-        
     ###########################################################################
     # Synchronization (Lock and Atomic Variable Update)
     ###########################################################################
 
     def _SYNCHRONIZER_CALLBACK_PRIM(self, context: Kernel):
         context.set_blocked(self, False)
-        
+
     @core_command_method
     def var_atomic_barrier(self, arrival_cnt: VariableHandle, blocking: VariableHandle, total_cnt: int):
         current_epoch = blocking.value
         arrival_cnt.atomic_update(arrival_cnt.value + 1)
-        
+
         if arrival_cnt.value >= total_cnt:
             arrival_cnt.atomic_update(0)
             blocking.atomic_update(current_epoch + 1)  # release the current barrier epoch
@@ -1396,80 +1267,127 @@ class Core:
             context = get_global_kernel_context()
             context.set_blocked(self, True)
             blocking.atomic_wait(expected_value=current_epoch + 1, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-    
+
     @core_command_method
     def var_atomic_init(self, var: VariableHandle, value: int=0):
         var.atomic_update(value)
-    
+
     @core_command_method
     def var_atomic_compare_and_swap(self, var: VariableHandle, cmp_value: int, new_value: int) -> bool:
         context = get_global_kernel_context()
         context.set_blocked(self, True)
         var.atomic_compare_and_swap(cmp_value, new_value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-        
+
     @core_command_method
     def var_atomic_copy_and_increment(self, dst: VariableHandle, src: VariableHandle, increment: int=1) -> int:
         context = get_global_kernel_context()
         context.set_blocked(self, True)
         dst.atomic_update(src.value)  # copy
         src.atomic_increase(increment, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-        
+
     @core_command_method
     def var_conditional_wait(self, var: VariableHandle, condition: 'VariableHandle.ActionCondition'):
         context = get_global_kernel_context()
         context.set_blocked(self, True)
-        var.atomic_wait_conditional(condition, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context)) 
-        
+        var.atomic_wait_conditional(condition, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+
     @core_command_method
     def var_atomic_wait(self, var: VariableHandle, expected_value: int):
         context = get_global_kernel_context()
         context.set_blocked(self, True)
         var.atomic_wait(expected_value, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-        
+
     @core_command_method
     def var_atomic_increase(self, var: VariableHandle, increment: int=1) -> int:
         context = get_global_kernel_context()
         context.set_blocked(self, True)
         var.atomic_increase(increment, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-    
+
     @core_command_method
-    def fifo_wait_until_vacant(self, buf: FIFOBufferHandle, entry_id: int):
+    def fifo_wait_until_vacant(self, buf: FIFOBufferHandle, entry_ids: list[int]):
+        if not isinstance(entry_ids, (list, tuple)):
+            entry_ids = [entry_ids]  # convert to list if a single entry I is provided
+        if len(entry_ids) == 0:
+            return
         context = get_global_kernel_context()
         context.set_blocked(self, True)
-        buf.wait_until_vacant(entry_id, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-        
+        buf.wait_until_vacant(tuple(entry_ids), callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+
     @core_command_method
-    def fifo_wait_until_valid(self, buf: FIFOBufferHandle, entry_id: int):
+    def fifo_wait_until_valid(self, buf: FIFOBufferHandle, entry_ids: list[int]):
+        if not isinstance(entry_ids, (list, tuple)):
+            entry_ids = [entry_ids]  # convert to list if a single entry ID is provided
+        if len(entry_ids) == 0:
+            return
         context = get_global_kernel_context()
         context.set_blocked(self, True)
-        buf.wait_until_valid(entry_id, callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
-        
+        buf.wait_until_valid(tuple(entry_ids), callback=functools.partial(self._SYNCHRONIZER_CALLBACK_PRIM, context))
+
     @core_command_method
-    def fifo_push(self, buf: FIFOBufferHandle, entry_id: int, ref_count: int=1):
-        buf.write_entry(entry_id, ref_count)
-        
+    def fifo_push(self, buf: FIFOBufferHandle, entry_id: int | list[int] | list[tuple[int, int]], ref_count: int=1):
+        if isinstance(entry_id, (list, tuple)):
+            entry_refs = []
+            for item in entry_id:
+                if isinstance(item, (list, tuple)):
+                    if len(item) != 2:
+                        raise Exception(f"FIFO push entry reference must be a pair of (entry_id, ref_count), but got {item}.")
+                    entry_refs.append((item[0], item[1]))
+                else:
+                    entry_refs.append((item, ref_count))
+            buf.write_entries(entry_refs)
+        else:
+            buf.write_entry(entry_id, ref_count)
+
     @core_command_method
-    def fifo_pop(self, buf: FIFOBufferHandle, entry_id: int):     
-        buf.read_entry(entry_id)
-        
+    def fifo_pop(self, buf: FIFOBufferHandle, entry_id: int | list[int], count: int=1):
+        if isinstance(entry_id, (list, tuple)):
+            for item in entry_id:
+                if isinstance(item, (list, tuple)):
+                    if len(item) != 2:
+                        raise Exception(f"FIFO pop entry reference must be a pair of (entry_id, count), but got {item}.")
+                    buf.read_entry(item[0], item[1])
+                else:
+                    buf.read_entry(item, count)
+        else:
+            buf.read_entry(entry_id, count)
+
     ###########################################################################
     # Properties
     ###########################################################################
-    
+
     @property
     def is_idle(self) -> bool:
         return self.is_idle_main and self.is_idle_rpc
-    
+
+    @property
+    def has_active_kernel(self) -> bool:
+        return not self.is_idle
+
+    @property
+    def has_pending_rpc(self) -> bool:
+        return (
+            (self.rpc_req_recv_queue is not None and len(self.rpc_req_recv_queue) > 0)
+            or (self.rpc_rsp_recv_queue is not None and len(self.rpc_rsp_recv_queue) > 0)
+        )
+
+    @property
+    def is_blocked(self) -> bool:
+        return (not self.is_idle) and self.check_all_blocked()
+
+    @property
+    def needs_update(self) -> bool:
+        return self.has_pending_rpc or (not self.is_idle and not self.check_all_blocked())
+
     @property
     def is_idle_main(self) -> bool:
         for kernel_queue in self._suspended_main_kernels.values():
             if len(kernel_queue) > 0:
                 return False
-        
+
         for kernel in self._dispatched_main_kernels.values():
             if not kernel.is_finished(self):
                 return False
-        
+
         return True
 
     @property
@@ -1482,7 +1400,7 @@ class Core:
     @property
     def use_cycle_model(self) -> bool:
         return self._use_cycle_model
-    
+
     @property
     def use_functional_model(self) -> bool:
         return self._use_functional_model
@@ -1494,7 +1412,7 @@ class Core:
     @property
     def is_performance_mode(self) -> bool:
         return not self._use_functional_model
-    
+
     @property
     def rpc_req_recv_queue(self) -> list[RPCMessage]:
         return self._rpc_req_recv_queue
@@ -1510,7 +1428,7 @@ class Core:
     @property
     def n_dispatched_main_kernels(self) -> int:
         return len(self._dispatched_main_kernels) + sum(len(v) for v in self._suspended_main_kernels.values())
-    
+
     @property
     def check_kernel_blocked_by_rpc(self, kernel: Kernel):
         for msg_id in self._suspended_rpc_req_msg.keys():

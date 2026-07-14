@@ -32,21 +32,15 @@ RECIPE_MEM_OPTIONS = [
 ]
 
 RECIPE_INT_OPTIONS = [
-    "broadcast_optimize_queue_depth",
-    "broadcast_optimize_max_ref_cnt",
     "context_buffer_slot_num",
-    "ld_ex_buffer_slot_num",
-    "ex_st_buffer_slot_num",
-    "concurrent_load_num"
+    "fifo_buffer_slot_num",
 ]
 
-RECIPE_BOOL_OPTIONS = [
-    "greedy_temporal_reuse"
-]
+RECIPE_BOOL_OPTIONS = []
 
 RECIPE_STR_OPTIONS = [
-    "temporal_reuse_type",
-    "spatial_reuse_type"
+    "temporal_reuse_target",
+    "spatial_reuse_target"
 ]
 
 RECIPE_DTYPE_OPTIONS = [
@@ -54,7 +48,7 @@ RECIPE_DTYPE_OPTIONS = [
     "acc_dtype"
 ]
 
-RECIPE_OPTIONS = RECIPE_MEM_OPTIONS + RECIPE_INT_OPTIONS + RECIPE_BOOL_OPTIONS + RECIPE_STR_OPTIONS + RECIPE_DTYPE_OPTIONS
+RECIPE_OPTIONS = RECIPE_MEM_OPTIONS + RECIPE_INT_OPTIONS + RECIPE_STR_OPTIONS + RECIPE_DTYPE_OPTIONS
 
 
 class ANSIStreamWrapper:
@@ -218,21 +212,14 @@ class Runner:
         - main_space_size_per_channel: Memory capacity of the main space per channel (e.g., 512MB, 1GB).
         - data_space_size_per_core: Memory capacity of the data space per core (e.g., 512MB, 1GB).
         - spad_space_size_per_core: Memory capacity of the scratchpad space per core (e.g., 512MB, 1GB).
-        - broadcast_optimize_queue_depth: Queue depth for broadcast optimization (integer).
         
     == L1 Memory Layout
-        - broadcast_optimize_max_ref_cnt: Maximum reference count for broadcast optimization (integer).
         - context_buffer_slot_num: Number of slots in the context buffer (integer).
-        - ld_ex_buffer_slot_num: Number of slots in the load/execution buffer (integer).
-        - ex_st_buffer_slot_num: Number of slots in the execution/store buffer (integer).
-        - concurrent_load_num: Number of concurrent loads allowed (integer).
-    
-    == Flags
-        - greedy_temporal_reuse: Whether to enable greedy temporal reuse (boolean).
+        - fifo_buffer_slot_num: Base FIFO depth for spatial, load/execute, and execute/store buffers (integer).
         
     == Data Reuse Strategy
-        - temporal_reuse_type: Type of temporal reuse strategy [ALL | ALL_MAIN | ALL_L1 | SINGLE_MAIN | SINGLE_L1 | IGNORE].
-        - spatial_reuse_type: Type of spatial reuse strategy [SINGLE_MAIN | SINGLE_L1 | IGNORE].
+        - temporal_reuse_target: Type of temporal reuse strategy [ALL | ALL_MAIN | ALL_L1 | SINGLE_MAIN | SINGLE_L1 | IGNORE].
+        - spatial_reuse_target: Type of spatial reuse strategy [ALL | ALL_MAIN | ALL_L1 | SINGLE_MAIN | SINGLE_L1 | IGNORE].
         
     == Datatype (static casting of operators / not quantization)
         - dtype: Data type for computation (e.g., int8, int16, int32, float16, float32, bfloat16).

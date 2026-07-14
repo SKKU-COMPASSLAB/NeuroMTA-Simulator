@@ -384,15 +384,10 @@ class NetworkRecipe:
         main_space_size_per_channel: int,
         data_space_size_per_core: int,
         spad_space_size_per_core: int,
-        broadcast_optimize_queue_depth: int=8,
-        broadcast_optimize_max_ref_cnt: int=4,
         context_buffer_slot_num: int=16,
-        ld_ex_buffer_slot_num: int=16,
-        ex_st_buffer_slot_num: int=8,
-        concurrent_load_num: int=1,
-        temporal_reuse_type: MCA_OperatorGraphCompiler.CompileRecipe.ReuseType=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,
-        spatial_reuse_type: MCA_OperatorGraphCompiler.CompileRecipe.ReuseType=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,
-        greedy_temporal_reuse: bool=True,
+        fifo_buffer_slot_num: int=16,
+        temporal_reuse_target: MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL,
+        spatial_reuse_target: MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,
     ):
         self.main_space_size_per_channel = main_space_size_per_channel
         self.data_space_size_per_core = data_space_size_per_core
@@ -401,15 +396,10 @@ class NetworkRecipe:
             device=device,
             core_groups=core_groups,
             spad_space_size_per_core=spad_space_size_per_core,
-            broadcast_optimize_queue_depth=broadcast_optimize_queue_depth,
-            broadcast_optimize_max_ref_cnt=broadcast_optimize_max_ref_cnt,
             context_buffer_slot_num=context_buffer_slot_num,
-            ld_ex_buffer_slot_num=ld_ex_buffer_slot_num,
-            ex_st_buffer_slot_num=ex_st_buffer_slot_num,
-            concurrent_load_num=concurrent_load_num,
-            temporal_reuse_type=temporal_reuse_type,
-            spatial_reuse_type=spatial_reuse_type,
-            greedy_temporal_reuse=greedy_temporal_reuse,
+            fifo_buffer_slot_num=fifo_buffer_slot_num,
+            temporal_reuse_target=temporal_reuse_target,
+            spatial_reuse_target=spatial_reuse_target,
         )
         
     @property

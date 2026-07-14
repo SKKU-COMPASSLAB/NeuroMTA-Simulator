@@ -137,14 +137,10 @@ class LinearBenchmark(Benchmark):
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                broadcast_optimize_queue_depth=8,
-                broadcast_optimize_max_ref_cnt=4,
-                context_buffer_slot_num=16,
-                ld_ex_buffer_slot_num=16,
-                ex_st_buffer_slot_num=8,
-                concurrent_load_num=1,
-                temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,  # weight/bias temporal reuse
-                spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast (if possible)
+                fifo_buffer_slot_num=8,
+                context_buffer_slot_num=4,
+                temporal_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL,  # weight/bias temporal reuse
+                spatial_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,   # weight broadcast (if possible)
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -333,14 +329,10 @@ class Conv2dBenchmark(Benchmark):
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                broadcast_optimize_queue_depth=8,
-                broadcast_optimize_max_ref_cnt=4,
-                context_buffer_slot_num=16,
-                ld_ex_buffer_slot_num=16,
-                ex_st_buffer_slot_num=8,
-                concurrent_load_num=1,
-                temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,    # ifm temporal reuse
-                spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,   # weight broadcast
+                fifo_buffer_slot_num=8,
+                context_buffer_slot_num=4,
+                temporal_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL,    # ifm temporal reuse
+                spatial_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,   # weight broadcast
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -434,6 +426,7 @@ class BenchmarkProcess(mp.Process):
         device = TenstorrentDevice(**self.device_config)
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
+        device.set_simulation_mode(mode=SimulationMode.PERFORMANCE)
         
         flag = self.benchmark.run(device)
         if not flag:

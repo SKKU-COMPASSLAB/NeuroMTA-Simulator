@@ -43,11 +43,11 @@ class Benchmark(abc.ABC):
 class Conv2dBenchmark(Benchmark):
     def __init__(
         self,
-        temporal_reuse_type: MCA_OperatorGraphCompiler.CompileRecipe.ReuseType,
-        spatial_reuse_type:  MCA_OperatorGraphCompiler.CompileRecipe.ReuseType,
+        temporal_reuse_target: MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget,
+        spatial_reuse_target:  MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget,
     ):
-        self.temporal_reuse_type = temporal_reuse_type
-        self.spatial_reuse_type = spatial_reuse_type
+        self.temporal_reuse_target = temporal_reuse_target
+        self.spatial_reuse_target = spatial_reuse_target
         
         self.core_group_offset: tuple[int, int] = (0, 0)
         self.core_group_shape:  tuple[int, int] = (12, 14)
@@ -151,15 +151,10 @@ class Conv2dBenchmark(Benchmark):
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                broadcast_optimize_queue_depth=8,
-                broadcast_optimize_max_ref_cnt=4,
-                context_buffer_slot_num=16,
-                ld_ex_buffer_slot_num=16,
-                ex_st_buffer_slot_num=8,
-                concurrent_load_num=1,
-                temporal_reuse_type=self.temporal_reuse_type,
-                spatial_reuse_type=self.spatial_reuse_type,
-                greedy_temporal_reuse=False,        # turn off greedy temporal reuse to strictly follow the specified temporal reuse type
+                fifo_buffer_slot_num=8,
+                context_buffer_slot_num=4,
+                temporal_reuse_target=self.temporal_reuse_target,
+                spatial_reuse_target=self.spatial_reuse_target,
             )
             
             compiled_ops = compiler.compile(global_recipe)
@@ -235,7 +230,7 @@ class Conv2dBenchmark(Benchmark):
         stride_signature = "x".join(map(str, self.stride)) if self.stride[0] != self.stride[1] else str(self.stride[0])
         padding_signature = "x".join(map(str, self.padding)) if self.padding[0] != self.padding[1] else str(self.padding[0])
         dilation_signature = "x".join(map(str, self.dilation)) if self.dilation[0] != self.dilation[1] else str(self.dilation[0])
-        return f"CV_C{self.n_cores}_{ifm_shape_signature}_{wgt_shape_signature}_{stride_signature}_{padding_signature}_{dilation_signature}_TR{self.temporal_reuse_type.name}_SR{self.spatial_reuse_type.name}"
+        return f"CV_C{self.n_cores}_{ifm_shape_signature}_{wgt_shape_signature}_{stride_signature}_{padding_signature}_{dilation_signature}_TR{self.temporal_reuse_target.name}_SR{self.spatial_reuse_target.name}"
     
     
 class BenchmarkProcess(mp.Process):
@@ -253,6 +248,7 @@ class BenchmarkProcess(mp.Process):
         device = TenstorrentDevice(**self.device_config)
         device.initialize()
         device.set_command_debug_verbosity(verbose=False)
+        device.set_simulation_mode(mode=SimulationMode.PERFORMANCE)
         
         flag = self.benchmark.run(device)
         if not flag:
@@ -261,31 +257,31 @@ class BenchmarkProcess(mp.Process):
         self.return_dict[self.benchmark.signature] = {
             "timestamp":    self.benchmark.timestamp,
             "n_cores":      self.benchmark.n_cores,
-            "temporal_reuse": self.benchmark.temporal_reuse_type.name if self.benchmark.temporal_reuse_type is not None else "None",
-            "spatial_reuse": self.benchmark.spatial_reuse_type.name if self.benchmark.spatial_reuse_type is not None else "None",
+            "temporal_reuse": self.benchmark.temporal_reuse_target.name if self.benchmark.temporal_reuse_target is not None else "None",
+            "spatial_reuse": self.benchmark.spatial_reuse_target.name if self.benchmark.spatial_reuse_target is not None else "None",
         }
         
         self.worker_sem.release()
         logger.info(f"process finished for {self.benchmark.signature}")
 
-temporal_reuse_types = [
-    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.IGNORE,
-    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_MAIN,
-    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL_L1,
-    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,
-    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_L1,
+temporal_reuse_targets = [
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.IGNORE,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL_MAIN,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL_L1,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_L1,
 ]
 
-spatial_reuse_types = [
-    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.IGNORE,
-    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_MAIN,
-    MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.SINGLE_L1,
+spatial_reuse_targets = [
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.IGNORE,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,
+    MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_L1,
 ]
 
 benchmarks = [
-    Conv2dBenchmark(temporal_reuse_type=temporal, spatial_reuse_type=spatial)
-    for temporal in temporal_reuse_types
-    for spatial in spatial_reuse_types
+    Conv2dBenchmark(temporal_reuse_target=temporal, spatial_reuse_target=spatial)
+    for temporal in temporal_reuse_targets
+    for spatial in spatial_reuse_targets
 ]
 
 if __name__ == "__main__":

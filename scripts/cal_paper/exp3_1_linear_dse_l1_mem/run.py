@@ -43,14 +43,10 @@ class Benchmark(abc.ABC):
 class LinearBenchmark(Benchmark):
     def __init__(
         self,
-        ld_ex_st_buffer_slot_num: int,
-        bcast_optimize_queue_depth: int,
-        cache_slot_num: int,
+        fifo_buffer_slot_num: int,
     ):
-        self.ld_ex_buffer_slot_num = ld_ex_st_buffer_slot_num // 3 * 2
-        self.ex_st_buffer_slot_num = ld_ex_st_buffer_slot_num // 3
-        self.bcast_optimize_queue_depth = bcast_optimize_queue_depth
-        self.cache_slot_num = cache_slot_num
+        self.fifo_buffer_slot_num = fifo_buffer_slot_num
+        self._cache_buffer_size = 0
 
         self.core_group_offset = (0, 0)
         self.core_group_shape = (8, 8)  # 64 cores
@@ -101,8 +97,8 @@ class LinearBenchmark(Benchmark):
             return False
         
         _l1_total_per_core     = parse_mem_cap_str("1.5MB")  # total L1 memory size in Tenstorrent Tensix Core is 1.5MB
+        _spad_size_per_core    = parse_mem_cap_str("512KB")
         _context_buffer_slot_num = 1
-        _spad_size_per_core    = (self.ld_ex_buffer_size + self.ex_st_buffer_size + self.bcast_buffer_size + self.cache_buffer_size + _context_buffer_slot_num * 2) * 1024
         _l1_data_size_per_core = _l1_total_per_core - _spad_size_per_core
         
         logger.info(f"benchmark memory map per core {self.signature}: Data: {_l1_data_size_per_core / 1024:.2f} KB, SPAD: {_spad_size_per_core / 1024:.2f} KB")
@@ -136,17 +132,14 @@ class LinearBenchmark(Benchmark):
                 device=device,
                 core_groups=[core_group],
                 spad_space_size_per_core=_spad_size_per_core,
-                broadcast_optimize_queue_depth=self.bcast_optimize_queue_depth,
-                broadcast_optimize_max_ref_cnt=4,
+                fifo_buffer_slot_num=self.fifo_buffer_slot_num,
                 context_buffer_slot_num=_context_buffer_slot_num,  # no context switching
-                ld_ex_buffer_slot_num=self.ld_ex_buffer_slot_num,
-                ex_st_buffer_slot_num=self.ex_st_buffer_slot_num,
-                concurrent_load_num=1,
-                temporal_reuse_type="ALL",
-                spatial_reuse_type="SINGLE_MAIN",
+                temporal_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL,
+                spatial_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,
             )
             
             compiled_ops = compiler.compile(global_recipe)
+            self._cache_buffer_size = compiled_ops._env.op_meta[op.op_id].cache_buffer_size
         
             device.remove_all_l1_mem_space()
             device.remove_all_main_mem_space()
@@ -202,23 +195,23 @@ class LinearBenchmark(Benchmark):
     
     @property
     def ld_ex_buffer_size(self) -> int:
-        return self.ld_ex_buffer_slot_num * 2  # Assuming each slot is 2KB
+        return self.fifo_buffer_slot_num * 2  # Assuming each slot is 2KB
     
     @property
     def ex_st_buffer_size(self) -> int:
-        return self.ex_st_buffer_slot_num * 2  # Assuming each slot is 2KB
+        return self.fifo_buffer_slot_num * 2  # Assuming each slot is 2KB
     
     @property
     def bcast_buffer_size(self) -> int:
-        return self.bcast_optimize_queue_depth * 2  # Assuming each queue entry is 2KB
+        return self.fifo_buffer_slot_num * 2  # Report-only estimate; actual FIFO sizing is owned by CompileRecipe.
     
     @property
     def cache_buffer_size(self) -> int:
-        return self.cache_slot_num * 2  # Assuming each slot is 2KB
+        return self._cache_buffer_size // 1024
     
     @property
     def signature(self) -> str:
-        return f"LN_C{self.n_cores}_{self.M}x{self.N}x{self.K}_LDEXST{self.ld_ex_buffer_size + self.ex_st_buffer_size}K_BCAST{self.bcast_buffer_size}K_CACHE{self.cache_buffer_size}K"
+        return f"LN_C{self.n_cores}_{self.M}x{self.N}x{self.K}_FIFO{self.fifo_buffer_slot_num}"
     
     
 class BenchmarkProcess(mp.Process):
@@ -231,37 +224,35 @@ class BenchmarkProcess(mp.Process):
         
     def run(self):
         self.worker_sem.acquire()
-        logger.info(f"process started for {self.benchmark.signature}")
+        try:
+            logger.info(f"process started for {self.benchmark.signature}")
 
-        device = TenstorrentDevice(**self.device_config)
-        device.initialize()
-        device.set_command_debug_verbosity(verbose=False)
-        
-        flag = self.benchmark.run(device)
-        if not flag:
-            return
-        
-        self.return_dict[self.benchmark.signature] = {
-            "timestamp":    self.benchmark.timestamp,
-            "n_cores":      self.benchmark.n_cores,
-            "ld_ex_buffer_size": self.benchmark.ld_ex_buffer_size,
-            "ex_st_buffer_size": self.benchmark.ex_st_buffer_size,
-            "bcast_buffer_size": self.benchmark.bcast_buffer_size,
-            "cache_buffer_size": self.benchmark.cache_buffer_size,
-        }
-        
-        self.worker_sem.release()
-        logger.info(f"process finished for {self.benchmark.signature}")
+            device = TenstorrentDevice(**self.device_config)
+            device.initialize()
+            device.set_command_debug_verbosity(verbose=False)
+            
+            flag = self.benchmark.run(device)
+            if not flag:
+                return
+            
+            self.return_dict[self.benchmark.signature] = {
+                "timestamp":    self.benchmark.timestamp,
+                "n_cores":      self.benchmark.n_cores,
+                "fifo_buffer_slot_num": self.benchmark.fifo_buffer_slot_num,
+                "cache_buffer_size": self.benchmark.cache_buffer_size,
+            }
+            
+            logger.info(f"process finished for {self.benchmark.signature}")
+        finally:
+            self.worker_sem.release()
 
-cache_buffer_slot_nums = [1, 2, 4, 8, 16, 32, 64, 128, 256]
+fifo_buffer_slot_nums = [1, 2, 4, 8, 16, 24, 32, 40]
 
 benchmarks = [
     LinearBenchmark(
-        ld_ex_st_buffer_slot_num=24, 
-        bcast_optimize_queue_depth=16, 
-        cache_slot_num=cache_slot_num
+        fifo_buffer_slot_num=fifo_buffer_slot_num,
     )
-    for cache_slot_num in cache_buffer_slot_nums
+    for fifo_buffer_slot_num in fifo_buffer_slot_nums
 ]
 
 if __name__ == "__main__":
@@ -293,7 +284,7 @@ if __name__ == "__main__":
         p.join()
     
     with open(output_path, "w") as f:
-        f.write("Benchmark,Number of Cores,Timestamp (cycles),LD/EX Buffer Size (KB),EX/ST Buffer Size (KB),Broadcast Buffer Size (KB),Cache Buffer Size (KB)\n")
+        f.write("Benchmark,Number of Cores,Timestamp (cycles),FIFO Buffer Depth,Cache Buffer Size (KB)\n")
         for benchmark in benchmarks:
             if benchmark.signature not in return_dict:
                 logger.error(f"Missing results for benchmark {benchmark.signature}")
@@ -303,12 +294,10 @@ if __name__ == "__main__":
             
             timestamp    = result["timestamp"]
             n_cores      = result["n_cores"]
-            ld_ex_buffer_size = result["ld_ex_buffer_size"]
-            ex_st_buffer_size = result["ex_st_buffer_size"]
-            bcast_buffer_size = result["bcast_buffer_size"]
+            fifo_buffer_slot_num = result["fifo_buffer_slot_num"]
             cache_buffer_size = result["cache_buffer_size"]
 
-            f.write(f"{benchmark.signature},{n_cores},{timestamp},{ld_ex_buffer_size},{ex_st_buffer_size},{bcast_buffer_size},{cache_buffer_size}\n")
+            f.write(f"{benchmark.signature},{n_cores},{timestamp},{fifo_buffer_slot_num},{cache_buffer_size}\n")
 
     print(f"Benchmark results saved to '{output_path}'.")
     

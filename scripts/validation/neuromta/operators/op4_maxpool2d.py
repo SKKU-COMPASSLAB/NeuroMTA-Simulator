@@ -79,14 +79,10 @@ if __name__ == "__main__":
         device=device,
         core_groups=[core_group],
         spad_space_size_per_core=parse_mem_cap_str("1MB"),
-        broadcast_optimize_queue_depth=4,
-        broadcast_optimize_max_ref_cnt=16,
+        fifo_buffer_slot_num=4,
         context_buffer_slot_num=8,
-        ld_ex_buffer_slot_num=8,
-        ex_st_buffer_slot_num=4,
-        concurrent_load_num=2,
-        temporal_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.ALL,       # ifm temporal reuse
-        spatial_reuse_type=MCA_OperatorGraphCompiler.CompileRecipe.ReuseType.IGNORE,   # weight broadcast
+        temporal_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL,       # ifm temporal reuse
+        spatial_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.IGNORE,   # weight broadcast
     )
     
     compiled_ops = compiler.compile(global_recipe).dispatch()
