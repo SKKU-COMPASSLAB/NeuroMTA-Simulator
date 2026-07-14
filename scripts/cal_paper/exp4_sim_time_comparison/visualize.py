@@ -16,11 +16,11 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_RESULTS_DIR = ROOT / ".logs"
-FIGSIZE = (10, 1.8)
+FIGSIZE = (10, 2)
 BAR_WIDTH = 0.36
-FONT_SIZE_TICK = 10
+FONT_SIZE_TICK = 12
 FONT_SIZE_LABEL = 12
-FONT_SIZE_LEGEND = 9
+FONT_SIZE_LEGEND = 12
 IMAGE_DPI = 500
 
 

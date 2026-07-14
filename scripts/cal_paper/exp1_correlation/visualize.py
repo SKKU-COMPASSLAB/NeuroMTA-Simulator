@@ -3,7 +3,6 @@ import pandas as pd
 import argparse
 import matplotlib.pyplot as plt
 import numpy as np
-import matplotlib.colors as mcolors
 from matplotlib.lines import Line2D
 
 PEAK_PERFORMANCE   = 2 * (4 * 4) * (32 * 32)  # 4x4 Core Grid | 32x32 MXU | MAC = 2 OPs 
@@ -19,29 +18,13 @@ CORE_COLOR_SCHEME = [
     '#F72585',  # magenta
     '#4B5563',  # neutral gray
 ]
+BENCHMARK_MARKERS = {'LN': 'o', 'CV': '^', 'OTHER': 's'}
 
 
 def rename_benchmark(name: str) -> str:
     name = name.replace("n_cores_", 'NC')
     name = name.replace("bfloat", "BF").replace("int", "INT").replace("float", "FP")
     return name
-
-
-def _shade_from_base_color(base_color, index: int, total: int):
-    base_rgb = np.array(mcolors.to_rgb(base_color))
-    if total <= 1:
-        return tuple(base_rgb)
-
-    offsets = np.linspace(-0.45, 0.65, total)
-    offset = offsets[index]
-
-    if offset >= 0:
-        shaded = base_rgb + (1.0 - base_rgb) * offset
-    else:
-        shaded = base_rgb * (1.0 + offset)
-
-    shaded = np.clip(shaded, 0.0, 1.0)
-    return tuple(shaded)
 
 
 def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_path: str, img_path: str, img_title: str):
@@ -76,7 +59,7 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
             for n_cores in n_cores_list
         }
 
-    plt.figure(figsize=(8, 4))
+    plt.figure(figsize=(6, 3))
 
     n_cores_to_color = {
         n_cores: CORE_COLOR_SCHEME[i % len(CORE_COLOR_SCHEME)]
@@ -85,8 +68,6 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
 
     y_min_candidates = []
     y_max_candidates = []
-    roofline_handles = []
-
     for n_cores in n_cores_list:
         peak_perf = n_cores_to_peak_perf[n_cores]
         mem_bw_limit = ai_x * peak_mem_bw
@@ -96,23 +77,22 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
         noc_roofline = np.minimum(noc_bw_limit, compute_limit)
 
         color = n_cores_to_color[n_cores]
-        mem_line = plt.loglog(
+        plt.loglog(
             ai_x,
             mem_roofline,
             color=color,
             linewidth=0.9,
             linestyle='-',
-            label=f'{n_cores} Cores Mem Roofline'
-        )[0]
-        noc_line = plt.loglog(
+            label=f'{n_cores} Tiles Mem Roofline'
+        )
+        plt.loglog(
             ai_x,
             noc_roofline,
             color=color,
             linewidth=0.9,
             linestyle='--',
-            label=f'{n_cores} Cores NoC Roofline'
-        )[0]
-        roofline_handles.extend([mem_line, noc_line])
+            label=f'{n_cores} Tiles NoC Roofline'
+        )
 
         mem_ai_balance = peak_perf / peak_mem_bw
         plt.vlines(mem_ai_balance, mem_roofline.min() * 0.1, peak_perf, color=color, linestyle=':', alpha=0.8)
@@ -120,30 +100,13 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
         y_min_candidates.append(mem_roofline.min())
         y_max_candidates.append(peak_perf)
     
-    mem_bound_marker = 'o'
-    comp_bound_marker = '^'
-
-    workloads_by_core = {}
+    present_types = set()
     for name, data in workloads.items():
         n_cores = data['N_CORES']
-        workloads_by_core.setdefault(n_cores, []).append(name)
-
-    point_color_map = {}
-    for n_cores, names in workloads_by_core.items():
-        base_color = n_cores_to_color[n_cores]
-        for idx, name in enumerate(names):
-            point_color_map[(n_cores, name)] = _shade_from_base_color(base_color, idx, len(names))
-
-    for name, data in workloads.items():
-        n_cores = data['N_CORES']
-        peak_perf = n_cores_to_peak_perf[n_cores]
-        mem_ai_balance = peak_perf / peak_mem_bw
-        noc_ai_balance = peak_perf / peak_noc_bw
-        if data['AI'] < mem_ai_balance or data['AI'] < noc_ai_balance:
-            marker = mem_bound_marker
-        else:
-            marker = comp_bound_marker
-        color = point_color_map[(n_cores, name)]
+        benchmark_type = 'LN' if name.startswith('LN') else 'CV' if name.startswith('CV') else 'OTHER'
+        present_types.add(benchmark_type)
+        marker = BENCHMARK_MARKERS[benchmark_type]
+        color = n_cores_to_color[n_cores]
         
         # Plot each workload point
         plt.loglog(
@@ -158,29 +121,48 @@ def draw(peak_perf_per_core: float, peak_mem_bw: float, peak_noc_bw: float, src_
 
     # Final plot adjustments
     # plt.title(img_title, fontsize=11)
-    plt.xlabel('Arithmetic Intensity (OPs/Byte) - log scale', fontsize=12)
-    plt.ylabel('Performance (OPs/Cycle) - log scale', fontsize=12)
+    plt.xlabel('Arithmetic Intensity (OPs/Byte)', fontsize=12)
+    plt.ylabel('Performance (OPs/Cycle)', fontsize=12)
     plt.grid(True, which="both", ls="--", linewidth=0.5)
 
     plt.xlim(ai_x.min(), ai_x.max())
     plt.ylim(min(y_min_candidates) * 0.1, max(y_max_candidates) * 2.5)
 
-    # Build compact legend: one entry per core count using the darkest shade as marker
     core_handles = []
-    core_labels = []
     for n_cores in n_cores_list:
-        names = workloads_by_core.get(n_cores, [])
-        base_color = n_cores_to_color[n_cores]
-        darkest = _shade_from_base_color(base_color, 0, len(names) if names else 1)
-        handle = Line2D([0], [0], marker='o', color='w', markerfacecolor=darkest, markeredgecolor='black', markersize=10, linestyle='')
+        handle = Line2D([0], [0], marker='o', color='none', markerfacecolor=n_cores_to_color[n_cores], markeredgecolor='black', markersize=9, linestyle='', label=f'{n_cores} Tiles')
         core_handles.append(handle)
-        core_labels.append(f"{n_cores} Cores")
 
     ax = plt.gca()
-    # Combine roofline handles (per-core mem/NoC lines) with core-count marker handles into one legend
-    combined_handles = roofline_handles + core_handles
-    combined_labels = [h.get_label() for h in roofline_handles] + core_labels
-    ax.legend(handles=combined_handles, labels=combined_labels, loc='lower right', fontsize=11)
+    core_legend = ax.legend(
+        handles=core_handles, loc='lower right', fontsize=10,
+        title='Number of Tiles', framealpha=0.9,
+    )
+    ax.add_artist(core_legend)
+
+    type_handles = [
+        Line2D(
+            [0], [0], marker=BENCHMARK_MARKERS[benchmark_type], color='none',
+            markerfacecolor='gray', markeredgecolor='black', markersize=9,
+            label=benchmark_type,
+        )
+        for benchmark_type in ('LN', 'CV', 'OTHER')
+        if benchmark_type in present_types
+    ]
+    type_legend = ax.legend(
+        handles=type_handles, loc='upper left', fontsize=10,
+        title='Layer Type', framealpha=0.9,
+    )
+    ax.add_artist(type_legend)
+
+    roofline_handles = [
+        Line2D([0], [0], color='gray', linewidth=1.2, linestyle='-', label='Memory Roofline'),
+        Line2D([0], [0], color='gray', linewidth=1.2, linestyle='--', label='NoC Roofline'),
+    ]
+    ax.legend(
+        handles=roofline_handles, loc='upper right', fontsize=10,
+        title='Roofline', framealpha=0.9,
+    )
     plt.tight_layout(pad=0.1)
     plt.savefig(img_path, dpi=500)
     

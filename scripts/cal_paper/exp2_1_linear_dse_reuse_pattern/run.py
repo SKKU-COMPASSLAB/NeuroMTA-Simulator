@@ -296,7 +296,7 @@ if __name__ == "__main__":
             
             f.write(f"{benchmark.signature},{n_cores},{timestamp},{temporal_reuse},{spatial_reuse}\n")
     
-    # print(f"Benchmark results saved to '{output_path}'.")
+    print(f"Benchmark results saved to '{output_path}'.")
     
     if visualize is not None:
         img_path = os.path.join(OUTPUT_DIR, f"exp2_1_linear_dse_reuse_pattern.png")

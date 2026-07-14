@@ -10,23 +10,23 @@ def draw(src_path: str, img_path: str):
     # Define category mappings and ordered axes
     temporal_map = {
         'IGNORE': 'IG',
-        'SINGLE_L1': 'SL',
-        'ALL_L1': 'AL',
-        'SINGLE_MAIN': 'SM',
-        'ALL_MAIN': 'AM',
+        'SINGLE_L1': 'L1',
+        'ALL_L1': 'L1_',
+        'SINGLE_MAIN': 'MAIN',
+        'ALL_MAIN': 'MAIN_',
     }
 
     # Map multiple spatial types into three categories: SIG, SSL, SSM
     spatial_map = {
         'IGNORE': 'IG',
-        'SINGLE_L1': 'SL',
-        'ALL_L1': 'AL',
-        'SINGLE_MAIN': 'SM',
-        'ALL_MAIN': 'AM',
+        'SINGLE_L1': 'L1',
+        'ALL_L1': 'L1_',
+        'SINGLE_MAIN': 'MAIN',
+        'ALL_MAIN': 'MAIN_',
     }
 
-    spatial_categories = ['IG', 'SL', 'SM']
-    temporal_categories = ['IG', 'SL', 'AL', 'SM', 'AM']
+    spatial_categories = ['L1', 'MAIN']
+    temporal_categories = ['L1', 'MAIN']
 
     # Read CSV and collect timestamps per (temporal, spatial) category
     df = pd.read_csv(src_path)
@@ -57,7 +57,7 @@ def draw(src_path: str, img_path: str):
     # Mask missing values for nicer plotting
     masked = np.ma.masked_invalid(data)
 
-    plt.figure(figsize=(3, 2.4))
+    plt.figure(figsize=(2.4, 2))
     # Use a red-yellow colormap (yellow->red). 'YlOrRd' provides a good yellow->red scale.
     cmap = plt.cm.get_cmap('YlOrRd')
     cmap.set_bad(color='lightgray')
@@ -65,22 +65,23 @@ def draw(src_path: str, img_path: str):
     # Use data as-is so x=spatial (cols), y=temporal (rows). Data shape: (temporal, spatial)
     masked_no_swap = np.ma.masked_invalid(data)
 
-    im = plt.imshow(masked_no_swap, interpolation='nearest', cmap=cmap, aspect='auto')
+    vmin = 0.5
+    vmax = 2.5
+    im = plt.imshow(
+        masked_no_swap,
+        interpolation='nearest',
+        cmap=cmap,
+        aspect='auto',
+        vmin=vmin,
+        vmax=vmax,
+    )
     plt.colorbar(im, fraction=0.046, pad=0.04)
 
     # Set ticks and labels (x: spatial, y: temporal)
     plt.xticks(np.arange(len(spatial_categories)), spatial_categories, fontsize=11)
-    plt.yticks(np.arange(len(temporal_categories)), temporal_categories, fontsize=11)
-    plt.xlabel('Spatial Pattern', fontsize=12)
-    plt.ylabel('Temporal Pattern', fontsize=12)
-
-    # Prepare normalization bounds for colormap -> determine readable text color per cell
-    try:
-        vmin = np.nanmin(data)
-        vmax = np.nanmax(data)
-    except ValueError:
-        vmin = np.nan
-        vmax = np.nan
+    plt.yticks(np.arange(len(temporal_categories)), temporal_categories, fontsize=11, rotation=90, va="center")
+    plt.xlabel('Spatial Target', fontsize=12)
+    plt.ylabel('Temporal Target', fontsize=12)
 
     def _normalized_value(x):
         if np.isnan(x) or np.isnan(vmin) or np.isnan(vmax) or vmax == vmin:

@@ -134,8 +134,8 @@ class LinearBenchmark(Benchmark):
                 spad_space_size_per_core=_spad_size_per_core,
                 fifo_buffer_slot_num=self.fifo_buffer_slot_num,
                 context_buffer_slot_num=_context_buffer_slot_num,  # no context switching
-                temporal_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.ALL,
-                spatial_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,
+                temporal_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_MAIN,
+                spatial_reuse_target=MCA_OperatorGraphCompiler.CompileRecipe.ReuseTarget.SINGLE_L1,
             )
             
             compiled_ops = compiler.compile(global_recipe)

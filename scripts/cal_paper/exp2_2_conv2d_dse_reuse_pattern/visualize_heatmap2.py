@@ -29,7 +29,7 @@ def build_speedup_data(src_path: str):
     }
 
     spatial_categories = ['IG', 'SL', 'SM']
-    temporal_categories = ['IG', 'SL', 'AL', 'SM', 'AM']
+    temporal_categories = ['IG', 'SL', 'SM']
 
     # Read CSV and collect timestamps per (temporal, spatial) category
     df = pd.read_csv(src_path)
