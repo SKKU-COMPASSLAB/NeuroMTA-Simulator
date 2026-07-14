@@ -164,37 +164,6 @@ class MCA_TensorBuffer:
                 return i
         return num
         
-    def reshape(self, *new_shape: int) -> "MCA_TensorBuffer":
-        if new_shape[-1] != self._shape[-1]:
-            raise ValueError("Reshaping is only supported for leading dimensions. The last dimension (width) must remain unchanged.")
-        
-        new_total_y_size = functools.reduce(lambda x, y: x * y, new_shape[:-1], 1)
-        cur_total_y_size = functools.reduce(lambda x, y: x * y, self._shape[:-1], 1)
-        
-        if new_total_y_size != cur_total_y_size:
-            raise ValueError("Reshaping must preserve the total number of elements in the tensor.")
-        
-        if new_shape[-2] % self._shard_y != 0:
-            raise ValueError(f"New height {new_shape[-2]} is not divisible by shard height {self._shard_y}. It implies that the reshaping would change the memory layout of the tensor, which requires additional memory copy operations.")
-        
-        new_n_y_shards = new_shape[-2] // self._shard_y  # shard size should be preserved
-        
-        new_buffer = MCA_TensorBuffer(
-            mem_space=self._mem_space,
-            shape=new_shape,
-            dtype=self._dtype,
-            shard_grid=(new_n_y_shards, self._n_x_shards),
-            blocked_mapping=self._blocked_mapping
-        )
-        
-        for y in range(new_buffer.shard_grid[0]):
-            for x in range(new_buffer.shard_grid[1]):
-                new_buffer._shard_ptrs[y][x].addr = self._shard_ptrs[y][x].addr
-                
-        new_buffer.tiling(tile_shape=(self._tile_y, self._tile_x))
-        
-        return new_buffer
-        
     def copy(self) -> "MCA_TensorBuffer":
         new_buffer = MCA_TensorBuffer(
             mem_space=self._mem_space,
