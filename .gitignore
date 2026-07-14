@@ -224,3 +224,5 @@ build/
 # Neuromta output files (runner.tcl)
 output
 custom*/
+externals/scalesim
+run_scalesim.py
