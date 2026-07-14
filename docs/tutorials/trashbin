@@ -1,0 +1,31 @@
+
+## Execute NeuroMTA Monitoring Server (optional)
+
+Run `neuromta monitor` server with the command specified below. This command will automatically create a localhost server for monitoring simulation process.
+
+```bash
+neuromta_monitor_server     # run monitor server
+```
+
+```
+usage: neuromta_monitor_server [-h] [--host HOST] [--port PORT] [--reload] [--access-log]
+
+NeuroMTA Profiler Server
+
+options:
+  -h, --help    show this help message and exit
+  --host HOST   Host address
+  --port PORT   Port number
+  --reload      Enable auto-reload
+  --access-log  Enable access log
+```
+
+You can change several options with the predefined environment variables before attaching the client application to the monitor server.
+
+```bash
+export NEUROMTA_MONITOR_SIM_NAME=SIM_NAME   # the simulation (or client) name shown to the server
+export NEUROMTA_MONITOR_HOST=127.0.0.1      # the monitor server IP
+export NEUROMTA_MONITOR_PORT=8000           # the monitor server port
+export NEUROMTA_MONITOR_TIMEOUT=1           # timeout for the client-server connection
+export NEUROMTA_MONITOR_FREQ=0.5            # update frequency
+```
