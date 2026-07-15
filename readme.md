@@ -126,4 +126,12 @@ NeuroMTA simulator provides `neuromta.system`, which contains the preset of the 
 
 ### NeuroMTA Component
 
+#### API Introduction
 1) [Introduction](docs/tutorials/component/1_introduction.md)
+2) [Core API](docs/tutorials/component/2_1_core_api.md)
+3) [Device API](docs/tutorials/component/2_2_device_api.md)
+4) [Tensor Buffer API](docs/tutorials/component/2_3_tensor_buffer_api.md)
+5) [Operator API](docs/tutorials/component/2_4_operator_api.md)
+
+#### Tutorials
+1) [Operator and Network Tutorials](docs/tutorials/component/3_component_tutorials.md)
