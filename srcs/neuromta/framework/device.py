@@ -284,7 +284,7 @@ class Device:
             callstack = callstack[:47] + " ... " + callstack[-47:]
         logger.debug(f"{issue_time:<6d} - {commit_time:<6d} | {core.core_id.__str__():<10s} | {callstack:<100s} | command: {cmd.cmd_id}")
 
-    def run_single_step(self, cycle_resolution: int = 1):
+    def run_single_step(self, cycle_resolution: int = 1, event_driven_mode: bool = False):
         if not self.is_initialized:
             raise Exception("[ERROR] Device is not initialized. Please call initialize() before using this method.")
 
@@ -303,28 +303,39 @@ class Device:
             self._profile_add_time("rpc_update_time", t)
             self._profile_add_count("rpc_pending_core_update_count", len(rpc_update_core_ids))
 
-        # for core_id, core in self.initialized_cores.items():
-        #     if core.is_idle:
-        #         continue
-        #     c = core.get_remaining_cycles()
+        if event_driven_mode:
+            for core_id, core in self.initialized_cores.items():
+                if core.is_idle:
+                    continue
+                c = core.get_remaining_cycles()
+                
+                if remaining_cycles is None:
+                    remaining_cycles = c
+                elif c is not None:
+                    remaining_cycles = min(remaining_cycles, c)
 
-        #     if remaining_cycles is None:
-        #         remaining_cycles = c
-        #     elif c is not None:
-        #         remaining_cycles = min(remaining_cycles, c)
+        # # for core_id, core in self.initialized_cores.items():
+        # #     if core.is_idle:
+        # #         continue
+        # #     c = core.get_remaining_cycles()
 
-        # if remaining_cycles == 0 or remaining_cycles is None:
-        #     remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
+        # #     if remaining_cycles is None:
+        # #         remaining_cycles = c
+        # #     elif c is not None:
+        # #         remaining_cycles = min(remaining_cycles, c)
 
-        #     if remaining_cycles == 0 or remaining_cycles is None:
-        #         remaining_cycles = cycle_resolution
-        # else:
-        #     self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
+        # # if remaining_cycles == 0 or remaining_cycles is None:
+        # #     remaining_cycles = self.companion_core.update_cycle_time_until_cmd_executed()
+
+        # #     if remaining_cycles == 0 or remaining_cycles is None:
+        # #         remaining_cycles = cycle_resolution
+        # # else:
+        # #     self.companion_core.update_cycle_time_companion_modules(cycle_time=remaining_cycles)
 
         if remaining_cycles is None or remaining_cycles <= 0:
             remaining_cycles = cycle_resolution
 
-        # remaining_cycles = 1
+        # # remaining_cycles = 1
 
         t = time.perf_counter() if self._sim_profile_enabled else None
         self._sync_core_timestamp(self.companion_core)
@@ -360,6 +371,7 @@ class Device:
         cycle_resolution:   int  = 1,   # the number of cycles to update when all the cores are waiting and returning (0 | None) as the minimum remaining cycles
         max_steps:          int  = -1,  # the maximum number of steps to run
         max_timestamp:      int  = None,  # the maximum timestamp to run
+        event_driven_mode:  bool = False,  # whether to use event-driven mode (True) or fixed cycle resolution mode (False)
 
         sync_target_core_groups: Sequence[Sequence[int]] = None,  # the target core groups to synchronize after each step; if None, all cores are synchronized
     ):
@@ -383,7 +395,7 @@ class Device:
         # while not all(self.initialized_cores[core_id].is_idle for core_id in core_ids):
         while True:
             # with print_log_execution_time(desc=f"STEP {step_cnt:<4d}"):
-            self.run_single_step(cycle_resolution=cycle_resolution)
+            self.run_single_step(cycle_resolution=cycle_resolution, event_driven_mode=event_driven_mode)
 
             # with print_log_execution_time(desc=f"POST {step_cnt:<4d}"):
             # break condition: step count
