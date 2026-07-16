@@ -57,8 +57,8 @@ class IcntConfig:
         if booksim2_enable is None:
             booksim2_enable = PYBOOKSIM2_AVAILABLE
         
-        x_dim = shape[0]
-        y_dim = shape[1]
+        y_dim = shape[0]
+        x_dim = shape[1]
         
         booksim2_config = BookSim2Config(
             processor_clock_freq=processor_clock_freq,
