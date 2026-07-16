@@ -215,10 +215,21 @@ class MainMemoryConfig:
         # Lightweight Memory Simulation Configuration
         lightweight_read_latency_cycles: int = 0,
         lightweight_write_latency_cycles: int = 0,
+        lightweight_write_accept_latency_cycles: int = 1,
+        lightweight_write_completion_policy: str = "retire",
         lightweight_channel_bandwidth_bytes_per_cycle: int = 64,
         lightweight_dma_granularity: int = parse_mem_cap_str("256B"),
+        lightweight_address_mapping: str = "contiguous",
+        lightweight_address_mapping_scheme: str = "rorabgbachco",
+        lightweight_channel_interleave_bytes: int = parse_mem_cap_str("64B"),
+        lightweight_dram_rows: int = 32768,
+        lightweight_dram_columns: int = 64,
+        lightweight_dram_burst_length: int = 4,
+        lightweight_instance_command_issue_gap_cycles: int = 0,
         lightweight_command_issue_gap_cycles: int = 0,
         lightweight_read_write_turnaround_cycles: int = 0,
+        lightweight_read_to_write_turnaround_cycles: int | None = None,
+        lightweight_write_to_read_turnaround_cycles: int | None = None,
         lightweight_request_startup_latency_cycles: int = 0,
         lightweight_burst_size_bytes: int = parse_mem_cap_str("64B"),
         lightweight_n_rank_per_channel: int = 1,
@@ -227,9 +238,16 @@ class MainMemoryConfig:
         lightweight_row_size_bytes: int = parse_mem_cap_str("2KB"),
         lightweight_row_hit_latency_cycles: int = 0,
         lightweight_row_miss_penalty_cycles: int = 0,
+        lightweight_row_conflict_penalty_cycles: int | None = None,
         lightweight_bank_group_penalty_cycles: int = 0,
         lightweight_dma_max_outstanding_bursts: int = 32,
+        lightweight_channel_max_outstanding_bursts: int = 16,
+        lightweight_request_queue_depth: int = 32,
+        lightweight_concurrent_request_command_gap_cycles: int = 0,
+        lightweight_concurrent_request_command_gap_threshold: int = 0,
+        lightweight_concurrent_request_command_gap_limit: int = 1,
         lightweight_latency_amortization_bytes: int = parse_mem_cap_str("5KB"),    # magic number!
+        lightweight_enable_latency_amortization: bool = True,
     ):
         if dramsim3_enable is None:
             dramsim3_enable = PYDRAMSIM3_AVAILABLE
@@ -261,10 +279,21 @@ class MainMemoryConfig:
             
         self.lightweight_read_latency_cycles = lightweight_read_latency_cycles
         self.lightweight_write_latency_cycles = lightweight_write_latency_cycles
+        self.lightweight_write_accept_latency_cycles = lightweight_write_accept_latency_cycles
+        self.lightweight_write_completion_policy = lightweight_write_completion_policy
         self.lightweight_channel_bandwidth_bytes_per_cycle = lightweight_channel_bandwidth_bytes_per_cycle
         self.lightweight_dma_granularity = lightweight_dma_granularity
+        self.lightweight_address_mapping = lightweight_address_mapping
+        self.lightweight_address_mapping_scheme = lightweight_address_mapping_scheme
+        self.lightweight_channel_interleave_bytes = lightweight_channel_interleave_bytes
+        self.lightweight_dram_rows = lightweight_dram_rows
+        self.lightweight_dram_columns = lightweight_dram_columns
+        self.lightweight_dram_burst_length = lightweight_dram_burst_length
+        self.lightweight_instance_command_issue_gap_cycles = lightweight_instance_command_issue_gap_cycles
         self.lightweight_command_issue_gap_cycles = lightweight_command_issue_gap_cycles
         self.lightweight_read_write_turnaround_cycles = lightweight_read_write_turnaround_cycles
+        self.lightweight_read_to_write_turnaround_cycles = lightweight_read_write_turnaround_cycles if lightweight_read_to_write_turnaround_cycles is None else lightweight_read_to_write_turnaround_cycles
+        self.lightweight_write_to_read_turnaround_cycles = lightweight_read_write_turnaround_cycles if lightweight_write_to_read_turnaround_cycles is None else lightweight_write_to_read_turnaround_cycles
         self.lightweight_request_startup_latency_cycles = lightweight_request_startup_latency_cycles
         self.lightweight_burst_size_bytes = lightweight_burst_size_bytes
         self.lightweight_n_rank_per_channel = lightweight_n_rank_per_channel
@@ -273,9 +302,16 @@ class MainMemoryConfig:
         self.lightweight_row_size_bytes = lightweight_row_size_bytes
         self.lightweight_row_hit_latency_cycles = lightweight_row_hit_latency_cycles
         self.lightweight_row_miss_penalty_cycles = lightweight_row_miss_penalty_cycles
+        self.lightweight_row_conflict_penalty_cycles = lightweight_row_miss_penalty_cycles if lightweight_row_conflict_penalty_cycles is None else lightweight_row_conflict_penalty_cycles
         self.lightweight_bank_group_penalty_cycles = lightweight_bank_group_penalty_cycles
         self.lightweight_dma_max_outstanding_bursts = lightweight_dma_max_outstanding_bursts
+        self.lightweight_channel_max_outstanding_bursts = lightweight_channel_max_outstanding_bursts
+        self.lightweight_request_queue_depth = lightweight_request_queue_depth
+        self.lightweight_concurrent_request_command_gap_cycles = lightweight_concurrent_request_command_gap_cycles
+        self.lightweight_concurrent_request_command_gap_threshold = lightweight_concurrent_request_command_gap_threshold
+        self.lightweight_concurrent_request_command_gap_limit = lightweight_concurrent_request_command_gap_limit
         self.lightweight_latency_amortization_bytes = lightweight_latency_amortization_bytes
+        self.lightweight_enable_latency_amortization = lightweight_enable_latency_amortization
         
     @property
     def n_instance(self) -> int:
@@ -329,10 +365,21 @@ class MainMemoryConfig:
                 "processor_clock_freq": self.processor_clock_freq,
                 "lightweight_read_latency_cycles": self.lightweight_read_latency_cycles,
                 "lightweight_write_latency_cycles": self.lightweight_write_latency_cycles,
+                "lightweight_write_accept_latency_cycles": self.lightweight_write_accept_latency_cycles,
+                "lightweight_write_completion_policy": self.lightweight_write_completion_policy,
                 "lightweight_channel_bandwidth_bytes_per_cycle": self.lightweight_channel_bandwidth_bytes_per_cycle,
                 "lightweight_dma_granularity": self.lightweight_dma_granularity,
+                "lightweight_address_mapping": self.lightweight_address_mapping,
+                "lightweight_address_mapping_scheme": self.lightweight_address_mapping_scheme,
+                "lightweight_channel_interleave_bytes": self.lightweight_channel_interleave_bytes,
+                "lightweight_dram_rows": self.lightweight_dram_rows,
+                "lightweight_dram_columns": self.lightweight_dram_columns,
+                "lightweight_dram_burst_length": self.lightweight_dram_burst_length,
+                "lightweight_instance_command_issue_gap_cycles": self.lightweight_instance_command_issue_gap_cycles,
                 "lightweight_command_issue_gap_cycles": self.lightweight_command_issue_gap_cycles,
                 "lightweight_read_write_turnaround_cycles": self.lightweight_read_write_turnaround_cycles,
+                "lightweight_read_to_write_turnaround_cycles": self.lightweight_read_to_write_turnaround_cycles,
+                "lightweight_write_to_read_turnaround_cycles": self.lightweight_write_to_read_turnaround_cycles,
                 "lightweight_request_startup_latency_cycles": self.lightweight_request_startup_latency_cycles,
                 "lightweight_burst_size_bytes": self.lightweight_burst_size_bytes,
                 "lightweight_n_rank_per_channel": self.lightweight_n_rank_per_channel,
@@ -341,14 +388,21 @@ class MainMemoryConfig:
                 "lightweight_row_size_bytes": self.lightweight_row_size_bytes,
                 "lightweight_row_hit_latency_cycles": self.lightweight_row_hit_latency_cycles,
                 "lightweight_row_miss_penalty_cycles": self.lightweight_row_miss_penalty_cycles,
+                "lightweight_row_conflict_penalty_cycles": self.lightweight_row_conflict_penalty_cycles,
                 "lightweight_bank_group_penalty_cycles": self.lightweight_bank_group_penalty_cycles,
                 "lightweight_dma_max_outstanding_bursts": self.lightweight_dma_max_outstanding_bursts,
+                "lightweight_channel_max_outstanding_bursts": self.lightweight_channel_max_outstanding_bursts,
+                "lightweight_request_queue_depth": self.lightweight_request_queue_depth,
+                "lightweight_concurrent_request_command_gap_cycles": self.lightweight_concurrent_request_command_gap_cycles,
+                "lightweight_concurrent_request_command_gap_threshold": self.lightweight_concurrent_request_command_gap_threshold,
+                "lightweight_concurrent_request_command_gap_limit": self.lightweight_concurrent_request_command_gap_limit,
                 "lightweight_latency_amortization_bytes": self.lightweight_latency_amortization_bytes,
+                "lightweight_enable_latency_amortization": self.lightweight_enable_latency_amortization,
             }
 
 
 class MemorySimulator:
-    def __init__(self, config: MainMemoryConfig, mem_addr_offset: int):
+    def __init__(self, config: MainMemoryConfig, mem_addr_offset: int = 0):
         self.config = config
         self.mem_addr_offset = mem_addr_offset
         self.mem_addr_end = self.mem_addr_offset + (self.config.n_instance * self.config.n_channel_per_instance * self.config.channel_size)
@@ -365,6 +419,23 @@ class MemorySimulator:
             for instance_id in range(self.config.n_instance)
             for channel_id in range(self.config.n_channel_per_instance)
         }
+        self._instance_command_next_free_cycle = {
+            instance_id: 0
+            for instance_id in range(self.config.n_instance)
+        }
+        self._instance_request_completions = {
+            instance_id: []
+            for instance_id in range(self.config.n_instance)
+        }
+        self._instance_burst_completions = {
+            instance_id: []
+            for instance_id in range(self.config.n_instance)
+        }
+        self._channel_burst_completions = {
+            (instance_id, channel_id): []
+            for instance_id in range(self.config.n_instance)
+            for channel_id in range(self.config.n_channel_per_instance)
+        }
         self._channel_last_is_write = {
             (instance_id, channel_id): None
             for instance_id in range(self.config.n_instance)
@@ -373,9 +444,45 @@ class MemorySimulator:
         self._bank_next_free_cycle = {}
         self._bank_group_next_free_cycle = {}
         self._open_row = {}
+        self._initialize_address_mapping()
         
-    def _cfg(self, name: str, default: int) -> int:
+    def _cfg(self, name: str, default: Any) -> Any:
         return getattr(self.config, name, default)
+
+    def _initialize_address_mapping(self) -> None:
+        scheme = self._cfg("lightweight_address_mapping_scheme", "rorabgbachco")
+        fields = [scheme[index:index + 2] for index in range(0, len(scheme), 2)]
+        burst_length = max(1, self._cfg("lightweight_dram_burst_length", 1))
+        columns = max(burst_length, self._cfg("lightweight_dram_columns", burst_length))
+        field_counts = {
+            "ch": self.config.n_channel_per_instance,
+            "ra": self._cfg("lightweight_n_rank_per_channel", 1),
+            "bg": self._cfg("lightweight_n_bank_group_per_rank", 1),
+            "ba": self._cfg("lightweight_n_bank_per_bank_group", 1),
+            "ro": self._cfg("lightweight_dram_rows", 1),
+            "co": max(1, columns // burst_length),
+        }
+        if len(fields) != 6 or set(fields) != set(field_counts):
+            raise ValueError(f"Invalid lightweight_address_mapping_scheme: {scheme}")
+        field_widths = {}
+        for field, count in field_counts.items():
+            if count & (count - 1):
+                raise ValueError(f"Address mapping field {field} count must be a power of two: {count}")
+            field_widths[field] = count.bit_length() - 1
+        position = 0
+        self._address_field_positions = {}
+        for field in reversed(fields):
+            width = field_widths[field]
+            self._address_field_positions[field] = (position, (1 << width) - 1)
+            position += width
+        burst_size = max(1, self._cfg("lightweight_burst_size_bytes", self.config.lightweight_dma_granularity))
+        if burst_size & (burst_size - 1):
+            raise ValueError(f"lightweight_burst_size_bytes must be a power of two: {burst_size}")
+        self._address_shift_bits = burst_size.bit_length() - 1
+
+    def _extract_address_field(self, shifted_address: int, field: str) -> int:
+        position, mask = self._address_field_positions[field]
+        return (shifted_address >> position) & mask
         
     def check_address_range(self, address: int) -> bool:
         if address < self.mem_addr_offset:
@@ -392,8 +499,38 @@ class MemorySimulator:
     def get_memory_mapping(self, address: int) -> dict[str, int]:
         instance_id = self.get_instance_id_with_address(address)
         addr_offset = (address - self.mem_addr_offset) % self.config.channel_size_per_instance
-        channel_id = addr_offset // self.config.channel_size
-        channel_offset = addr_offset % self.config.channel_size
+        address_mapping = self._cfg("lightweight_address_mapping", "contiguous")
+        if address_mapping == "dramsim3":
+            shifted_address = addr_offset >> self._address_shift_bits
+            channel_id = self._extract_address_field(shifted_address, "ch")
+            rank_id = self._extract_address_field(shifted_address, "ra")
+            bank_group_id = self._extract_address_field(shifted_address, "bg")
+            bank_id = self._extract_address_field(shifted_address, "ba")
+            row_id = self._extract_address_field(shifted_address, "ro")
+            column_id = self._extract_address_field(shifted_address, "co")
+            burst_size = max(1, self._cfg("lightweight_burst_size_bytes", self.config.lightweight_dma_granularity))
+            channel_offset = addr_offset % self.config.channel_size
+            column_offset = column_id * burst_size + (addr_offset % burst_size)
+            return {
+                "inst_id": instance_id,
+                "addr": addr_offset,
+                "channel_id": channel_id,
+                "channel_offset": channel_offset,
+                "rank_id": rank_id,
+                "bank_group_id": bank_group_id,
+                "bank_id": bank_id,
+                "row_id": row_id,
+                "column_offset": column_offset,
+            }
+        if address_mapping == "burst_interleaved":
+            interleave_bytes = max(1, self._cfg("lightweight_channel_interleave_bytes", 64))
+            stripe_index = addr_offset // interleave_bytes
+            stripe_offset = addr_offset % interleave_bytes
+            channel_id = stripe_index % self.config.n_channel_per_instance
+            channel_offset = (stripe_index // self.config.n_channel_per_instance) * interleave_bytes + stripe_offset
+        else:
+            channel_id = addr_offset // self.config.channel_size
+            channel_offset = addr_offset % self.config.channel_size
         burst_size = max(1, self._cfg("lightweight_burst_size_bytes", self.config.lightweight_dma_granularity))
         row_size = max(burst_size, self._cfg("lightweight_row_size_bytes", 2048))
         n_rank = max(1, self._cfg("lightweight_n_rank_per_channel", 1))
@@ -471,60 +608,113 @@ class MemorySimulator:
         
         chunks = self._iter_dma_chunks(address=addr, size=size)
         raw_base_latency = self.config.lightweight_write_latency_cycles if is_write else self.config.lightweight_read_latency_cycles
+        enable_amortization = self._cfg("lightweight_enable_latency_amortization", True)
         amortization_bytes = max(1, self._cfg("lightweight_latency_amortization_bytes", size if size > 0 else 1))
-        latency_scale = min(1.0, size / amortization_bytes) if size > 0 else 0.0
+        latency_scale = min(1.0, size / amortization_bytes) if enable_amortization and size > 0 else 1.0
         scale_latency = lambda value: 0 if value <= 0 else max(1, math.ceil(value * latency_scale))
         base_latency = scale_latency(raw_base_latency)
+        write_accept_latency = self._cfg("lightweight_write_accept_latency_cycles", 1)
+        write_completion_policy = self._cfg("lightweight_write_completion_policy", "retire")
         bandwidth = self.config.lightweight_channel_bandwidth_bytes_per_cycle
+        instance_issue_gap = self._cfg("lightweight_instance_command_issue_gap_cycles", 0)
         issue_gap = self.config.lightweight_command_issue_gap_cycles
-        turnaround = self.config.lightweight_read_write_turnaround_cycles
+        read_to_write_turnaround = self._cfg("lightweight_read_to_write_turnaround_cycles", self.config.lightweight_read_write_turnaround_cycles)
+        write_to_read_turnaround = self._cfg("lightweight_write_to_read_turnaround_cycles", self.config.lightweight_read_write_turnaround_cycles)
         request_startup = scale_latency(self._cfg("lightweight_request_startup_latency_cycles", 0))
         row_hit_latency = scale_latency(self._cfg("lightweight_row_hit_latency_cycles", 0))
         row_miss_penalty = scale_latency(self._cfg("lightweight_row_miss_penalty_cycles", 0))
+        row_conflict_penalty = scale_latency(self._cfg("lightweight_row_conflict_penalty_cycles", row_miss_penalty))
         bank_group_penalty = scale_latency(self._cfg("lightweight_bank_group_penalty_cycles", 0))
         max_outstanding = max(1, self._cfg("lightweight_dma_max_outstanding_bursts", len(chunks) if chunks else 1))
+        channel_max_outstanding = max(1, self._cfg("lightweight_channel_max_outstanding_bursts", max_outstanding))
+        request_queue_depth = max(1, self._cfg("lightweight_request_queue_depth", 32))
+        concurrent_gap = self._cfg("lightweight_concurrent_request_command_gap_cycles", 0)
+        concurrent_gap_threshold = self._cfg("lightweight_concurrent_request_command_gap_threshold", 0)
+        concurrent_gap_limit = self._cfg("lightweight_concurrent_request_command_gap_limit", 1)
+
+        instance_id = chunks[0]["inst_id"] if chunks else self.get_instance_id_with_address(addr)
+        request_completions = self._retire_completed_bursts(self._instance_request_completions[instance_id], current_cycle)
+        request_admit_cycle = current_cycle
+        if len(request_completions) >= request_queue_depth:
+            request_admit_cycle = min(request_completions)
+            request_completions = self._retire_completed_bursts(request_completions, request_admit_cycle)
+        concurrent_requests = len(request_completions)
+        saturated_requests = max(0, concurrent_requests - concurrent_gap_threshold)
+        contention_gap = min(saturated_requests, concurrent_gap_limit) * concurrent_gap
+        effective_instance_issue_gap = instance_issue_gap + contention_gap
+        self._instance_request_completions[instance_id] = request_completions
         
         scheduled_chunks = []
-        finish_cycle = current_cycle + request_startup
-        issue_cycle = current_cycle + request_startup
-        outstanding_completions: list[int] = []
+        finish_cycle = request_admit_cycle + request_startup
+        retire_finish_cycle = finish_cycle
+        accept_finish_cycle = finish_cycle
+        first_data_cycle = None
+        issue_cycle = request_admit_cycle + request_startup
         
         for chunk in chunks:
-            outstanding_completions = self._retire_completed_bursts(outstanding_completions, issue_cycle)
-            if len(outstanding_completions) >= max_outstanding:
-                earliest_completion = min(outstanding_completions)
-                issue_cycle = max(issue_cycle, earliest_completion)
-                outstanding_completions = self._retire_completed_bursts(outstanding_completions, issue_cycle)
-            
+            instance_completions = self._retire_completed_bursts(self._instance_burst_completions[chunk["inst_id"]], issue_cycle)
             channel_key = (chunk["inst_id"], chunk["channel_id"])
+            channel_completions = self._retire_completed_bursts(self._channel_burst_completions[channel_key], issue_cycle)
+            if len(instance_completions) >= max_outstanding or len(channel_completions) >= channel_max_outstanding:
+                earliest_completion = min(
+                    min(instance_completions) if len(instance_completions) >= max_outstanding else math.inf,
+                    min(channel_completions) if len(channel_completions) >= channel_max_outstanding else math.inf,
+                )
+                issue_cycle = max(issue_cycle, earliest_completion)
+                instance_completions = self._retire_completed_bursts(instance_completions, issue_cycle)
+                channel_completions = self._retire_completed_bursts(channel_completions, issue_cycle)
+            self._instance_burst_completions[chunk["inst_id"]] = instance_completions
+            self._channel_burst_completions[channel_key] = channel_completions
+            
             bank_group_key = (*channel_key, chunk["rank_id"], chunk["bank_group_id"])
             bank_key = (*bank_group_key, chunk["bank_id"])
             row_key = bank_key
             
-            command_start_cycle = max(issue_cycle, self._channel_command_next_free_cycle[channel_key])
+            command_start_cycle = max(
+                issue_cycle,
+                self._instance_command_next_free_cycle[chunk["inst_id"]],
+                self._channel_command_next_free_cycle[channel_key],
+            )
             bank_ready_cycle = self._bank_next_free_cycle.get(bank_key, 0)
             bank_group_ready_cycle = self._bank_group_next_free_cycle.get(bank_group_key, 0)
-            row_latency = row_hit_latency if self._open_row.get(row_key) == chunk["row_id"] else row_miss_penalty
+            open_row = self._open_row.get(row_key)
+            if open_row == chunk["row_id"]:
+                row_latency = row_hit_latency
+            elif open_row is None:
+                row_latency = row_miss_penalty
+            else:
+                row_latency = row_conflict_penalty
             dram_ready_cycle = max(command_start_cycle, bank_ready_cycle, bank_group_ready_cycle) + row_latency
             
             bus_start_cycle = max(dram_ready_cycle, self._channel_next_free_cycle[channel_key])
             last_is_write = self._channel_last_is_write[channel_key]
             if last_is_write is not None and last_is_write != is_write:
-                bus_start_cycle += turnaround
+                bus_start_cycle += write_to_read_turnaround if last_is_write else read_to_write_turnaround
             
             transfer_cycles = max(1, math.ceil(chunk["size"] / bandwidth))
             bus_finish_cycle = bus_start_cycle + transfer_cycles
             chunk_finish_cycle = bus_finish_cycle + base_latency
+            chunk_accept_cycle = command_start_cycle + write_accept_latency if is_write else chunk_finish_cycle
             queue_delay_cycles = max(0, bus_start_cycle - issue_cycle)
             
+            self._instance_command_next_free_cycle[chunk["inst_id"]] = command_start_cycle + effective_instance_issue_gap
             self._channel_command_next_free_cycle[channel_key] = command_start_cycle + issue_gap
             self._channel_next_free_cycle[channel_key] = bus_finish_cycle
             self._channel_last_is_write[channel_key] = is_write
             self._bank_next_free_cycle[bank_key] = bus_finish_cycle
             self._bank_group_next_free_cycle[bank_group_key] = bus_start_cycle + bank_group_penalty
             self._open_row[row_key] = chunk["row_id"]
-            finish_cycle = max(finish_cycle, chunk_finish_cycle)
-            outstanding_completions.append(chunk_finish_cycle)
+            retire_finish_cycle = max(retire_finish_cycle, chunk_finish_cycle)
+            accept_finish_cycle = max(accept_finish_cycle, chunk_accept_cycle)
+            finish_cycle = accept_finish_cycle if is_write and write_completion_policy == "accept" else retire_finish_cycle
+            first_data_cycle = chunk_finish_cycle if first_data_cycle is None else min(first_data_cycle, chunk_finish_cycle)
+            outstanding_completion_cycle = (
+                chunk_accept_cycle
+                if is_write and write_completion_policy == "accept"
+                else chunk_finish_cycle
+            )
+            instance_completions.append(outstanding_completion_cycle)
+            channel_completions.append(outstanding_completion_cycle)
             
             scheduled_chunk = dict(chunk)
             scheduled_chunk.update({
@@ -533,18 +723,27 @@ class MemorySimulator:
                 "bus_start_cycle": bus_start_cycle,
                 "bus_finish_cycle": bus_finish_cycle,
                 "finish_cycle": chunk_finish_cycle,
+                "accept_cycle": chunk_accept_cycle,
                 "transfer_cycles": transfer_cycles,
                 "base_latency_cycles": base_latency,
                 "row_latency_cycles": row_latency,
                 "queue_delay_cycles": queue_delay_cycles,
             })
             scheduled_chunks.append(scheduled_chunk)
-            issue_cycle = command_start_cycle + issue_gap
+            issue_cycle = command_start_cycle + effective_instance_issue_gap
+
+        self._instance_request_completions[instance_id].append(retire_finish_cycle)
         
         return {
             "current_cycle": current_cycle,
             "finish_cycle": finish_cycle,
             "latency_cycles": finish_cycle - current_cycle,
+            "accept_finish_cycle": accept_finish_cycle,
+            "retire_finish_cycle": retire_finish_cycle,
+            "first_data_cycle": current_cycle if first_data_cycle is None else first_data_cycle,
+            "request_admit_cycle": request_admit_cycle,
+            "concurrent_requests": concurrent_requests,
+            "contention_gap_cycles": contention_gap,
             "n_chunks": len(scheduled_chunks),
             "chunks": scheduled_chunks,
         }
