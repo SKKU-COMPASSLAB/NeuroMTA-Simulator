@@ -52,7 +52,7 @@ def build_model_and_inputs(pretrained: bool, seed: int) -> tuple[nn.Module, list
 
 
 def create_device_and_recipe() -> tuple[TenstorrentDevice, MCA_NetworkRecipe]:
-    config = TenstorrentConfig.BLACKHOLE(use_pydramsim3=False, use_pybooksim2=False)
+    config = TenstorrentConfig.BLACKHOLE(use_pydramsim3=True, use_pybooksim2=True)
     device = TenstorrentDevice(**config).initialize()
     device.set_command_debug_verbosity(verbose=False)
     device.set_simulation_mode(mode=SimulationMode.PERFORMANCE)
