@@ -800,6 +800,9 @@ class Kernel:
 class CoreCycleModel:
     def __init__(self):
         pass
+    
+    def custom_command_with_ambiguous_func(self, func: Callable, *args, cycles: int=None, **kwargs):
+        return cycles if cycles is not None else 1
 
 class Core:
     def __init__(self, core_id: int, cycle_model: CoreCycleModel=None):
@@ -1064,6 +1067,10 @@ class Core:
             logger.debug(f"{func} args: {args} kwargs: {kwargs}")
         else:
             func(*args, **kwargs)
+            
+    @core_command_method
+    def custom_command_with_ambiguous_func(self, func: Callable, *args, cycles: int=None, **kwargs):
+        func(*args, **kwargs)
 
     ###########################################################################
     # Cycle / Behavioral Model
