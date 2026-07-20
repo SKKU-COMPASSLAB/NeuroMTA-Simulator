@@ -75,7 +75,7 @@ def _build_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--save-path",
-        default=os.path.join(SIM_LOG_DIR, "exp1_2_validation_correlation.png"),
+        default=os.path.join(SIM_LOG_DIR, "exp1_2_validation_correlation.pdf"),
         help="Path to save the output figure",
     )
     parser.add_argument(

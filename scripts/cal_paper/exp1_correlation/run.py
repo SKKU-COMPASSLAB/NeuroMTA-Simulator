@@ -530,12 +530,8 @@ if __name__ == "__main__":
         global_context_config: GlobalContextConfig = config["global_config"]
         icnt_config: IcntConfig = config["icnt_config"]
         mxu_config: MXUConfig = config["mxu_config"]
-        # dramsim_config = global_context_config.main_mem_config.dramsim3_config
-        # booksim_config = icnt_config.booksim2_config
-        img_path = os.path.join(OUTPUT_DIR, f"exp1_1_validation_roofline.png")
+        img_path = os.path.join(OUTPUT_DIR, f"exp1_1_validation_roofline.pdf")
         
-        # mem_peak_bw = dramsim_config.peak_bandwidth() / 1e9  # in GB/s
-        # noc_bisection_bw = booksim_config.peak_bisection_bandwidth() / 1e9  # in GB/s
         mem_peak_bw = global_context_config.main_mem_config.peak_bandwidth / 1e9
         noc_bisection_bw = icnt_config.peak_bisection_bandwidth / 1e9
         

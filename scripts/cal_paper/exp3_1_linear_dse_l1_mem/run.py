@@ -302,7 +302,7 @@ if __name__ == "__main__":
     print(f"Benchmark results saved to '{output_path}'.")
     
     if visualize is not None:
-        img_path = os.path.join(OUTPUT_DIR, f"exp3_1_linear_dse_l1_mem.png")
+        img_path = os.path.join(OUTPUT_DIR, f"exp3_1_linear_dse_l1_mem.pdf")
         
         visualize.draw(
             src_path=output_path,

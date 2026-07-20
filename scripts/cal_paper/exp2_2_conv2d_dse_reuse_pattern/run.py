@@ -333,7 +333,7 @@ if __name__ == "__main__":
     print(f"Benchmark results saved to '{output_path}'.")
     
     if visualize is not None:
-        img_path = os.path.join(OUTPUT_DIR, f"exp2_2_conv2d_dse_reuse_pattern.png")
+        img_path = os.path.join(OUTPUT_DIR, f"exp2_2_conv2d_dse_reuse_pattern.pdf")
         
         visualize.draw(
             src_path=output_path,
@@ -343,8 +343,8 @@ if __name__ == "__main__":
         print(f"Roofline visualization saved to '{img_path}'.")
         
     if visualize_heatmap is not None:
-        img_path = os.path.join(OUTPUT_DIR, f"exp2_2_conv2d_dse_reuse_pattern_heatmap.png")
-        category_img_path = os.path.join(OUTPUT_DIR, f"exp2_2_conv2d_dse_reuse_pattern_categories.png")
+        img_path = os.path.join(OUTPUT_DIR, f"exp2_2_conv2d_dse_reuse_pattern_heatmap.pdf")
+        category_img_path = os.path.join(OUTPUT_DIR, f"exp2_2_conv2d_dse_reuse_pattern_categories.pdf")
         
         visualize_heatmap.draw(
             src_path=output_path,

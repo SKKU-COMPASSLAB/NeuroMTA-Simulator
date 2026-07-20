@@ -257,12 +257,12 @@ def main() -> None:
     scalesim_timings = load_timings(scalesim_csv, args.time_field)
     records = build_records(stats_entries, neuromta_timings, scalesim_timings)
 
-    plot_latency(records, results_dir / "exp4_sim_time_comparison_latency.png", log_y=not args.linear_y)
-    plot_tops_per_sec(records, results_dir / "exp4_sim_time_comparison_tops_per_sec.png", log_y=not args.linear_y)
+    plot_latency(records, results_dir / "exp4_sim_time_comparison_latency.pdf", log_y=not args.linear_y)
+    plot_tops_per_sec(records, results_dir / "exp4_sim_time_comparison_tops_per_sec.pdf", log_y=not args.linear_y)
     print_neuromta_average_ops_per_sec(records)
 
-    print(f"Wrote {results_dir / 'exp4_sim_time_comparison_latency.png'}")
-    print(f"Wrote {results_dir / 'exp4_sim_time_comparison_tops_per_sec.png'}")
+    print(f"Wrote {results_dir / 'exp4_sim_time_comparison_latency.pdf'}")
+    print(f"Wrote {results_dir / 'exp4_sim_time_comparison_tops_per_sec.pdf'}")
 
 
 if __name__ == "__main__":
