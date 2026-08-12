@@ -135,3 +135,17 @@ NeuroMTA simulator provides `neuromta.system`, which contains the preset of the 
 
 #### Tutorials
 1) [Operator and Network Tutorials](docs/tutorials/component/3_component_tutorials.md)
+
+## Citation
+
+Please cite the following [paper](https://ieeexplore.ieee.org/abstract/document/11617314).
+
+```
+@article{kim2026neuromta,
+  title={NeuroMTA: Programmable Simulation Framework for Multi-Tile NPU Architectures},
+  author={Kim, Seongwook and Hong, Seokin},
+  journal={IEEE Computer Architecture Letters},
+  year={2026},
+  publisher={IEEE}
+}
+```
