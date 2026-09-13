@@ -40,7 +40,9 @@ class IcntConfig:
         flit_size: int          = parse_mem_cap_str("32B"),
         max_payload_size: int   = 256,
         subnets: int            = 1,
-        booksim2_enable: bool   = None,
+        
+        booksim2_enable: bool = True,
+        booksim2_module_id: str         = "BOOKSIM",
         booksim2_kwargs: dict[str, Any] = None,
         
         lightweight_router_latency_cycles: int = 1,
@@ -54,35 +56,31 @@ class IcntConfig:
         lightweight_min_packet_cycles: int = 1,
         lightweight_payload_issue_gap_cycles: int = 1,
     ):  
-        if booksim2_enable is None:
-            booksim2_enable = PYBOOKSIM2_AVAILABLE
-        
-        y_dim = shape[0]
-        x_dim = shape[1]
-        
-        booksim2_config = BookSim2Config(
-            processor_clock_freq=processor_clock_freq,
-            flit_size=flit_size,
-            subnets=subnets,
-            x=x_dim,
-            y=y_dim,
-            xr=1,   # no concentration by default
-            yr=1,   # no concentration by default
-        )
-        
-        if booksim2_enable:
-            if booksim2_kwargs is not None:
-                for field, value in booksim2_kwargs.items():
-                    booksim2_config.update_field(field, value)
-            
-        self.processor_clock_freq = processor_clock_freq
         self.shape = shape
         self.flit_size = flit_size
         self.max_payload_size = max_payload_size
         self.subnets = subnets
         
-        self.booksim2_config = booksim2_config
-        self.booksim2_enable = booksim2_enable
+        if lightweight_router_latency_cycles < 0:
+            raise ValueError("lightweight_router_latency_cycles must be non-negative")
+        if lightweight_link_latency_cycles < 0:
+            raise ValueError("lightweight_link_latency_cycles must be non-negative")
+        if lightweight_flits_per_cycle_per_channel <= 0:
+            raise ValueError("lightweight_flits_per_cycle_per_channel must be positive")
+        if lightweight_injection_flits_per_cycle <= 0:
+            raise ValueError("lightweight_injection_flits_per_cycle must be positive")
+        if lightweight_egress_flits_per_cycle <= 0:
+            raise ValueError("lightweight_egress_flits_per_cycle must be positive")
+        if lightweight_channel_mode not in [ICNT_CHANNEL_MODE_UNIDIRECTIONAL, ICNT_CHANNEL_MODE_BIDIRECTIONAL_SHARED]:
+            raise ValueError(f"Invalid lightweight_channel_mode: {lightweight_channel_mode}")
+        if lightweight_router_allocation_cycles <= 0:
+            raise ValueError("lightweight_router_allocation_cycles must be positive")
+        if lightweight_packet_startup_cycles < 0:
+            raise ValueError("lightweight_packet_startup_cycles must be non-negative")
+        if lightweight_min_packet_cycles <= 0:
+            raise ValueError("lightweight_min_packet_cycles must be positive")
+        if lightweight_payload_issue_gap_cycles < 0:
+            raise ValueError("lightweight_payload_issue_gap_cycles must be non-negative")
         
         self.lightweight_router_latency_cycles = lightweight_router_latency_cycles
         self.lightweight_link_latency_cycles = lightweight_link_latency_cycles
@@ -95,30 +93,54 @@ class IcntConfig:
         self.lightweight_min_packet_cycles = lightweight_min_packet_cycles
         self.lightweight_payload_issue_gap_cycles = lightweight_payload_issue_gap_cycles
         
-        self._core_map: dict[tuple[int, int], int] = {}
+        self.booksim2_enable = booksim2_enable
+        self.booksim2_module_id = booksim2_module_id
+        self.booksim2_config = None
+        if self.booksim2_enable:
+            if not PYBOOKSIM2_AVAILABLE:
+                raise RuntimeError("BookSim2 is not available. Please ensure that the BookSim2 companion module is properly installed and configured.")
+            y_dim = shape[0]
+            x_dim = shape[1]
+            booksim2_config = BookSim2Config(
+                processor_clock_freq=processor_clock_freq,
+                flit_size=flit_size,
+                subnets=subnets,
+                x=x_dim,
+                y=y_dim,
+                xr=1,   # no concentration by default
+                yr=1,   # no concentration by default
+            )
+            
+            if booksim2_kwargs is not None:
+                for field, value in booksim2_kwargs.items():
+                    booksim2_config.update_field(field, value)
+            self.booksim2_config = booksim2_config
+        
+        # self._core_map: dict[tuple[int, int], int] = {}
+        self._core_id_to_coord_map: dict[int, tuple[int, int]] = {}
     
     def update_core_map(self, coord: tuple[int, int], core_id: int):
-        self._core_map[coord] = core_id
-    
-    @property
-    def peak_bisection_bandwidth(self) -> float:
-        if self.booksim2_enable:
-            return self.booksim2_config.peak_bisection_bandwidth()
-        
-        bisection_channels = min(self.shape) * 2
-        channel_bandwidth = (
-            self.flit_size
-            * self.lightweight_flits_per_cycle_per_channel
-            * self.processor_clock_freq
-        )
-        return channel_bandwidth * self.subnets * bisection_channels
+        # self._core_map[coord] = core_id
+        self._core_id_to_coord_map[core_id] = coord
     
     def summary(self) -> dict[str, Any]:
+        booksim2_summary = None if self.booksim2_config is None else self.booksim2_config.summary()
         return {
             "shape": self.shape,
             "flit_size": self.flit_size,
+            "subnets": self.subnets,
             "booksim2_enable": self.booksim2_enable,
-            "booksim2_config": self.booksim2_config.summary() if self.booksim2_enable else None,
+            "booksim2_config": booksim2_summary,
+            "lightweight_router_latency_cycles": self.lightweight_router_latency_cycles,
+            "lightweight_link_latency_cycles": self.lightweight_link_latency_cycles,
+            "lightweight_flits_per_cycle_per_channel": self.lightweight_flits_per_cycle_per_channel,
+            "lightweight_injection_flits_per_cycle": self.lightweight_injection_flits_per_cycle,
+            "lightweight_egress_flits_per_cycle": self.lightweight_egress_flits_per_cycle,
+            "lightweight_channel_mode": self.lightweight_channel_mode,
+            "lightweight_router_allocation_cycles": self.lightweight_router_allocation_cycles,
+            "lightweight_packet_startup_cycles": self.lightweight_packet_startup_cycles,
+            "lightweight_min_packet_cycles": self.lightweight_min_packet_cycles,
+            "lightweight_payload_issue_gap_cycles": self.lightweight_payload_issue_gap_cycles,
         }
         
 
@@ -145,9 +167,11 @@ class IcntSimulator:
         return row * self.config.shape[1] + col
     
     def core_id_to_coord(self, core_id: Any) -> tuple[int, int]:
-        for coord, cid in self.config._core_map.items():
-            if cid == core_id:
-                return coord
+        # for cid, coord in self.config._core_id_to_coord_map.items():
+        #     if cid == core_id:
+        #         return coord
+        if core_id in self.config._core_id_to_coord_map:
+            return self.config._core_id_to_coord_map[core_id]
         raise ValueError(f"Core ID {core_id} not found in core map.")
     
     def core_id_to_node_id(self, core_id: Any) -> int:
@@ -455,21 +479,16 @@ class IcntSimulator:
 class IcntContext:
     def __init__(self, config: IcntConfig,):
         self._config = config
-        
         if self._config.booksim2_enable:
-            self._icnt_sim = None
+            self._simulator = None
         else:
-            self._icnt_sim = IcntSimulator(config)
-    
-    def coord_to_core_id(self, coord: tuple[int, int]) -> Any:
-        return self.core_map[coord]
+            self._simulator = IcntSimulator(config)
     
     def core_id_to_coord(self, core_id: Any) -> tuple[int, int]:
-        for coord, cid in self.core_map.items():
-            if cid == core_id:
-                return coord
-        raise ValueError(f"Core ID {core_id} not found in core map.")
-
+        if core_id not in self.core_id_to_coord_map:
+            raise ValueError(f"Core ID {core_id} not found in core map.")
+        return self.core_id_to_coord_map[core_id]
+    
     def compute_hop_cnt(self, src_coord: tuple[int, int], dst_coord: tuple[int, int]) -> int:
         return abs(src_coord[0] - dst_coord[0]) + abs(src_coord[1] - dst_coord[1])
 
@@ -479,7 +498,13 @@ class IcntContext:
         hop_cnt = self.compute_hop_cnt(src_coord, dst_coord)
         return hop_cnt + (data_size // self.config.flit_size) + 1
     
-    def get_icnt_data_transfer_args(self, src_id: int, dst_id: int, data_size: int, is_write: bool) -> list[dict[str, int]]:
+    def get_icnt_data_transfer_args(self, src_core_id: int, dst_core_id: int, data_size: int, is_write: bool) -> list[dict[str, int]]:
+        src_coord = self.core_id_to_coord(src_core_id)
+        dst_coord = self.core_id_to_coord(dst_core_id)
+        
+        src_id = src_coord[0] * self.config.shape[1] + src_coord[1]
+        dst_id = dst_coord[0] * self.config.shape[1] + dst_coord[1]
+        
         n_flits = math.ceil(data_size / self.config.flit_size)
         n_payloads = math.ceil(n_flits / self.config.max_payload_size)
         payload_size = min(n_flits, self.config.max_payload_size)
@@ -487,7 +512,7 @@ class IcntContext:
         return [{
             "src_id": src_id,
             "dst_id": dst_id,
-            "subnet": (src_id + dst_id + i) % self.config.booksim2_config._subnets,
+            "subnet": (src_id + dst_id + i) % self.config.subnets,
             "n_flits": min(payload_size, n_flits - i * payload_size),
             "is_write": is_write,
             "is_response": not is_write,
@@ -510,15 +535,15 @@ class IcntContext:
         return self._config
     
     @property
-    def core_map(self) -> dict[tuple[int, int], int]:
-        return self._config._core_map
-
-    @property
-    def icnt_simulator(self) -> IcntSimulator:
-        if self._icnt_sim is None:
-            raise RuntimeError("ICNT simulator is not initialized. Ensure that booksim2_enable is set to False.")
-        return self._icnt_sim
+    def core_id_to_coord_map(self) -> dict[int, tuple[int, int]]:
+        return self._config._core_id_to_coord_map
     
     @property
     def is_icnt_simulator_enabled(self) -> bool:
-        return self._icnt_sim is not None
+        return self._simulator is not None
+    
+    @property
+    def simulator(self) -> IcntSimulator:
+        if self._simulator is None:
+            raise RuntimeError("Interconnect simulator is not available. Please use the BookSim2 companion module instead.")
+        return self._simulator

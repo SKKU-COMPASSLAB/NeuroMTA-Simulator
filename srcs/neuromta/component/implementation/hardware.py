@@ -431,22 +431,27 @@ class MTA_DeviceBase(MCA_DeviceBase):
         super().__init__(global_config=global_config, icnt_config=icnt_config, mxu_config=mxu_config, vpu_config=vpu_config)
             
         npu_core_rows, npu_core_cols = [], []
+        core_map = {}
         
         for core_id in self.npu_core_ids:
             coord = self.icnt_context.core_id_to_coord(core_id)
             npu_core_rows.append(coord[0])
             npu_core_cols.append(coord[1])
+            core_map[coord] = core_id
             
         npu_core_rows = sorted(list(set(npu_core_rows)))
         npu_core_cols = sorted(list(set(npu_core_cols)))
         
-        self._npu_core_grid = torch.tensor([[self.icnt_context.coord_to_core_id((r, c)) for c in npu_core_cols]for r in npu_core_rows])
+        self._npu_core_grid = torch.tensor([[(core_map[(r, c)] if (r, c) in core_map else -1) for c in npu_core_cols]for r in npu_core_rows])
         self._npu_core_grid_enabled = True
         
-        for core_id in torch.unique(self._npu_core_grid):
-            if core_id not in self.npu_core_ids:
-                self._npu_core_grid_enabled = False  # the accelerator does not have a full mesh of NPU cores
-                break
+        # for core_id in torch.unique(self._npu_core_grid):
+        #     if core_id not in self.npu_core_ids:
+        #         self._npu_core_grid_enabled = False  # the accelerator does not have a full mesh of NPU cores
+        #         break
+        
+        if -1 in self._npu_core_grid:
+            self._npu_core_grid_enabled = False  # the accelerator does not have a full mesh of NPU cores
 
     def get_npu_core_group(self, offset: tuple[int, int]=None, shape: tuple[int, int]=None) -> MTA_CoreGrid:
         if not self._npu_core_grid_enabled:
