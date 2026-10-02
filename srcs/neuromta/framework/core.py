@@ -983,16 +983,8 @@ class Core:
         self._notify_scheduler("state_may_change")
 
     def check_all_blocked(self) -> bool:
-        for kernel in self._dispatched_main_kernels.values():
-            if kernel.is_finished(self):
-                continue
-            if not kernel.check_all_blocked(self):
-                return False
-
-        for kernel in self._dispatched_rpc_kernels.values():
-            if kernel.is_finished(self):
-                continue
-            if not kernel.check_all_blocked(self):
+        for kernel in itertools.chain(self._dispatched_main_kernels.values(), self._dispatched_rpc_kernels.values()):
+            if kernel.is_finished(self) or not kernel.check_all_blocked(self):
                 return False
 
         return True
@@ -1387,22 +1379,11 @@ class Core:
 
     @property
     def is_idle_main(self) -> bool:
-        for kernel_queue in self._suspended_main_kernels.values():
-            if len(kernel_queue) > 0:
-                return False
-
-        for kernel in self._dispatched_main_kernels.values():
-            if not kernel.is_finished(self):
-                return False
-
-        return True
+        return not self._dispatched_main_kernels and not any(self._suspended_main_kernels.values())
 
     @property
     def is_idle_rpc(self) -> bool:
-        for kernel in self._dispatched_rpc_kernels.values():
-            if not kernel.is_finished(self):
-                return False
-        return True
+        return not self._dispatched_rpc_kernels
 
     @property
     def use_cycle_model(self) -> bool:
