@@ -43,6 +43,7 @@ def _validate_experiment(module_name: str, run_arguments: dict) -> None:
 
 def _run_experiment(module_name: str, run_arguments: dict) -> None:
     _import_experiment(module_name).run(**run_arguments)
+    print(f"Experiment '{module_name}' completed successfully.")
 
 
 def _run_experiments(experiments: list[str], run_arguments: dict, max_parallel: int) -> None:

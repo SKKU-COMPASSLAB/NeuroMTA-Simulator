@@ -1128,8 +1128,8 @@ class MeshKernel(ABC):
                 remote_reads[transfer.tile.owner_id] = remote_reads.get(transfer.tile.owner_id, 0) + transfer.tile.size
         for size, addresses in batches.items():
             core.dma_read_memory_batch(addresses, size, sync=True)
-        for owner_id, size in remote_reads.items():
-            core.icnt_recv_data(owner_id, size, sync=True)
+        if remote_reads:
+            core.icnt_recv_data_batch(remote_reads, sync=True)
         core.var_atomic_increase(ld_stage_var)
 
     @staticmethod
@@ -1171,8 +1171,8 @@ class MeshKernel(ABC):
             for location in stage.local_reads:
                 if location.storage_key not in resident and location.owner_id != core.core_id:
                     remote_reads[location.owner_id] = remote_reads.get(location.owner_id, 0) + location.size
-            for owner_id, size in remote_reads.items():
-                core.icnt_recv_data(owner_id, size, sync=True)
+            if remote_reads:
+                core.icnt_recv_data_batch(remote_reads, sync=True)
             operations = _mesh_stage_ops(kernel_obj, stage)
             if operations:
                 core.compute(operations)
@@ -1180,8 +1180,8 @@ class MeshKernel(ABC):
             for task, output in zip(stage.group.tasks, stage.outputs):
                 if task.output.mem_type == MeshMemoryType.LOCAL_CACHE and output.addr == task.output.addr and output.owner_id == task.output.owner_id and output.owner_id != core.core_id:
                     remote_writes[output.owner_id] = remote_writes.get(output.owner_id, 0) + output.size
-            for owner_id, size in remote_writes.items():
-                core.icnt_send_data([owner_id], size, sync=True)
+            if remote_writes:
+                core.icnt_send_data_batch(remote_writes, sync=True)
         core.var_atomic_increase(ex_stage_var)
 
     @staticmethod
@@ -1207,8 +1207,8 @@ class MeshKernel(ABC):
                 batches.setdefault(transfer.tile.size, []).append(transfer.tile.addr)
             elif transfer.tile.owner_id != core.core_id:
                 remote_writes[transfer.tile.owner_id] = remote_writes.get(transfer.tile.owner_id, 0) + transfer.tile.size
-        for owner_id, size in remote_writes.items():
-            core.icnt_send_data([owner_id], size, sync=True)
+        if remote_writes:
+            core.icnt_send_data_batch(remote_writes, sync=True)
         for size, addresses in batches.items():
             core.dma_write_memory_batch(addresses, size, sync=True)
         core.var_atomic_increase(st_stage_var)
@@ -1364,16 +1364,6 @@ class MeshMemCopyKernel(MeshKernel):
                     self.copy_stages[core_id]["source_cache"].append((bank.owner_id, size))
 
     @staticmethod
-    @jit_prototype
-    def _local_read(core: CCGTile, owner_id: int, size: int):
-        core.icnt_recv_data(owner_id, size, sync=True)
-
-    @staticmethod
-    @jit_prototype
-    def _local_send(core: CCGTile, owner_id: int, size: int):
-        core.icnt_send_data([owner_id], size, sync=True)
-
-    @staticmethod
     @jit_program_prototype
     def program(device: MeshAccelerator, core_ids: tuple[int, ...], stages: dict[int, dict]):
         for core_id in core_ids:
@@ -1387,13 +1377,13 @@ class MeshMemCopyKernel(MeshKernel):
             remote_reads = {}
             for owner_id, size in stage["source_cache"]:
                 remote_reads[owner_id] = remote_reads.get(owner_id, 0) + size
-            for owner_id, size in remote_reads.items():
-                MeshMemCopyKernel._local_read(core, owner_id, size)
+            if remote_reads:
+                core.icnt_recv_data_batch(remote_reads, sync=True)
             remote_writes = {}
             for owner_id, size in stage["destination_cache"]:
                 remote_writes[owner_id] = remote_writes.get(owner_id, 0) + size
-            for owner_id, size in remote_writes.items():
-                MeshMemCopyKernel._local_send(core, owner_id, size)
+            if remote_writes:
+                core.icnt_send_data_batch(remote_writes, sync=True)
             batches = {}
             for address, size in stage["destination_dma"]:
                 batches.setdefault(size, []).append(address)

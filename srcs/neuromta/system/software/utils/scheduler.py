@@ -304,7 +304,9 @@ class MeshDeviceScheduler:
             plan_id += 1
 
         for first_index, first_id in enumerate(ordered_ids):
-            if first_id not in baseline_cycles:
+            if first_id not in baseline_cycles or not any(
+                second_id in baseline_cycles for second_id in ordered_ids[first_index + 1:]
+            ):
                 continue
             first_action, first_state, first_domain, _ = action_map[first_id]
             first_stats = first_state.compiled_workload.get_kernel_stats(first_action.kernel_id)
@@ -570,6 +572,12 @@ class MeshDeviceScheduler:
         tensor_placements = {id(stats.tensor_desc): tiles for stats, tiles in placement.tensor_placements}
         inputs = kernel_desc.input_tensors
         output = kernel_desc.output_tensors[0]
+        # Resolve view coordinates once per estimate. Ordinary tensors already use
+        # their own tile coordinates as storage coordinates.
+        storage_keys = {
+            id(tensor): (tensor.storage_id, {} if tensor.is_view else None)
+            for tensor in inputs
+        }
         if kind == MeshKernelType.LINEAR:
             ifm_bank = next(iter(tensor_placements[id(inputs[0])].values()))
             wgt_bank = next(iter(tensor_placements[id(inputs[1])].values()))
@@ -602,9 +610,17 @@ class MeshDeviceScheduler:
             for tensor_id, coords in ops[output_coord].items():
                 tensor = inputs[tensor_id]
                 tiles = tensor_placements[id(tensor)]
+                storage_id, view_coords = storage_keys[id(tensor)]
                 for coord in coords:
                     coord = tuple(coord)
-                    storage_key = (tensor.storage_id, tensor.map_tile_coord_to_storage(coord))
+                    if view_coords is None:
+                        storage_coord = coord
+                    else:
+                        storage_coord = view_coords.get(coord)
+                        if storage_coord is None:
+                            storage_coord = tensor.map_tile_coord_to_storage(coord)
+                            view_coords[coord] = storage_coord
+                    storage_key = (storage_id, storage_coord)
                     if storage_key in seen_inputs[owner_index]:
                         continue
                     seen_inputs[owner_index].add(storage_key)

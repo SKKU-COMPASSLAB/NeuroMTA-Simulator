@@ -92,7 +92,7 @@ def main(argv=None):
 
     failures = tuple(f"{target_name} (exitcode={process.exitcode})" for target_name, process in processes.items() if process.exitcode != 0)
     if failures:
-        raise RuntimeError(f"Experiments failed: {", ".join(failures)}")
+        raise RuntimeError(f"Experiments failed: {', '.join(failures)}")
 
     print(f"Completed {len(TARGETS) * len(workload_names) ** 2} runs in {time.perf_counter() - total_start:.6f} s")
 

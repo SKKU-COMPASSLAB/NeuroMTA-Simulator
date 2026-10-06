@@ -141,6 +141,32 @@ class CCGTile(Core):
             for req_msg in dma_req_msgs:
                 self.async_rpc_wait_rsp_msg(req_msg)
 
+    @core_command_method
+    def _icnt_data_transfer_batch_handle(self, transfers: tuple[tuple[int, int, int, bool], ...]):
+        pass
+
+    @jit_prototype
+    def icnt_send_data_batch(self, target_sizes: dict[int, int], sync: bool=True) -> None:
+        if not target_sizes:
+            return
+        if self._icnt_context.is_icnt_simulator_enabled:
+            transfers = tuple((self.core_id, target_id, size, True) for target_id, size in target_sizes.items())
+            self._icnt_data_transfer_batch_handle(transfers)
+        else:
+            for target_id, size in target_sizes.items():
+                self.icnt_send_data([target_id], size, sync=sync)
+
+    @jit_prototype
+    def icnt_recv_data_batch(self, source_sizes: dict[int, int], sync: bool=True) -> None:
+        if not source_sizes:
+            return
+        if self._icnt_context.is_icnt_simulator_enabled:
+            transfers = tuple((source_id, self.core_id, size, True) for source_id, size in source_sizes.items())
+            self._icnt_data_transfer_batch_handle(transfers)
+        else:
+            for source_id, size in source_sizes.items():
+                self.icnt_recv_data(source_id, size, sync=sync)
+
     @jit_prototype
     def icnt_send_data(
         self,
@@ -304,6 +330,26 @@ class CCGTileCycleModel(CoreCycleModel):
 
     def compute(self, n_ops: int) -> int:
         return int(self.core.ctile_context.get_compute_cycles(n_ops=n_ops))
+
+    def _icnt_data_transfer_batch_handle(self, transfers: tuple[tuple[int, int, int, bool], ...]) -> int:
+        if not self.core._icnt_context.is_icnt_simulator_enabled:
+            raise RuntimeError("ICNT simulator is not available.")
+        current_cycle = self.core.timestamp
+        finish_cycle = current_cycle
+        simulator = self.core._icnt_context.simulator
+        for source_id, target_id, size, is_write in transfers:
+            if source_id == target_id:
+                finish_cycle = max(finish_cycle, current_cycle + 1)
+                continue
+            result = simulator.send_request(
+                src_core_id=source_id,
+                dst_core_id=target_id,
+                data_size=size,
+                is_write=is_write,
+                current_cycle=current_cycle,
+            )
+            finish_cycle = max(finish_cycle, result["finish_cycle"])
+        return finish_cycle - current_cycle
 
     def _icnt_data_transfer_handle(self, src_core_id: int, dst_core_id: int, data_size: int, is_write: bool):
         if not self.core._icnt_context.is_icnt_simulator_enabled:

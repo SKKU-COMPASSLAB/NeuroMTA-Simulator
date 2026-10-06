@@ -31,6 +31,10 @@ class DMATile(Core):
         pass
 
     @core_command_method
+    def _dma_lightweight_batch_request_handle(self, addrs: list[int], size: int, is_write: bool):
+        pass
+
+    @core_command_method
     def _icnt_data_transfer_handle(self, src_core_id: int, dst_core_id: int, data_size: int, is_write: bool):
         pass
 
@@ -38,8 +42,7 @@ class DMATile(Core):
     def dma_read_memory_batch(self, req_core_id: int, addrs: list[int], size: int):
         with new_parallel_thread("DMA"):
             if self._mem_context.is_simulator_available:
-                for addr in addrs:
-                    self._dma_lightweight_request_handle(addr=addr, size=size, is_write=False)
+                self._dma_lightweight_batch_request_handle(addrs=addrs, size=size, is_write=False)
             else:
                 data_rd_requests = [
                     RPCMessage(
@@ -132,8 +135,7 @@ class DMATile(Core):
 
         with new_parallel_thread("DMA"):
             if self._mem_context.is_simulator_available:
-                for addr in addrs:
-                    self._dma_lightweight_request_handle(addr=addr, size=size, is_write=True)
+                self._dma_lightweight_batch_request_handle(addrs=addrs, size=size, is_write=True)
             else:
                 data_wr_requests = [
                     RPCMessage(
@@ -291,6 +293,17 @@ class DMATileCycleModel(CoreCycleModel):
 
         latency_cycles = result["latency_cycles"]
         return latency_cycles
+
+    def _dma_lightweight_batch_request_handle(self, addrs: list[int], size: int, is_write: bool) -> int:
+        if not self.core._mem_context.is_simulator_available:
+            raise RuntimeError("Memory simulator is not available.")
+        result = self.core._mem_context.simulator.send_requests(
+            addrs=addrs,
+            size=size,
+            is_write=is_write,
+            current_cycle=self.core.timestamp,
+        )
+        return result["latency_cycles"]
 
     def _icnt_data_transfer_handle(self, src_core_id: int, dst_core_id: int, data_size: int, is_write: bool):
         if not self.core._icnt_context.is_icnt_simulator_enabled:

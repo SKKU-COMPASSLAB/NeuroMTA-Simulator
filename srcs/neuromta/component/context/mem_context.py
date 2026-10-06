@@ -580,6 +580,26 @@ class MemorySimulator:
             "chunks": scheduled_chunks,
         }
     
+    def send_requests(
+        self,
+        addrs: list[int],
+        size: int,
+        is_write: bool,
+        current_cycle: int = 0,
+    ) -> dict:
+        """Issue a DMA batch at one cycle, preserving per-request contention."""
+        if current_cycle < 0:
+            raise ValueError("current_cycle must be non-negative")
+        finish_cycle = current_cycle
+        for addr in addrs:
+            result = self.send_request(addr=addr, size=size, is_write=is_write, current_cycle=current_cycle)
+            finish_cycle = max(finish_cycle, result["finish_cycle"])
+        return {
+            "current_cycle": current_cycle,
+            "finish_cycle": finish_cycle,
+            "latency_cycles": finish_cycle - current_cycle,
+        }
+
     @property
     def channel_next_free_cycle(self) -> dict[tuple[int, int], int]:
         return dict(self._channel_next_free_cycle)

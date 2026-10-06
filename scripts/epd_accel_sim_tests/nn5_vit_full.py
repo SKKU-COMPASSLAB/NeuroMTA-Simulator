@@ -11,7 +11,7 @@ from neuromta.system.software.utils.scheduler import MeshRoundRobinScheduler
 
 
 def main():
-    logger.set_print_options(log_level=LogLevel.INFO)
+    logger.set_print_options(log_level=LogLevel.DEBUG)
 
     config = MeshAcceleratorConfig.medium()
     device = MeshAccelerator(**config).initialize()
