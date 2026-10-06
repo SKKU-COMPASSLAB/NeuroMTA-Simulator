@@ -34,7 +34,6 @@ from neuromta.system.software.utils.descriptor import (
     MeshMemoryBankDescriptor,
 )
 from neuromta.system.software.utils.scheduler import (
-    MeshFRFCFSScheduler,
     MeshDeviceScheduler,
     MeshSchedulingDomain,
     MeshWorkloadSchedulingHint,
@@ -524,7 +523,7 @@ class MeshDeviceRuntimeKernelMaterialzer:
         def is_retry(self) -> bool:  return self.token_type == self.RETRY
 
     def __init__(self, scheduler: MeshDeviceScheduler = None):
-        self.scheduler = MeshFRFCFSScheduler() if scheduler is None else scheduler
+        self.scheduler = MeshDeviceScheduler() if scheduler is None else scheduler
 
         if not isinstance(self.scheduler, MeshDeviceScheduler):
             raise TypeError(f"Expected MeshDeviceScheduler, got {type(scheduler).__name__}.")

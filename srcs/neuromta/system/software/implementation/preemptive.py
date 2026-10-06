@@ -1,9 +1,20 @@
 from neuromta.system.software.utils.compiler import MeshDeviceCompiler
-from neuromta.system.software.utils.scheduler import MeshFRFCFSScheduler, MeshSchedulingContext
+from neuromta.system.software.utils.scheduler import MeshSchedulingContext
 from neuromta.system.software.utils.runtime import MeshDeviceRuntime
 
+from ._common import MeshFCFSScheduler, MeshFRFCFSScheduler, MeshRoundRobinScheduler
 
-__all__ = ["PreemptiveCompiler", "PreemptiveScheduler", "PreemptiveRuntime"]
+
+__all__ = [
+    "PreemptiveCompiler", 
+    "PreemptiveScheduler", 
+    "PreemptiveRuntime",
+    
+    # common schedulers avilable
+    "MeshFCFSScheduler",
+    "MeshFRFCFSScheduler",
+    "MeshRoundRobinScheduler"
+]
 
 
 class PreemptiveCompiler(MeshDeviceCompiler):
@@ -13,7 +24,8 @@ class PreemptiveCompiler(MeshDeviceCompiler):
 class PreemptiveScheduler(MeshFRFCFSScheduler):
     def __init__(self, policy=None, starvation_cycles=200_000, candidate_window=16):
         super().__init__(starvation_cycles=starvation_cycles, candidate_window=candidate_window)
-        self.policy = policy
+        
+        self.policy = policy    # additional scheduler, use `MeshFRFCFSScheduler` if not provided
 
     def reset(self):
         super().reset()

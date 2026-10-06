@@ -58,6 +58,8 @@ The most expensive recurring camera kernels illustrate the placement cost. The f
 
 The metadata records host-side simulator wall times of 56.6 s for Sequential, 76.0 s for Preemptive, 72.3 s for Spatial, and 49.4 s for Virtual. This timer surrounds `runtime.run()`; it excludes model compilation and CSV export. The three shared-mesh profiles came from a parallel four-variant run, while the corrected Virtual profile came from a subsequent single-variant run. These host times are not directly comparable as scheduling overhead and are not simulated accelerator latency.
 
+The sum of kernel latencies of preemptive scheduler is larger than that of sequential scheduler, since the preemptive scheduler allocates much smaller number of cores to each Conv2d kernel.
+
 ### Qualitative Comparison of Scheduler Variants
 
 **Sequential**

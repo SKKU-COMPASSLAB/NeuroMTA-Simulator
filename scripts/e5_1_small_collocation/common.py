@@ -14,7 +14,8 @@ from neuromta.system.software.api import MeshDeviceRuntimeContext, MeshTensorDes
 from neuromta.system.software.nn.yolox_nano import YOLOXNano
 from neuromta.system.software.utils.descriptor import MeshKernelDescriptor
 from neuromta.system.software.utils.runtime import MeshDeviceRuntime, MeshDeviceRuntimeWorkloadState
-from neuromta.system.software.utils.scheduler import MeshFRFCFSScheduler, MeshSchedulingDomain, MeshWorkloadSchedulingHint
+from neuromta.system.software.utils.scheduler import MeshSchedulingDomain, MeshWorkloadSchedulingHint
+from neuromta.system.software.implementation._common import MeshFRFCFSScheduler
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 CAMERAS = ("front", "left", "right", "rear")
