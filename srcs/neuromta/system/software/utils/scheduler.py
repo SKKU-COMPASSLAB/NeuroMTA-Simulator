@@ -145,20 +145,6 @@ class MeshDeviceScheduler:
         self._next_submission_index = 0
 
     def schedule_actions(self, runtime_context, actions: list[tuple], persistent_state_placements: dict[str, MeshDeviceCompiledTensorStats] | None = None, running_kernel_ids: tuple[str, ...] = ()) -> tuple[list[tuple[MeshDeviceCompiledAction, Any]], list[tuple[MeshDeviceCompiledAction, Any]]]:
-        """Choose ready RUN_KERNEL actions and reserve resources for this dispatch.
-
-        ``actions`` contains (action, workload_state[, domain]) tuples. Missing
-        domains mean the whole device. A successful action is returned as
-        (action, workload_state); a deferred one retains its domain in
-        (action, workload_state, domain) so the runtime can retry it later.
-        Persistent tensor placements and device vacancy are shared mutable
-        state: successful placement commits reservations before returning.
-
-        The default path orders candidates, lets the policy choose the first
-        one to try, then greedily places more kernels within the search window
-        and dispatch limit. Joint planning instead evaluates compatible
-        placements together and commits only the selected plan.
-        """
         if runtime_context is None:
             raise ValueError("A runtime context must be registered before scheduling kernel actions.")
 
