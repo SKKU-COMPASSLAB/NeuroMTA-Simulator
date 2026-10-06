@@ -2,48 +2,41 @@ import time
 
 import torch
 
-from neuromta.system.hardware.mesh_accelerator import MeshAccelerator, MeshAcceleratorConfig
+from neuromta.system.hardware import *
 from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime
-from neuromta.system.software.utils.descriptor import MeshDeviceDescriptor, MeshTensorDescriptor, MeshTensorType
-from neuromta.system.software.utils.kernel import MESH_KERNEL_LINEAR
-from neuromta.system.software.utils.runtime import MeshDeviceRuntimeWorkloadState
+from neuromta.system.software.api import *
+from neuromta.system.software.utils.scheduler import MeshRoundRobinScheduler
 
 
 def main():
     config = MeshAcceleratorConfig.stacked_3d_dram_npu()
     device = MeshAccelerator(**config).initialize()
-    device_desc = MeshDeviceDescriptor(device)
+    
+    with MeshDeviceRuntimeContext(
+        device=device,
+        default_tile_shape=(128, 128),
+        default_dtype=torch.bfloat16,
+        runtime=SequentialRuntime(device, scheduler=MeshRoundRobinScheduler(), enable_debug_log=False),
+    ) as context:
+        with context.new_compiler_context(SequentialCompiler(), arrival_cycle=0, workload_id="Linear.forward") as compiler:
+            ifm  = mesh_tensor(32, 4096).as_intermediate()
+            wgt  = mesh_tensor(4096, 4096).as_weight()
+            bias = mesh_tensor(1, 4096).as_weight()
+            ofm  = mesh_linear(ifm, wgt, bias=bias)
 
-    ifm = MeshTensorDescriptor(shape=(32, 4096), tile_shape=(128, 128), dtype=torch.bfloat16)
-    wgt = MeshTensorDescriptor(shape=(4096, 4096), tile_shape=(128, 128), dtype=torch.bfloat16, tensor_type=MeshTensorType.WEIGHT)
-    bias = MeshTensorDescriptor(shape=(1, 4096), tile_shape=(1, 128), dtype=torch.bfloat16, tensor_type=MeshTensorType.WEIGHT)
-    ofm = MeshTensorDescriptor(shape=(32, 4096), tile_shape=(128, 128), dtype=torch.bfloat16)
-
-    compiler = SequentialCompiler()
-    compiler.add_kernel(MESH_KERNEL_LINEAR(ifm=ifm, wgt=wgt, bias=bias, ofm=ofm))
-    compile_start = time.perf_counter()
-    workload = compiler.compile(device_desc)
-    compilation_time = time.perf_counter() - compile_start
-
-    runtime = SequentialRuntime(device_desc, workload)
-    weight_placements = runtime.warmup(workload)
-    simulation_start = time.perf_counter()
-    jobs = runtime.run()
-    simulation_time = time.perf_counter() - simulation_start
+        runtime = context.runtime
+        simulation_start = time.perf_counter()
+        jobs = runtime.run()
+        simulation_time = time.perf_counter() - simulation_start
 
     if runtime.workloads[0].state != MeshDeviceRuntimeWorkloadState.COMPLETED:
         raise RuntimeError("The Linear workload did not complete.")
 
-    compiled_kernel = workload.compiled_kernels[0]
     decision = runtime.decision_log[0]
-    print(f"Compilation time: {compilation_time:.6f} s")
     print(f"Simulation time: {simulation_time:.6f} s")
-    print(f"Compiled core grid: {compiled_kernel.core_grid_shape}")
-    print(f"Runtime core IDs: {decision['core_meshes'][0]}")
+    print(f"Runtime core IDs: {decision['core_meshes'][0].flatten().tolist()}")
     print(f"Runtime DMA IDs: {decision['memory_banks'][0]}")
-    print(f"Resident weight tensors: {len(weight_placements)}")
     print(f"Completed {len(jobs)} kernel at cycle {device.timestamp}.")
-    print(f"Deallocated {runtime.deallocate_weights(workload)} resident weight tensors.")
 
 
 if __name__ == "__main__":

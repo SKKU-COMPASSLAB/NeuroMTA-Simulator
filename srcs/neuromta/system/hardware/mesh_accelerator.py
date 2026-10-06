@@ -481,8 +481,8 @@ class MeshAcceleratorConfig(dict):
         ccg_x_dim: int=128,
         ccg_y_dim: int=128,
         ccg_local_cache: int=parse_mem_cap_str("1MB"),          # no remaining space for local cache, all local cache is used for LD/ST buffers
-        ccg_ld_buffer_size: int=parse_mem_cap_str("512KB"),
-        ccg_st_buffer_size: int=parse_mem_cap_str("512KB"),
+        ccg_ld_buffer_size: int=parse_mem_cap_str("768KB"),
+        ccg_st_buffer_size: int=parse_mem_cap_str("256KB"),
 
         dma_ch_per_instance: int=8,
         dma_channel_size: int=parse_mem_cap_str("1GB"),
