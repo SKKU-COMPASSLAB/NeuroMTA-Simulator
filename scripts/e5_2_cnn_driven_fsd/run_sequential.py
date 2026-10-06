@@ -3,15 +3,15 @@ import os
 from neuromta.framework.logger import logger
 
 if __package__:
-    from .common import DEFAULT_CCG_TOPS, create_scheduler, run_experiment
+    from .common import create_scheduler, run_experiment
 else:
-    from common import DEFAULT_CCG_TOPS, create_scheduler, run_experiment
+    from common import create_scheduler, run_experiment
 
 from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime
 
 
-def run(ccg_tops: float = DEFAULT_CCG_TOPS, enable_debug_log: bool = False) -> None:
-    completed_jobs, completion_cycle, simulation_time, profile_dir = run_experiment("run_sequential", SequentialCompiler, lambda device, debug: SequentialRuntime(device, scheduler=create_scheduler(), enable_debug_log=debug), ccg_tops, enable_debug_log)
+def run(duration_cycles: int = 4_000_000_000, warmup_cycles: int = 1_000_000_000, ccg_tops: float = 0.05, enable_debug_log: bool = False) -> None:
+    completed_jobs, completion_cycle, simulation_time, profile_dir = run_experiment("run_sequential", SequentialCompiler, lambda device, debug: SequentialRuntime(device, scheduler=create_scheduler(), enable_debug_log=debug), duration_cycles, warmup_cycles, ccg_tops, enable_debug_log)
     logger.info(f"Completed {completed_jobs} kernels at cycle {completion_cycle}; simulation time: {simulation_time:.6f} s")
     logger.info(f"Kernel profiles: {os.path.join(profile_dir, 'kernel_profile')}")
     logger.info(f"Workload profile: {os.path.join(profile_dir, 'workload_profile.csv')}")

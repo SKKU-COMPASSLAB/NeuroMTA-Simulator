@@ -50,6 +50,7 @@ def test_data_size_request_packetization():
         data_size=320,
         is_write=True,
         current_cycle=0,
+        profile=True,
     )
     assert_eq(result["src_id"], 0, "source node id")
     assert_eq(result["dst_id"], 2, "destination node id")
@@ -58,7 +59,7 @@ def test_data_size_request_packetization():
     assert_eq(result["payloads"][0]["n_flits"], 4, "payload 0 flits")
     assert_eq(result["payloads"][1]["n_flits"], 1, "payload 1 flits")
     assert_eq([p["subnet"] for p in result["payloads"]], [0, 1], "payload subnet distribution")
-    assert_eq(result["latency_cycles"], 18, "request latency is max payload latency")
+    assert_eq(result["latency_cycles"], 10, "request latency is max payload latency")
 
 
 def test_single_payload_route_and_latency():
@@ -69,6 +70,7 @@ def test_single_payload_route_and_latency():
         data_size=256,
         is_write=False,
         current_cycle=0,
+        profile=True,
     )
     payload = result["payloads"][0]
     assert_eq(result["n_flits"], 4, "single payload flits")
@@ -79,26 +81,55 @@ def test_single_payload_route_and_latency():
     assert_eq(payload["serialization_cycles"], 2, "serialization cycles")
     assert_eq(payload["injection_cycles"], 1, "injection cycles")
     assert_eq(payload["egress_cycles"], 1, "egress cycles")
-    assert_eq(payload["latency_cycles"], 18, "single payload latency")
-    assert_eq(len(payload["resources"]), 8, "resource count")
+    assert_eq(payload["latency_cycles"], 10, "single payload latency")
+    assert_eq(len(payload["resources"]), 6, "resource count")
 
 
 def test_same_path_contention():
     simulator = IcntSimulator(create_config())
     first = simulator.send_request(SRC_CORE_ID, DST_CORE_ID, data_size=256, current_cycle=0)
-    second = simulator.send_request(SRC_CORE_ID, DST_CORE_ID, data_size=256, current_cycle=0)
+    second = simulator.send_request(SRC_CORE_ID, DST_CORE_ID, data_size=256, current_cycle=0, profile=True)
+    assert_eq(set(first), {"finish_cycle", "latency_cycles"}, "default result fields")
     assert_gt(second["latency_cycles"], first["latency_cycles"], "same path contention latency")
     assert_gt(second["payloads"][0]["resources"][0]["queue_delay_cycles"], 0, "injection queue delay")
 
 
 def test_subnet_resource_isolation_inside_one_request():
     simulator = IcntSimulator(create_config())
-    result = simulator.send_request(SRC_CORE_ID, DST_CORE_ID, data_size=320, current_cycle=0)
+    result = simulator.send_request(SRC_CORE_ID, DST_CORE_ID, data_size=320, current_cycle=0, profile=True)
     payload0 = result["payloads"][0]
     payload1 = result["payloads"][1]
     assert_eq(payload0["subnet"], 0, "payload 0 subnet")
     assert_eq(payload1["subnet"], 1, "payload 1 subnet")
     assert_eq(payload1["resources"][0]["queue_delay_cycles"], 0, "different subnet injection queue delay")
+
+
+def test_reference_completion_cycles():
+    # Captured from the original lightweight model. The reverse transfer also
+    # exercises contention in the bidirectional shared channel mode.
+    requests = [
+        (SRC_CORE_ID, DST_CORE_ID, 0, 0),
+        (SRC_CORE_ID, DST_CORE_ID, 256, 0),
+        (SRC_CORE_ID, DST_CORE_ID, 320, 0),
+        (DST_CORE_ID, SRC_CORE_ID, 512, 1),
+        (SRC_CORE_ID, DST_CORE_ID, 64, 4),
+    ]
+    expected_cycles = {
+        ("unidirectional", 1): [0, 10, 13, 13, 14],
+        ("unidirectional", 2): [0, 10, 12, 12, 13],
+        ("bidirectional_shared", 1): [0, 10, 13, 20, 24],
+        ("bidirectional_shared", 2): [0, 10, 12, 17, 21],
+    }
+    for (mode, subnets), expected in expected_cycles.items():
+        config = create_config()
+        config.lightweight_channel_mode = mode
+        config.subnets = subnets
+        simulator = IcntSimulator(config)
+        actual = [
+            simulator.send_request(src, dst, size, current_cycle=cycle)["finish_cycle"]
+            for src, dst, size, cycle in requests
+        ]
+        assert_eq(actual, expected, f"completion cycles for {mode}, {subnets} subnet(s)")
 
 
 def test_context_packetization_still_matches_booksim_args():
@@ -120,6 +151,7 @@ def main():
         test_single_payload_route_and_latency,
         test_same_path_contention,
         test_subnet_resource_isolation_inside_one_request,
+        test_reference_completion_cycles,
         test_context_packetization_still_matches_booksim_args,
     ]
     for test in tests:

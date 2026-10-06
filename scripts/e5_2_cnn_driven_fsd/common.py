@@ -11,6 +11,8 @@ from neuromta.framework.logger import LogLevel, logger
 
 from neuromta.system.hardware.mesh_accelerator import MeshAccelerator, MeshAcceleratorConfig
 from neuromta.system.software.api import MeshDeviceRuntimeContext, MeshTensorDescriptor
+from neuromta.system.software.nn.fast_scnn import FastSCNN
+from neuromta.system.software.nn.mobilenetv3 import MobileNetV3Small
 from neuromta.system.software.nn.yolox_nano import YOLOXNano
 from neuromta.system.software.utils.descriptor import MeshKernelDescriptor
 from neuromta.system.software.utils.runtime import MeshDeviceRuntime, MeshDeviceRuntimeWorkloadState
@@ -18,8 +20,16 @@ from neuromta.system.software.utils.scheduler import MeshFRFCFSScheduler, MeshSc
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
 CAMERAS = ("front", "left", "right", "rear")
+DETECTOR_PERIOD = 66_666_667
+LANE_PERIOD = 50_000_000
+DRIVER_PERIOD = 33_333_333
 DETECTOR_SLO = 50_000_000
-DEFAULT_CCG_TOPS = 0.5
+LANE_SLO = 40_000_000
+DRIVER_SLO = 25_000_000
+LANE_PHASE = 5_000_000
+DRIVER_PHASE = 10_000_000
+DEFAULT_DURATION_CYCLES = 4_000_000_000
+DEFAULT_WARMUP_CYCLES = 1_000_000_000
 
 
 @dataclass
@@ -117,40 +127,61 @@ def create_virtual_domains(device: MeshAccelerator) -> tuple[MeshSchedulingDomai
     dma_ids = tuple(device.global_context.config.dma_tile_ids)
     if core_mesh.shape != (4, 2) or len(dma_ids) != 4:
         raise ValueError(f"The e5.1 virtual partition requires a 4x2 CCG mesh and four DMA tiles, got {core_mesh.shape} and {len(dma_ids)} DMA tiles.")
-    return tuple(
-        MeshSchedulingDomain(f"vision.{camera}", core_mesh[index:index + 1, :].copy(), (dma_ids[index],))
-        for index, camera in enumerate(CAMERAS)
+    return (
+        MeshSchedulingDomain("vision", core_mesh[:2, :].copy(), dma_ids[:2]),
+        MeshSchedulingDomain("lane", core_mesh[2:3, :].copy(), dma_ids[2:3]),
+        MeshSchedulingDomain("driver", core_mesh[3:4, :].copy(), dma_ids[3:4]),
     )
 
 
-def build_requests() -> list[WorkloadRequest]:
-    return [WorkloadRequest(f"camera.det.{camera}.1", "camera.det", 0, DETECTOR_SLO, 2, 2.0, 15_000_000) for camera in CAMERAS]
+def build_requests(duration_cycles: int) -> list[WorkloadRequest]:
+    requests = []
+    for request_index, arrival_cycle in enumerate(range(0, duration_cycles, DETECTOR_PERIOD), start=1):
+        for camera in CAMERAS:
+            requests.append(WorkloadRequest(f"camera.det.{camera}.{request_index}", "camera.det", arrival_cycle, DETECTOR_SLO, 2, 2.0, 15_000_000))
+    for request_index, arrival_cycle in enumerate(range(LANE_PHASE, duration_cycles, LANE_PERIOD), start=1):
+        requests.append(WorkloadRequest(f"lane.seg.{request_index}", "lane.seg", arrival_cycle, LANE_SLO, 3, 3.0, 10_000_000))
+    for request_index, arrival_cycle in enumerate(range(DRIVER_PHASE, duration_cycles, DRIVER_PERIOD), start=1):
+        requests.append(WorkloadRequest(f"driver.monitor.{request_index}", "driver.monitor", arrival_cycle, DRIVER_SLO, 3, 3.0, 8_000_000))
+    requests.sort(key=lambda request: (request.arrival_cycle, request.workload_id))
+    return requests
 
 
 def submit_workloads(context: MeshDeviceRuntimeContext, compiler_type: type, requests: list[WorkloadRequest], domain_ids: dict[str, str] | None = None) -> None:
     detector = YOLOXNano(image_size=416, num_classes=10, depth=0.33, width=0.25)
+    lane_segmenter = FastSCNN(image_size=(512, 1024), num_classes=19)
+    driver_monitor = MobileNetV3Small(image_size=224, num_classes=4)
+    models = {"camera.det": detector, "lane.seg": lane_segmenter, "driver.monitor": driver_monitor}
     for request in requests:
-        domain_id = None if domain_ids is None else domain_ids[request.workload_id]
+        model = models[request.workload_class]
+        domain_id = None if domain_ids is None else domain_ids[request.workload_class]
         scheduling_hint = MeshWorkloadSchedulingHint(priority=request.priority, weight=request.weight, max_wait_cycles=request.max_wait_cycles)
         with context.new_compiler_context(compiler_type(), arrival_cycle=request.arrival_cycle, workload_id=request.workload_id, scheduling_hint=scheduling_hint, domain_id=domain_id):
-            input_tensor = MeshTensorDescriptor(detector.image_shape(), tile_shape=(1, 1) + tuple(context.default_tile_shape), dtype=context.default_dtype)
-            outputs = detector.forward(input_tensor)
-            expected_shapes = tuple((1, detector.image_size[0] // stride, detector.image_size[1] // stride, detector.num_classes + 5) for stride in (8, 16, 32))
-            if tuple(output.shape for output in outputs) != expected_shapes:
-                raise RuntimeError(f"Unexpected YOLOX-Nano output shapes: {tuple(output.shape for output in outputs)}")
+            input_tensor = MeshTensorDescriptor(model.image_shape(), tile_shape=(1, 1) + tuple(context.default_tile_shape), dtype=context.default_dtype)
+            outputs = model.forward(input_tensor)
+            if request.workload_class == "camera.det":
+                expected_shapes = tuple((1, model.image_size[0] // stride, model.image_size[1] // stride, model.num_classes + 5) for stride in (8, 16, 32))
+                if tuple(output.shape for output in outputs) != expected_shapes:
+                    raise RuntimeError(f"Unexpected YOLOX-Nano output shapes: {tuple(output.shape for output in outputs)}")
+            elif request.workload_class == "lane.seg" and outputs.shape != (1, model.image_size[0], model.image_size[1], model.num_classes):
+                raise RuntimeError(f"Unexpected Fast-SCNN output shape: {outputs.shape}")
+            elif request.workload_class == "driver.monitor" and outputs.shape != (1, model.num_classes):
+                raise RuntimeError(f"Unexpected MobileNetV3 output shape: {outputs.shape}")
 
 
-def save_profiles(runtime: MeshDeviceRuntime, experiment_name: str, requests: list[WorkloadRequest], elapsed_seconds: float, completed_jobs: int, simulation_completion_cycle: int, ccg_tops: float) -> None:
+def save_profiles(runtime: MeshDeviceRuntime, experiment_name: str, warmup_cycles: int, requests: list[WorkloadRequest], elapsed_seconds: float, completed_jobs: int, simulation_completion_cycle: int) -> None:
     output_dir = os.path.join(CACHE_DIR, experiment_name)
     kernel_profile_dir = os.path.join(output_dir, "kernel_profile")
     os.makedirs(kernel_profile_dir, exist_ok=True)
     request_by_id = {request.workload_id: request for request in requests}
-    kernel_profiles = {"camera.det": KernelProfile()}
+    kernel_profiles = {workload_class: KernelProfile() for workload_class in ("camera.det", "lane.seg", "driver.monitor")}
     workload_profile = WorkloadProfile()
     measured_counts = {workload_class: 0 for workload_class in kernel_profiles}
     for workload in runtime.workloads:
         workload_id = workload.workload_id
         request = request_by_id[workload_id]
+        if workload.arrival_cycle < warmup_cycles:
+            continue
         if workload.state != MeshDeviceRuntimeWorkloadState.COMPLETED or workload.start_cycle is None or workload.completion_cycle is None:
             raise RuntimeError(f"Measured workload '{workload_id}' did not complete.")
         measured_counts[request.workload_class] += 1
@@ -160,10 +191,6 @@ def save_profiles(runtime: MeshDeviceRuntime, experiment_name: str, requests: li
                 raise RuntimeError(f"Kernel '{kernel.compiled_kernel.kernel_desc.name}' of workload '{workload_id}' has incomplete profile data.")
             kernel_profiles[request.workload_class].add(kernel.compiled_kernel.kernel_desc, kernel.completion_cycle - kernel.start_cycle, int(kernel.placement.core_mesh.size))
     workload_profile.entries.sort(key=lambda entry: (entry.arrival_cycle, entry.workload_id))
-    for old_profile in ("lane.seg", "driver.monitor"):
-        old_path = os.path.join(kernel_profile_dir, f"kernel_profile_{old_profile}.csv")
-        if os.path.exists(old_path):
-            os.remove(old_path)
     for workload_class, profile in kernel_profiles.items():
         with open(os.path.join(kernel_profile_dir, f"kernel_profile_{workload_class}.csv"), "w") as file:
             file.write(profile.to_csv())
@@ -173,8 +200,7 @@ def save_profiles(runtime: MeshDeviceRuntime, experiment_name: str, requests: li
     deadline_misses = sum(entry.completion_cycle - entry.arrival_cycle > entry.slo for entry in workload_profile.entries)
     metadata = {
         "experiment": experiment_name,
-        "warmup_cycles": 0,
-        "ccg_tops": ccg_tops,
+        "warmup_cycles": warmup_cycles,
         "submitted_workloads": len(requests),
         "measured_workloads": sum(measured_counts.values()),
         "measured_by_class": measured_counts,
@@ -198,13 +224,17 @@ def save_decision_profile(runtime: MeshDeviceRuntime, path: str) -> None:
             writer.writerow((record["cycle"], record["scheduler"], kernel_ids, core_meshes, memory_bank_ids, record["benefit"]))
 
 
-def run_experiment(experiment_name: str, compiler_type: type, runtime_builder, ccg_tops: float = DEFAULT_CCG_TOPS, enable_debug_log: bool = False, domain_ids: dict[str, str] | None = None) -> tuple[int, int, float, str]:
+def run_experiment(experiment_name: str, compiler_type: type, runtime_builder, duration_cycles: int = DEFAULT_DURATION_CYCLES, warmup_cycles: int = DEFAULT_WARMUP_CYCLES, ccg_tops: float = 0.05, enable_debug_log: bool = False, domain_ids: dict[str, str] | None = None) -> tuple[int, int, float, str]:
+    if duration_cycles <= 0:
+        raise ValueError("duration_cycles must be positive.")
+    if warmup_cycles < 0 or warmup_cycles >= duration_cycles:
+        raise ValueError("warmup_cycles must be non-negative and smaller than duration_cycles.")
     if ccg_tops <= 0:
         raise ValueError("ccg_tops must be positive.")
     logger.set_print_options(log_level=LogLevel.DEBUG if enable_debug_log else LogLevel.INFO)
     device = create_device(ccg_tops)
     runtime = runtime_builder(device, enable_debug_log)
-    requests = build_requests()
+    requests = build_requests(duration_cycles)
     context = MeshDeviceRuntimeContext(device=device, default_tile_shape=(32, 32), default_dtype=torch.bfloat16, runtime=runtime)
     with context:
         submit_workloads(context, compiler_type, requests, domain_ids)
@@ -218,5 +248,5 @@ def run_experiment(experiment_name: str, compiler_type: type, runtime_builder, c
     elapsed_seconds = time.perf_counter() - start_time
     if not all(workload.is_completed for workload in runtime.workloads):
         raise RuntimeError("Not all submitted workloads completed.")
-    save_profiles(runtime, experiment_name, requests, elapsed_seconds, completed_jobs, device.timestamp, ccg_tops)
+    save_profiles(runtime, experiment_name, warmup_cycles, requests, elapsed_seconds, completed_jobs, device.timestamp)
     return completed_jobs, device.timestamp, elapsed_seconds, os.path.join(CACHE_DIR, experiment_name)

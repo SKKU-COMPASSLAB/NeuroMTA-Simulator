@@ -2,89 +2,78 @@
 
 ### Quantitative Analysis of Scheduling Efficiency
 
-The result set contains one four-second trace for each scheduler. The first `1,000,000,000` cycles are warmup, and the profiles contain the remaining 330 workloads: 180 camera-detection requests, 60 lane-segmentation requests, and 90 driver-monitoring requests. Each run submitted 440 workloads and completed 53,400 kernels. The post-warmup kernel profiles contain 40,050 kernel invocations. Scheduler statistics below include only decisions at or after the warmup boundary.
+#### Environment and workload
 
-The accelerator runs at 1 GHz and uses an eight-core `4x2` CCG mesh with four DMA tiles. Camera detection runs YOLOX-Nano for four 15 FPS camera streams with a 50 ms SLO. Lane segmentation runs Fast-SCNN at 20 FPS with a 40 ms SLO, and driver monitoring runs MobileNetV3-Small at 30 FPS with a 25 ms SLO. The Virtual policy partitions the mesh into four cores for camera detection, two for lane segmentation, and two for driver monitoring.
+The experiment runs four scheduler variants—Sequential, Preemptive, Spatial, and Virtual—on the same `MeshAcceleratorConfig.small` device. Its processor clock is 1 GHz, so one million simulated cycles equal 1 ms. The device has a `4x4` interconnect, eight compute tiles arranged as a `4x2` CCG mesh, and four DMA tiles. The run uses `--ccg-tops 0.5` by default, specifying 0.5 TOPS per compute tile. Each compute tile uses a `32x32` compute array. The small-device defaults use lightweight interconnect and DRAM timing models (`booksim2_enable=False`, `dramsim3_enable=False`). Compilation uses `bfloat16` tensors and a default `32x32` tile shape.
 
-All four policies completed every measured workload without a deadline miss. The minimum slack remained above 24 ms, so deadline misses cannot distinguish the policies in this trace.
+Every variant uses a scheduler configured with a 10,000,000-cycle starvation threshold and a candidate window of 16. Sequential retains one active workload until it finishes. Preemptive can switch workloads at kernel boundaries but limits dispatch to one running kernel. Spatial enables joint kernel planning and can place kernels concurrently on the shared mesh. Virtual assigns each camera request its own `1x2` domain with two compute tiles and one DMA tile. The four disjoint domains cover all eight compute tiles and all four DMA tiles; requests run concurrently within fixed partitions.
 
-| Policy | Deadline misses | Mean response (ms) | p50 (ms) | p95 (ms) | p99 (ms) | Mean queueing (ms) | Mean execution (ms) | Minimum slack (ms) | Simulator wall time (s) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sequential | 0 / 330 | 0.708 | 0.548 | 1.587 | 1.587 | 0.224 | 0.484 | 24.832 | 4,380.6 |
-| Preemptive | 0 / 330 | 0.742 | 0.700 | 1.587 | 1.587 | 0.022 | 0.720 | 24.832 | 4,358.1 |
-| Virtual | 0 / 330 | 2.479 | 1.148 | 8.223 | 8.223 | 0.470 | 2.010 | 24.260 | 3,685.5 |
-| CALM | 0 / 330 | 0.774 | 0.732 | 1.587 | 1.587 | 0.066 | 0.707 | 24.832 | 5,168.4 |
+The workload is one simultaneous release of four independent YOLOX-Nano camera-detection requests: `front`, `left`, `right`, and `rear`. All arrive at cycle 0. Each processes one `416x416x3` image with the same YOLOX-Nano configuration (`depth=0.33`, `width=0.25`, 10 classes). Each request carries a 50,000,000-cycle (50 ms) SLO and the same scheduling hint: priority 2, weight 2.0, and maximum wait of 15,000,000 cycles. There are no periodic arrivals, lane-segmentation requests, driver-monitoring requests, or warmup requests. Each run submits and measures exactly four workloads, comprising 156 kernels per request and 624 completed kernels in total.
 
-Sequential produced the lowest mean response time. Its mean was 4.6% lower than Preemptive's and 8.5% lower than CALM's. CALM's mean was 4.3% higher than Preemptive's. The three shared-device policies had the same overall p95 because the deterministic 1.587 ms lane-segmentation response occupied the upper tail of the combined workload distribution.
+The analysis uses the current `workload_profile.csv`, `scheduler_profile.csv`, `kernel_profile/kernel_profile_camera.det.csv`, and `metadata.json` in `.cache/run_sequential`, `.cache/run_preemptive`, `.cache/run_spatial`, and `.cache/run_virtual`. Response time is completion minus arrival; queueing is first kernel start minus arrival; execution is completion minus first kernel start. Since all arrivals occur at cycle 0, batch makespan is the last request's completion time. The four responses are shown directly below; percentile estimates from four requests would add little information. All four requests meet the 50 ms SLO under every policy, so deadline misses are only a sanity check here.
 
-Virtual had the highest mean and tail latency. Its mean response was 3.50 times Sequential's, and its p95 was 5.18 times that of the shared-device policies. The fixed partitions still met every deadline because the SLOs were much longer than the observed execution times.
+| Policy | Mean response (ms) | Batch makespan / worst response (ms) | Mean queueing (ms) | Mean execution (ms) | Deadline misses | Minimum slack (ms) | Simulator wall time (s) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Sequential | 2.358 | 3.772 | 1.415 | 0.943 | 0 / 4 | 46.228 | 56.6 |
+| Preemptive | 4.573 | 4.573 | 0.206 | 4.367 | 0 / 4 | 45.427 | 76.0 |
+| Spatial | 2.489 | 2.911 | 0.090 | 2.398 | 0 / 4 | 47.089 | 72.3 |
+| Virtual | 3.187 | 3.187 | 0.000 | 3.187 | 0 / 4 | 46.813 | 49.4 |
 
-Queueing is measured as `start_cycle - arrival_cycle`, where `start_cycle` is the first kernel's actual start. The class-level results are:
+| Camera | Sequential response (ms) | Preemptive response (ms) | Spatial response (ms) | Virtual response (ms) |
+|---|---:|---:|---:|---:|
+| Front | 0.943 | 4.573 | 2.911 | 3.187 |
+| Left | 1.886 | 4.573 | 2.344 | 3.187 |
+| Right | 2.829 | 4.573 | 1.994 | 3.187 |
+| Rear | 3.772 | 4.573 | 2.705 | 3.187 |
 
-| Policy | Camera response / p95 / queue / execution (ms) | Lane response / p95 / queue / execution (ms) | Driver response / p95 / queue / execution (ms) |
-|---|---:|---:|---:|
-| Sequential | 0.685 / 1.096 / 0.411 / 0.274 | 1.587 / 1.587 / 0.000 / 1.587 | 0.168 / 0.168 / 0.000 / 0.168 |
-| Preemptive | 0.748 / 0.837 / 0.041 / 0.707 | 1.587 / 1.587 / 0.000 / 1.587 | 0.168 / 0.168 / 0.000 / 0.168 |
-| Virtual | 1.435 / 2.296 / 0.861 / 0.574 | 8.223 / 8.223 / 0.000 / 8.223 | 0.740 / 0.740 / 0.000 / 0.740 |
-| CALM | 0.806 / 0.897 / 0.122 / 0.684 | 1.587 / 1.587 / 0.000 / 1.587 | 0.168 / 0.168 / 0.000 / 0.168 |
+Sequential has the lowest mean response because it completes one camera request in about 0.943 ms before starting the next. Its requests finish in front, left, right, rear order. The last camera therefore waits 2.829 ms before starting, making the batch take 3.772 ms. Virtual starts all four requests at cycle 0 in separate domains. They finish together at 3.187 ms, giving a 15.5% shorter batch makespan than Sequential, although the smaller two-core allocation raises mean response by 35.2%.
 
-Sequential serialized the four camera requests released at each camera period. Every request then executed in 0.274 ms, but its position in the burst increased mean camera queueing to 0.411 ms and camera p95 to 1.096 ms. Preemptive reduced camera queueing by 90.1% and camera p95 by 23.6%, although the simultaneous progress of multiple requests raised mean camera response by 9.2% relative to Sequential.
+Preemptive starts all four cameras within 0.412 ms, reducing mean initial queueing by 85.5% relative to Sequential. Kernel-boundary interleaving then stretches mean first-start-to-completion time from 0.943 to 4.367 ms. All four completions fall within 0.001 ms of 4.573 ms. Its mean response is 93.9% higher and its batch makespan is 21.2% higher than Sequential's. Low initial queueing alone does not improve completion time when the requests repeatedly wait between kernels.
 
-CALM reduced mean camera execution time from Preemptive's 0.707 ms to 0.684 ms, but increased the delay before the first kernel from 0.041 ms to 0.122 ms. Consequently, its camera mean response was 7.8% higher and its camera p95 was 7.1% higher than Preemptive's. The difference is an admission and scheduling effect rather than slower accumulated kernel service.
+Spatial reduces mean initial queueing to 0.090 ms, 93.6% below Sequential, but its mean execution interval is 2.398 ms because concurrent kernels receive smaller placements. Its mean response is 5.5% above Sequential's. Its batch makespan, however, is 2.911 ms: 22.8% below Sequential and 36.3% below Preemptive. Right finishes first, while front starts at 0.362 ms and finishes last. Spatial also finishes the batch 8.7% sooner than Virtual. The completion order and exact values matter more than an aggregate percentile for this four-request burst.
 
-Lane and driver profiles are exactly identical under Sequential, Preemptive, and CALM. Their phased arrivals do not create contention with the camera bursts in this trace, so each executes as an isolated singleton and uses the common singleton placement policy. Virtual also eliminates their initial queueing, but the two-core partitions increase lane execution to 8.223 ms and driver execution to 0.740 ms.
+#### Scheduling and kernel behavior
 
-The post-warmup scheduling decisions and core allocations were:
+| Policy | Scheduler decisions | Kernels selected | Multi-kernel decisions | Mean cores per kernel | Core-count stddev | Eight-core kernels |
+|---|---:|---:|---:|---:|---:|---:|
+| Sequential | 624 | 624 | 0 | 6.205 | 3.057 | 464 / 624 (74.4%) |
+| Preemptive | 624 | 624 | 0 | 6.128 | 3.069 | 452 / 624 (72.4%) |
+| Spatial | 621 | 624 | 2 | 2.976 | 2.066 | 45 / 624 (7.2%) |
+| Virtual | 156 | 624 | 156 | 1.724 | 0.447 | 0 / 624 |
 
-| Policy | Decisions | Kernels selected | Multi-kernel decisions | Cross-class decisions | Mean cores per kernel | Core-count stddev | Eight-core kernels | Camera / lane / driver mean cores |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Sequential | 40,050 | 40,050 | 0 (0.000%) | 0 | 5.336 | 2.177 | 30.26% | 5.417 / 5.333 / 5.065 |
-| Preemptive | 39,915 | 40,050 | 90 (0.225%) | 0 | 3.983 | 1.953 | 13.18% | 3.487 / 5.333 / 5.065 |
-| Virtual | 40,048 | 40,050 | 2 (0.005%) | 2 | 2.552 | 1.116 | 0.00% | 2.974 / 1.367 / 1.645 |
-| CALM | 39,915 | 40,050 | 135 (0.338%) | 0 | 3.960 | 1.948 | 13.18% | 3.455 / 5.333 / 5.065 |
+Sequential uses either one core for a MemCopy kernel or all eight cores for other kernels: 160 one-core and 464 eight-core placements. Preemptive has a similar allocation overall, although 12 kernels use two, four, or six cores. Virtual selects four kernels per decision, one from each camera domain. It assigns two cores to 452 convolutions and one core to 172 kernels, averaging 1.724 cores per invocation. The camera domains use disjoint CCG tile pairs: front `0–1`, left `2–3`, right `4–5`, and rear `6–7`. Spatial distributes kernels across one to eight cores, averaging 2.976 cores per invocation. Virtual's four-kernel decisions are concurrent dispatch across separate fixed domains, not joint placement in a shared core pool.
 
-Sequential selected one kernel per decision. Preemptive produced 45 two-camera and 45 three-camera decisions by independently placing multiple ready kernels in one scheduling pass; these records are not CALM-style joint plans and report zero predicted benefit.
+Spatial makes two multi-kernel decisions. At cycle 0, it jointly dispatches the left, right, and rear cameras' initial MemCopy kernels on three distinct single-core placements; the scheduler records a predicted benefit of 66.67%. At cycle 361,500, it jointly dispatches the front camera's initial MemCopy on one core and the right camera's next convolution on four cores, with a predicted benefit of 48.92%. The remaining 619 decisions select one kernel each. These benefit values are planning estimates against predicted sequential service, not measured request-level speedups. Single-kernel decisions can also occur while other kernels are running, so two joint decisions do not imply that overlap occurred only twice.
 
-CALM produced 135 two-camera joint decisions and no triple or cross-class decision. Its mean core allocation was only 0.6% lower than Preemptive's, and its camera allocation was 0.9% lower. The common singleton policy therefore removed the large allocation difference between the two policies; the remaining difference comes from CALM's selected joint camera plans.
+| Policy | Profiled kernel invocations | Mean kernel latency (us) | Sum of kernel latencies (ms) | Mean summed kernel latency per request (ms) |
+|---|---:|---:|---:|---:|
+| Sequential | 624 | 6.046 | 3.772 | 0.943 |
+| Preemptive | 624 | 7.329 | 4.573 | 1.143 |
+| Spatial | 624 | 15.373 | 9.593 | 2.398 |
+| Virtual | 624 | 20.430 | 12.748 | 3.187 |
 
-The 135 CALM joint decisions consisted of three repeated plan forms, each selected 45 times. Their predicted benefits were 40.0%, 20.0%, and 10.07%, giving a mean positive benefit of 23.36% and a median of 20.0%. Joint decisions represented only 0.338% of all measured decisions, so mean predicted benefit across every CALM decision was 0.0790%. The trace exercises a small number of repeated same-class camera pairs rather than broad heterogeneous co-location.
+Kernel-profile averages are weighted by invocation count across 66 kernel signatures. The latency sum adds every kernel's start-to-completion interval, including concurrently running kernels. Sequential and Preemptive run one kernel at a time in this trace, so their summed kernel latencies approximately equal batch makespan. Spatial's 9.593 ms of summed kernel time fits into a 2.911 ms batch, showing an average of about 3.30 active kernels over that interval. Virtual's 12.748 ms sum spans a 3.187 ms batch because four isolated domains execute concurrently; the ratio is exactly four active kernels on average. These ratios measure overlap, not the speed of an individual kernel. Under Preemptive, the mean request execution interval exceeds its mean per-request kernel sum by about 3.224 ms, reflecting time spent between that request's kernels while other cameras progress.
 
-The two Virtual multi-kernel decisions paired lane and driver kernels in separate fixed domains. They represent concurrent dispatch across isolated partitions, not dynamic sharing of one core pool.
+The most expensive recurring camera kernels illustrate the placement cost. The first convolution, with input shape `1x208x208x12`, averages 153.069 us under Sequential, 188.069 us under Preemptive, 536.498 us under Spatial, and 373.073 us under Virtual. The input MemCopy, with input shape `1x416x416x3`, averages 136.256, 137.437, 338.591, and 549.071 us in the same order. Spatial's first convolution uses two cores on average, compared with eight under Sequential and Preemptive. Virtual also uses two cores for that convolution, while its four requests execute concurrently in separate domains. These slower kernels increase its aggregate kernel time even as concurrent progress shortens the batch.
 
-The kernel profiles aggregate invocations with the same kernel type and tensor shapes. Latency is weighted by invocation count, and core-count variance is pooled across profile entries.
-
-| Policy | Profiled kernels | Weighted mean kernel latency (us) | Sum of kernel latencies (ms) | Mean cores | Core-count stddev |
-|---|---:|---:|---:|---:|---:|
-| Sequential | 40,050 | 3.985 | 159.589 | 5.336 | 2.177 |
-| Preemptive | 40,050 | 5.496 | 220.126 | 3.983 | 1.953 |
-| Virtual | 40,050 | 16.561 | 663.265 | 2.552 | 1.116 |
-| CALM | 40,050 | 5.366 | 214.924 | 3.960 | 1.948 |
-
-| Policy | Camera mean kernel latency (us) | Lane mean kernel latency (us) | Driver mean kernel latency (us) |
-|---|---:|---:|---:|
-| Sequential | 1.756 | 26.444 | 1.801 |
-| Preemptive | 3.912 | 26.444 | 1.801 |
-| Virtual | 3.679 | 137.053 | 7.953 |
-| CALM | 3.727 | 26.444 | 1.801 |
-
-CALM accumulated 0.581 ms of kernel latency per camera request, 4.7% less than Preemptive's 0.610 ms. The intervals between a request's kernels contributed another 0.103 ms under CALM and 0.097 ms under Preemptive. CALM therefore retained a shorter first-start-to-completion interval, but its 0.081 ms increase in initial queueing outweighed the 0.023 ms execution reduction and produced the higher response time.
-
-The largest shared-device kernel contributors were all stable across Sequential, Preemptive, and CALM. The initial lane convolution averaged 354.723 us and contributed 21.283 ms across 60 requests. The final lane upsample MemCopy averaged 294.934 us and contributed 17.696 ms, while the `64x128x384` depthwise downsampling convolution averaged 249.500 us and contributed 14.970 ms.
-
-The camera input MemCopy varied with concurrency: 66.576 us under Sequential, 95.278 us under Preemptive, 90.501 us under CALM, and 208.022 us under Virtual. Under Virtual, the initial lane convolution increased to 1.710 ms and contributed 102.589 ms, while the final lane upsample increased to 1.049 ms and contributed 62.915 ms. These kernels explain a substantial portion of the Virtual lane slowdown.
-
-Simulator wall time measures Python planning, materialization, and event processing rather than simulated accelerator latency. Virtual was fastest at 3,685.5 seconds. Preemptive and Sequential required 4,358.1 and 4,380.6 seconds. CALM was slowest at 5,168.4 seconds, 18.6% slower than Preemptive and 40.2% slower than Virtual. The profiles do not separate joint-plan search cost from the remaining simulator work, but CALM's additional candidate evaluation is consistent with this overhead.
+The metadata records host-side simulator wall times of 56.6 s for Sequential, 76.0 s for Preemptive, 72.3 s for Spatial, and 49.4 s for Virtual. This timer surrounds `runtime.run()`; it excludes model compilation and CSV export. The three shared-mesh profiles came from a parallel four-variant run, while the corrected Virtual profile came from a subsequent single-variant run. These host times are not directly comparable as scheduling overhead and are not simulated accelerator latency.
 
 ### Qualitative Comparison of Scheduler Variants
 
-**Sequential** achieved the lowest mean response because each short workload received broad access to the mesh and completed before the next non-camera release. Its weakness appears in synchronized camera bursts: later requests wait for earlier requests, producing the highest camera p95 despite the shortest per-request execution time.
+**Sequential**
 
-**Preemptive** provided the best camera tail latency and the lowest mean response among the concurrent shared-device policies. Kernel-boundary interleaving reduced camera admission delay without changing the isolated lane and driver paths. It used fewer cores per camera kernel than Sequential and incurred longer individual request execution, but it prevented the long burst-position delay seen under Sequential.
+One request retains the shared eight-core mesh until completion. This gives the lowest mean response and shortest individual execution, but camera position in the synchronized burst determines response time. It finishes the last request at 3.772 ms.
 
-**Virtual** provided fixed spatial isolation and the shortest simulator wall time. The `4/2/2` partition was inefficient for the measured service demands. Lane and driver started immediately but ran much longer on their restricted domains, while the four camera streams still serialized within the camera partition. Isolation delivered no SLO advantage because all shared-device policies already had large slack.
+**Preemptive**
 
-**CALM** selected 135 joint camera pairs and achieved slightly lower accumulated camera kernel latency and execution time than Preemptive. It nevertheless delayed the first kernel of camera requests more often, resulting in worse camera mean and tail response. Its core allocation was nearly identical to Preemptive after singleton placement was unified, and lane and driver behavior was exactly identical. CALM never formed a cross-class plan in this trace.
+Kernel-boundary switching lets each camera begin early. The four requests then take turns on the shared device, and each remains active for more than 4 ms before finishing. In this batch, that scheduling pattern worsens both mean response and makespan relative to Sequential.
 
-The result supports kernel-boundary interleaving for synchronized camera requests: Preemptive reduced camera p95 by 23.6% relative to Sequential. It does not establish an advantage for CALM's joint placement search. CALM improved neither deadline misses nor mean or tail response relative to Preemptive, used joint planning in only 0.338% of measured decisions, and incurred the highest simulator wall time.
+**Spatial**
 
-The workload remains underloaded relative to its SLOs. The worst response was 8.223 ms under Virtual, while the shortest deadline was 25 ms. A stronger CALM evaluation requires overlapping camera, lane, and driver releases, enough sustained contention to create repeated cross-class choices, and invocation-level measurements of observed overlap and joint makespan. Those conditions are necessary to determine whether predicted joint-plan benefits translate into workload-level latency or deadline improvements.
+Joint placement and later concurrent dispatch allow several cameras to progress at once. Per-kernel latency rises because kernels generally receive fewer cores, yet the last camera finishes at 2.911 ms, the best batch makespan. Spatial improves completion of the burst rather than its average response relative to Sequential.
+
+**Virtual**
+
+Each request occupies its own two-core, one-DMA partition, and all four partitions run concurrently. Every camera starts immediately and completes at 3.187 ms. This produces a shorter batch makespan than Sequential but a longer mean response; Spatial completes the batch sooner still. The result reflects equal-sized fixed partitions across the full device, with no dynamic transfer of cores between cameras.
+
+The trace tests one deterministic, simultaneous camera burst with no warmup or later arrivals. It supports a Spatial makespan advantage for this configuration and a Sequential mean-response advantage. Four requests cannot establish tail-latency behavior, sustained throughput, or deadline robustness under repeated contention; the 50 ms SLO is far above every observed response.

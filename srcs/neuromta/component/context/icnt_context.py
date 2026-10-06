@@ -203,7 +203,7 @@ class IcntSimulator:
     
     def _physical_channel_key(self, subnet: int, src_coord: tuple[int, int], dst_coord: tuple[int, int], direction: str) -> tuple:
         if self.config.lightweight_channel_mode == ICNT_CHANNEL_MODE_BIDIRECTIONAL_SHARED:
-            endpoint_a, endpoint_b = sorted([src_coord, dst_coord])
+            endpoint_a, endpoint_b = (src_coord, dst_coord) if src_coord <= dst_coord else (dst_coord, src_coord)
             return ("physical_channel", subnet, endpoint_a, endpoint_b)
         return ("physical_channel", subnet, src_coord, dst_coord, direction)
     
@@ -255,130 +255,98 @@ class IcntSimulator:
         })
         return resources
     
-    def _reserve_resource(self, key: tuple, ready_cycle: int, hold_cycles: int) -> dict[str, int]:
-        next_free_cycle = self._resource_next_free_cycle.get(key, 0)
-        start_cycle = max(ready_cycle, next_free_cycle)
+    def _reserve_resource_cycles(self, key: tuple, ready_cycle: int, hold_cycles: int) -> tuple[int, int]:
+        start_cycle = max(ready_cycle, self._resource_next_free_cycle.get(key, 0))
         finish_cycle = start_cycle + hold_cycles
         self._resource_next_free_cycle[key] = finish_cycle
+        return start_cycle, finish_cycle
+
+    def _reserve_resource(self, key: tuple, ready_cycle: int, hold_cycles: int) -> dict[str, int]:
+        start_cycle, finish_cycle = self._reserve_resource_cycles(key, ready_cycle, hold_cycles)
         return {
             "start_cycle": start_cycle,
             "finish_cycle": finish_cycle,
             "queue_delay_cycles": max(0, start_cycle - ready_cycle),
         }
-    
+
     def _send_payload(
         self,
         src_id: int,
         dst_id: int,
+        src_coord: tuple[int, int],
+        dst_coord: tuple[int, int],
+        route: list[dict[str, Any]],
         subnet: int,
         n_flits: int,
         is_write: bool,
         is_response: bool,
         current_cycle: int,
         payload_index: int,
-    ) -> dict:
-        src_coord = self.node_id_to_coord(src_id)
-        dst_coord = self.node_id_to_coord(dst_id)
-        route = self.get_xy_route(src_coord, dst_coord)
-        serialization_cycles = max(1, math.ceil(n_flits / self.config.lightweight_flits_per_cycle_per_channel))
-        injection_cycles = max(1, math.ceil(n_flits / self.config.lightweight_injection_flits_per_cycle))
-        egress_cycles = max(1, math.ceil(n_flits / self.config.lightweight_egress_flits_per_cycle))
-        router_alloc_cycles = max(1, getattr(self.config, "lightweight_router_allocation_cycles", 1))
-        packet_startup_cycles = max(0, getattr(self.config, "lightweight_packet_startup_cycles", 1))
-        min_packet_cycles = max(1, getattr(self.config, "lightweight_min_packet_cycles", 1))
-        
-        scheduled_resources = []
-        resource_index = 0
-        
-        injection_resource = {
-            "kind": "injection_port",
-            "key": ("injection_port", subnet, src_coord),
-            "coord": src_coord,
-        }
-        injection = self._reserve_resource(
-            injection_resource["key"],
-            ready_cycle=current_cycle + packet_startup_cycles,
-            hold_cycles=injection_cycles,
-        )
-        scheduled = dict(injection_resource)
-        scheduled.update({
-            "resource_index": resource_index,
-            "hold_cycles": injection_cycles,
-            **injection,
-        })
-        scheduled_resources.append(scheduled)
-        resource_index += 1
-        
-        head_ready_cycle = injection["start_cycle"]
-        tail_ready_cycle = injection["finish_cycle"]
-        
-        for hop in route:
+        timing: tuple[int, ...],
+        profile: bool,
+    ) -> int | dict:
+        flits_per_channel, injection_rate, egress_rate, router_latency, link_latency, router_alloc_cycles, packet_startup_cycles, min_packet_cycles = timing
+        serialization_cycles = max(1, math.ceil(n_flits / flits_per_channel))
+        injection_cycles = max(1, math.ceil(n_flits / injection_rate))
+        egress_cycles = max(1, math.ceil(n_flits / egress_rate))
+        scheduled_resources = [] if profile else None
+
+        injection_key = ("injection_port", subnet, src_coord)
+        injection_ready = current_cycle + packet_startup_cycles
+        injection_start, injection_finish = self._reserve_resource_cycles(injection_key, injection_ready, injection_cycles)
+        if profile:
+            scheduled_resources.append({
+                "kind": "injection_port", "key": injection_key, "coord": src_coord,
+                "resource_index": 0, "hold_cycles": injection_cycles,
+                "start_cycle": injection_start, "finish_cycle": injection_finish,
+                "queue_delay_cycles": max(0, injection_start - injection_ready),
+            })
+        head_ready_cycle = injection_start
+        tail_ready_cycle = injection_finish
+
+        for hop_index, hop in enumerate(route):
             hop_src = hop["src_coord"]
             hop_dst = hop["dst_coord"]
             direction = hop["direction"]
-            router_resource = {
-                "kind": "router_output_port",
-                "key": ("router_output_port", subnet, hop_src, direction),
-                "coord": hop_src,
-                "direction": direction,
-            }
-            router = self._reserve_resource(
-                router_resource["key"],
-                ready_cycle=head_ready_cycle,
-                hold_cycles=router_alloc_cycles,
-            )
-            scheduled = dict(router_resource)
-            scheduled.update({
-                "resource_index": resource_index,
-                "hold_cycles": router_alloc_cycles,
-                **router,
+            router_key = ("router_output_port", subnet, hop_src, direction)
+            router_ready = head_ready_cycle
+            router_start, router_finish = self._reserve_resource_cycles(router_key, router_ready, router_alloc_cycles)
+            if profile:
+                scheduled_resources.append({
+                    "kind": "router_output_port", "key": router_key, "coord": hop_src, "direction": direction,
+                    "resource_index": 1 + 2 * hop_index, "hold_cycles": router_alloc_cycles,
+                    "start_cycle": router_start, "finish_cycle": router_finish,
+                    "queue_delay_cycles": max(0, router_start - router_ready),
+                })
+
+            channel_key = self._physical_channel_key(subnet, hop_src, hop_dst, direction)
+            channel_ready = router_finish + router_latency
+            channel_start, channel_finish = self._reserve_resource_cycles(channel_key, channel_ready, serialization_cycles)
+            if profile:
+                scheduled_resources.append({
+                    "kind": "physical_channel", "key": channel_key, "src_coord": hop_src,
+                    "dst_coord": hop_dst, "direction": direction,
+                    "resource_index": 2 + 2 * hop_index, "hold_cycles": serialization_cycles,
+                    "start_cycle": channel_start, "finish_cycle": channel_finish,
+                    "queue_delay_cycles": max(0, channel_start - channel_ready),
+                })
+
+            head_ready_cycle = channel_start + link_latency
+            tail_ready_cycle = channel_finish + link_latency
+
+        ejection_key = ("ejection_port", subnet, dst_coord)
+        ejection_start, ejection_finish = self._reserve_resource_cycles(ejection_key, tail_ready_cycle, egress_cycles)
+        if profile:
+            scheduled_resources.append({
+                "kind": "ejection_port", "key": ejection_key, "coord": dst_coord,
+                "resource_index": 1 + 2 * len(route), "hold_cycles": egress_cycles,
+                "start_cycle": ejection_start, "finish_cycle": ejection_finish,
+                "queue_delay_cycles": max(0, ejection_start - tail_ready_cycle),
             })
-            scheduled_resources.append(scheduled)
-            resource_index += 1
-            
-            channel_resource = {
-                "kind": "physical_channel",
-                "key": self._physical_channel_key(subnet, hop_src, hop_dst, direction),
-                "src_coord": hop_src,
-                "dst_coord": hop_dst,
-                "direction": direction,
-            }
-            channel = self._reserve_resource(
-                channel_resource["key"],
-                ready_cycle=router["finish_cycle"] + self.config.lightweight_router_latency_cycles,
-                hold_cycles=serialization_cycles,
-            )
-            scheduled = dict(channel_resource)
-            scheduled.update({
-                "resource_index": resource_index,
-                "hold_cycles": serialization_cycles,
-                **channel,
-            })
-            scheduled_resources.append(scheduled)
-            resource_index += 1
-            
-            head_ready_cycle = channel["start_cycle"] + self.config.lightweight_link_latency_cycles
-            tail_ready_cycle = channel["finish_cycle"] + self.config.lightweight_link_latency_cycles
-        
-        ejection_resource = {
-            "kind": "ejection_port",
-            "key": ("ejection_port", subnet, dst_coord),
-            "coord": dst_coord,
-        }
-        ejection = self._reserve_resource(
-            ejection_resource["key"],
-            ready_cycle=tail_ready_cycle,
-            hold_cycles=egress_cycles,
-        )
-        scheduled = dict(ejection_resource)
-        scheduled.update({
-            "resource_index": resource_index,
-            "hold_cycles": egress_cycles,
-            **ejection,
-        })
-        scheduled_resources.append(scheduled)
-        
-        finish_cycle = max(ejection["finish_cycle"], current_cycle + min_packet_cycles)
+
+        finish_cycle = max(ejection_finish, current_cycle + min_packet_cycles)
+        if not profile:
+            return finish_cycle
         return {
             "payload_index": payload_index,
             "current_cycle": current_cycle,
@@ -398,7 +366,7 @@ class IcntSimulator:
             "egress_cycles": egress_cycles,
             "resources": scheduled_resources,
         }
-    
+
     def send_request(
         self,
         src_core_id: Any,
@@ -407,18 +375,23 @@ class IcntSimulator:
         is_write: bool = False,
         is_response: bool | None = None,
         current_cycle: int = 0,
+        *,
+        profile: bool = False,
     ) -> dict:
+        """Return completion cycles; include payload and resource traces with profile=True."""
         if current_cycle < 0:
             raise ValueError("current_cycle must be non-negative")
         if data_size < 0:
             raise ValueError(f"Invalid data_size: {data_size}")
         if is_response is None:
             is_response = not is_write
-        
+
         src_id = self.core_id_to_node_id(src_core_id)
         dst_id = self.core_id_to_node_id(dst_core_id)
         n_flits = math.ceil(data_size / self.config.flit_size)
         if n_flits == 0:
+            if not profile:
+                return {"finish_cycle": current_cycle, "latency_cycles": 0}
             return {
                 "current_cycle": current_cycle,
                 "finish_cycle": current_cycle,
@@ -434,25 +407,39 @@ class IcntSimulator:
                 "is_response": is_response,
                 "payloads": [],
             }
-        
+
         n_payloads = math.ceil(n_flits / self.config.max_payload_size)
-        payloads = []
         payload_issue_gap = max(0, getattr(self.config, "lightweight_payload_issue_gap_cycles", 1))
+        src_coord = self.node_id_to_coord(src_id)
+        dst_coord = self.node_id_to_coord(dst_id)
+        route = self.get_xy_route(src_coord, dst_coord)
+        timing = (
+            self.config.lightweight_flits_per_cycle_per_channel,
+            self.config.lightweight_injection_flits_per_cycle,
+            self.config.lightweight_egress_flits_per_cycle,
+            self.config.lightweight_router_latency_cycles,
+            self.config.lightweight_link_latency_cycles,
+            max(1, getattr(self.config, "lightweight_router_allocation_cycles", 1)),
+            max(0, getattr(self.config, "lightweight_packet_startup_cycles", 1)),
+            max(1, getattr(self.config, "lightweight_min_packet_cycles", 1)),
+        )
+        payloads = [] if profile else None
+        finish_cycle = current_cycle
         for payload_index in range(n_payloads):
             payload_flits = min(self.config.max_payload_size, n_flits - payload_index * self.config.max_payload_size)
             subnet = (src_id + dst_id + payload_index) % self.config.subnets
-            payloads.append(self._send_payload(
-                src_id=src_id,
-                dst_id=dst_id,
-                subnet=subnet,
-                n_flits=payload_flits,
-                is_write=is_write,
-                is_response=is_response,
-                current_cycle=current_cycle + payload_index * payload_issue_gap,
-                payload_index=payload_index,
-            ))
-        
-        finish_cycle = max(payload["finish_cycle"] for payload in payloads)
+            payload = self._send_payload(
+                src_id, dst_id, src_coord, dst_coord, route, subnet, payload_flits, is_write, is_response,
+                current_cycle + payload_index * payload_issue_gap, payload_index, timing, profile,
+            )
+            if profile:
+                payloads.append(payload)
+                finish_cycle = max(finish_cycle, payload["finish_cycle"])
+            else:
+                finish_cycle = max(finish_cycle, payload)
+
+        if not profile:
+            return {"finish_cycle": finish_cycle, "latency_cycles": finish_cycle - current_cycle}
         return {
             "current_cycle": current_cycle,
             "finish_cycle": finish_cycle,
@@ -461,8 +448,8 @@ class IcntSimulator:
             "dst_core_id": dst_core_id,
             "src_id": src_id,
             "dst_id": dst_id,
-            "src_coord": self.node_id_to_coord(src_id),
-            "dst_coord": self.node_id_to_coord(dst_id),
+            "src_coord": src_coord,
+            "dst_coord": dst_coord,
             "data_size": data_size,
             "n_flits": n_flits,
             "n_payloads": n_payloads,
@@ -470,7 +457,7 @@ class IcntSimulator:
             "is_response": is_response,
             "payloads": payloads,
         }
-    
+
     @property
     def resource_next_free_cycle(self) -> dict[tuple, int]:
         return dict(self._resource_next_free_cycle)

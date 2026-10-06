@@ -17,7 +17,7 @@ IMG_PATHS: dict[str, str] = {
 
 LOG_PATHS: dict[str, str] = {
     scheduler_type: os.path.join(CACHE_DIR, f"collocation_{scheduler_type}.csv")
-    for scheduler_type in ("sequential", "virtual", "preemptive", "spatial")
+    for scheduler_type in ("sequential", "virtual", "spatial")
 }
 
 LAYER_ABBRS: dict[str, str] = {

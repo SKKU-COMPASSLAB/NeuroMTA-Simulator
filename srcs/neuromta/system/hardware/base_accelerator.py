@@ -303,38 +303,6 @@ class BaseAccelerator(Device):
         self._host_schedules.append(job_handle)
         return job_handle
 
-    def host_materialize_job(
-        self,
-        core_mesh: np.ndarray,
-        job_method: Callable,
-        *job_args,
-        release_timestamp: int=0,
-        deadline_timestamp: int=-1,
-        **job_kwargs,
-    ) -> HostJob:
-        if not self.is_initialized:
-            raise RuntimeError("The accelerator must be initialized before materializing a HostJob.")
-        if not check_jit_job_prototype(job_method):
-            raise TypeError(f"Job method {job_method.__name__} is not a valid JIT host job prototype.")
-
-        resolved_core_mesh = np.asarray(core_mesh, dtype=int)
-        if resolved_core_mesh.ndim != 2 or resolved_core_mesh.size == 0:
-            raise ValueError(f"Invalid core mesh shape: {resolved_core_mesh.shape}")
-
-        core_ids = resolved_core_mesh.flatten().tolist()
-        if any(core_id < 0 for core_id in core_ids):
-            raise ValueError("A HostJob core mesh cannot contain an invalid core ID.")
-        if len(set(core_ids)) != len(core_ids):
-            raise ValueError("A HostJob core mesh cannot contain duplicate core IDs.")
-
-        missing_core_ids = [core_id for core_id in core_ids if core_id not in self.initialized_cores]
-        if missing_core_ids:
-            raise ValueError(f"Unknown HostJob core IDs: {missing_core_ids}")
-
-        job = job_method(self, resolved_core_mesh.copy(), *job_args, **job_kwargs)
-        job.annotate_schedule(release_timestamp, deadline_timestamp)
-        return job
-
     def host_run_next_event(self, max_timestamp: int=None) -> int:
         if not self.is_initialized:
             raise RuntimeError("The accelerator must be initialized before running Host events.")
@@ -446,9 +414,7 @@ class BaseAccelerator(Device):
                 
         # STEP 3: Run the simulation until all jobs are completed
         if not self.is_idle:
-            self.run_kernels(
-                event_driven_mode=event_driven_mode
-            )
+            self.run_kernels(event_driven_mode=event_driven_mode)
         
         # STEP 4: Return the list of completed jobs   
         jobs = [jh.spawned_job for jh in self._host_schedules if jh.is_spawned]

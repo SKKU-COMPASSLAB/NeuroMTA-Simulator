@@ -328,10 +328,25 @@ class MemorySimulator:
             raise ValueError(f"Address {address} is out of range")
         return ((address - self.mem_addr_offset) // self.config.channel_size_per_instance) % self.config.n_instance
     
-    def get_memory_mapping(self, address: int) -> dict[str, int]:
+    def _mapping_settings(self) -> tuple:
+        granularity = max(1, self.config.lightweight_dma_granularity)
+        burst_size = max(1, self._cfg("lightweight_burst_size_bytes", granularity))
+        row_size = max(burst_size, self._cfg("lightweight_row_size_bytes", 2048))
+        interleave_bytes = max(1, self._cfg("lightweight_channel_interleave_bytes", 64))
+        n_rank = max(1, self._cfg("lightweight_n_rank_per_channel", 1))
+        n_bank_group = max(1, self._cfg("lightweight_n_bank_group_per_rank", 1))
+        n_bank = max(1, self._cfg("lightweight_n_bank_per_bank_group", 1))
+        n_bank_slots = n_rank * n_bank_group * n_bank
+        bursts_per_row = max(1, row_size // burst_size)
+        return (self._cfg("lightweight_address_mapping", "contiguous"), granularity, burst_size, row_size,
+                interleave_bytes, n_rank, n_bank_group, n_bank, n_bank_slots, bursts_per_row)
+
+    def _get_memory_mapping_fields(self, address: int, settings: tuple | None = None) -> tuple[int, ...]:
+        if settings is None:
+            settings = self._mapping_settings()
+        address_mapping, _, burst_size, row_size, interleave_bytes, n_rank, n_bank_group, n_bank, n_bank_slots, bursts_per_row = settings
         instance_id = self.get_instance_id_with_address(address)
         addr_offset = (address - self.mem_addr_offset) % self.config.channel_size_per_instance
-        address_mapping = self._cfg("lightweight_address_mapping", "contiguous")
         if address_mapping == "dramsim3":
             shifted_address = addr_offset >> self._address_shift_bits
             channel_id = self._extract_address_field(shifted_address, "ch")
@@ -340,22 +355,10 @@ class MemorySimulator:
             bank_id = self._extract_address_field(shifted_address, "ba")
             row_id = self._extract_address_field(shifted_address, "ro")
             column_id = self._extract_address_field(shifted_address, "co")
-            burst_size = max(1, self._cfg("lightweight_burst_size_bytes", self.config.lightweight_dma_granularity))
             channel_offset = addr_offset % self.config.channel_size
             column_offset = column_id * burst_size + (addr_offset % burst_size)
-            return {
-                "inst_id": instance_id,
-                "addr": addr_offset,
-                "channel_id": channel_id,
-                "channel_offset": channel_offset,
-                "rank_id": rank_id,
-                "bank_group_id": bank_group_id,
-                "bank_id": bank_id,
-                "row_id": row_id,
-                "column_offset": column_offset,
-            }
+            return (instance_id, addr_offset, channel_id, channel_offset, rank_id, bank_group_id, bank_id, row_id, column_offset)
         if address_mapping == "burst_interleaved":
-            interleave_bytes = max(1, self._cfg("lightweight_channel_interleave_bytes", 64))
             stripe_index = addr_offset // interleave_bytes
             stripe_offset = addr_offset % interleave_bytes
             channel_id = stripe_index % self.config.n_channel_per_instance
@@ -363,13 +366,6 @@ class MemorySimulator:
         else:
             channel_id = addr_offset // self.config.channel_size
             channel_offset = addr_offset % self.config.channel_size
-        burst_size = max(1, self._cfg("lightweight_burst_size_bytes", self.config.lightweight_dma_granularity))
-        row_size = max(burst_size, self._cfg("lightweight_row_size_bytes", 2048))
-        n_rank = max(1, self._cfg("lightweight_n_rank_per_channel", 1))
-        n_bank_group = max(1, self._cfg("lightweight_n_bank_group_per_rank", 1))
-        n_bank = max(1, self._cfg("lightweight_n_bank_per_bank_group", 1))
-        n_bank_slots = n_rank * n_bank_group * n_bank
-        bursts_per_row = max(1, row_size // burst_size)
         burst_index = channel_offset // burst_size
         burst_in_rank_space = burst_index % (n_bank_slots * bursts_per_row)
         bank_slot = burst_in_rank_space % n_bank_slots
@@ -380,6 +376,10 @@ class MemorySimulator:
         bank_group_id = bank_slot_rem // n_bank
         bank_id = bank_slot_rem % n_bank
         column_offset = (column_burst * burst_size) + (channel_offset % burst_size)
+        return (instance_id, addr_offset, channel_id, channel_offset, rank_id, bank_group_id, bank_id, row_id, column_offset)
+
+    def get_memory_mapping(self, address: int) -> dict[str, int]:
+        instance_id, addr_offset, channel_id, channel_offset, rank_id, bank_group_id, bank_id, row_id, column_offset = self._get_memory_mapping_fields(address)
         return {
             "inst_id": instance_id,
             "addr": addr_offset,
@@ -391,8 +391,8 @@ class MemorySimulator:
             "row_id": row_id,
             "column_offset": column_offset,
         }
-    
-    def _iter_dma_chunks(self, address: int, size: int) -> list[dict[str, int]]:
+
+    def _iter_dma_chunks(self, address: int, size: int, collect_profile: bool = False, mapping_settings: tuple | None = None) -> list[dict | tuple]:
         if size < 0:
             raise ValueError(f"Invalid size: {size}")
         if size == 0:
@@ -400,26 +400,38 @@ class MemorySimulator:
         if not self.check_address_range(address) or not self.check_address_range(address + size - 1):
             raise ValueError(f"Address range [{address}, {address + size}) is out of range")
         
+        if mapping_settings is None:
+            mapping_settings = self._mapping_settings()
+        _, granularity, burst_size, row_size, _, _, _, _, _, _ = mapping_settings
         chunks = []
         remaining = size
         current_addr = address
-        granularity = max(1, self.config.lightweight_dma_granularity)
-        burst_size = max(1, self._cfg("lightweight_burst_size_bytes", granularity))
-        row_size = max(burst_size, self._cfg("lightweight_row_size_bytes", 2048))
         
         while remaining > 0:
-            mapping = self.get_memory_mapping(current_addr)
+            mapping = self._get_memory_mapping_fields(current_addr, mapping_settings)
+            inst_id, addr_offset, channel_id, channel_offset, rank_id, bank_group_id, bank_id, row_id, column_offset = mapping
             local_addr = current_addr - self.mem_addr_offset
             granularity_remaining = granularity - (local_addr % granularity)
             burst_remaining = burst_size - (local_addr % burst_size)
-            row_remaining = row_size - (mapping["column_offset"] % row_size)
-            channel_remaining = self.config.channel_size - mapping["channel_offset"]
+            row_remaining = row_size - (column_offset % row_size)
+            channel_remaining = self.config.channel_size - channel_offset
             chunk_size = min(remaining, granularity_remaining, burst_remaining, row_remaining, channel_remaining)
-            chunks.append({
-                "address": current_addr,
-                "size": chunk_size,
-                **mapping,
-            })
+            if collect_profile:
+                chunks.append({
+                    "address": current_addr,
+                    "size": chunk_size,
+                    "inst_id": inst_id,
+                    "addr": addr_offset,
+                    "channel_id": channel_id,
+                    "channel_offset": channel_offset,
+                    "rank_id": rank_id,
+                    "bank_group_id": bank_group_id,
+                    "bank_id": bank_id,
+                    "row_id": row_id,
+                    "column_offset": column_offset,
+                })
+            else:
+                chunks.append((chunk_size, inst_id, channel_id, rank_id, bank_group_id, bank_id, row_id))
             current_addr += chunk_size
             remaining -= chunk_size
         
@@ -428,17 +440,7 @@ class MemorySimulator:
     def _retire_completed_bursts(self, completions: list[int], issue_cycle: int) -> list[int]:
         return [cycle for cycle in completions if cycle > issue_cycle]
     
-    def send_request(
-        self,
-        addr: int,
-        size: int,
-        is_write: bool,
-        current_cycle: int = 0,
-    ) -> dict:
-        if current_cycle < 0:
-            raise ValueError("current_cycle must be non-negative")
-        
-        chunks = self._iter_dma_chunks(address=addr, size=size)
+    def _request_timing(self, size: int, is_write: bool, n_chunks: int) -> tuple:
         raw_base_latency = self.config.lightweight_write_latency_cycles if is_write else self.config.lightweight_read_latency_cycles
         enable_amortization = self._cfg("lightweight_enable_latency_amortization", True)
         amortization_bytes = max(1, self._cfg("lightweight_latency_amortization_bytes", size if size > 0 else 1))
@@ -457,14 +459,79 @@ class MemorySimulator:
         row_miss_penalty = scale_latency(self._cfg("lightweight_row_miss_penalty_cycles", 0))
         row_conflict_penalty = scale_latency(self._cfg("lightweight_row_conflict_penalty_cycles", row_miss_penalty))
         bank_group_penalty = scale_latency(self._cfg("lightweight_bank_group_penalty_cycles", 0))
-        max_outstanding = max(1, self._cfg("lightweight_dma_max_outstanding_bursts", len(chunks) if chunks else 1))
+        max_outstanding = max(1, self._cfg("lightweight_dma_max_outstanding_bursts", n_chunks if n_chunks else 1))
         channel_max_outstanding = max(1, self._cfg("lightweight_channel_max_outstanding_bursts", max_outstanding))
         request_queue_depth = max(1, self._cfg("lightweight_request_queue_depth", 32))
         concurrent_gap = self._cfg("lightweight_concurrent_request_command_gap_cycles", 0)
         concurrent_gap_threshold = self._cfg("lightweight_concurrent_request_command_gap_threshold", 0)
         concurrent_gap_limit = self._cfg("lightweight_concurrent_request_command_gap_limit", 1)
 
-        instance_id = chunks[0]["inst_id"] if chunks else self.get_instance_id_with_address(addr)
+        return (
+            base_latency,
+            write_accept_latency,
+            write_completion_policy,
+            bandwidth,
+            instance_issue_gap,
+            issue_gap,
+            read_to_write_turnaround,
+            write_to_read_turnaround,
+            request_startup,
+            row_hit_latency,
+            row_miss_penalty,
+            row_conflict_penalty,
+            bank_group_penalty,
+            max_outstanding,
+            channel_max_outstanding,
+            request_queue_depth,
+            concurrent_gap,
+            concurrent_gap_threshold,
+            concurrent_gap_limit,
+        )
+
+    def _schedule_request(
+        self,
+        addr: int,
+        size: int,
+        is_write: bool,
+        current_cycle: int = 0,
+        collect_profile: bool = False,
+        timing_cache: dict[int, tuple] | None = None,
+        mapping_settings: tuple | None = None,
+    ) -> int | dict:
+        if current_cycle < 0:
+            raise ValueError("current_cycle must be non-negative")
+
+        chunks = self._iter_dma_chunks(address=addr, size=size, collect_profile=collect_profile, mapping_settings=mapping_settings)
+        timing = timing_cache.get(len(chunks)) if timing_cache is not None else None
+        if timing is None:
+            timing = self._request_timing(size, is_write, len(chunks))
+            if timing_cache is not None:
+                timing_cache[len(chunks)] = timing
+        (
+            base_latency,
+            write_accept_latency,
+            write_completion_policy,
+            bandwidth,
+            instance_issue_gap,
+            issue_gap,
+            read_to_write_turnaround,
+            write_to_read_turnaround,
+            request_startup,
+            row_hit_latency,
+            row_miss_penalty,
+            row_conflict_penalty,
+            bank_group_penalty,
+            max_outstanding,
+            channel_max_outstanding,
+            request_queue_depth,
+            concurrent_gap,
+            concurrent_gap_threshold,
+            concurrent_gap_limit,
+        ) = timing
+        accept_write = is_write and write_completion_policy == "accept"
+        track_accept = collect_profile or accept_write
+
+        instance_id = (chunks[0]["inst_id"] if collect_profile else chunks[0][1]) if chunks else self.get_instance_id_with_address(addr)
         request_completions = self._retire_completed_bursts(self._instance_request_completions[instance_id], current_cycle)
         request_admit_cycle = current_cycle
         if len(request_completions) >= request_queue_depth:
@@ -476,16 +543,26 @@ class MemorySimulator:
         effective_instance_issue_gap = instance_issue_gap + contention_gap
         self._instance_request_completions[instance_id] = request_completions
         
-        scheduled_chunks = []
+        scheduled_chunks = [] if collect_profile else None
         finish_cycle = request_admit_cycle + request_startup
         retire_finish_cycle = finish_cycle
-        accept_finish_cycle = finish_cycle
+        accept_finish_cycle = finish_cycle if track_accept else None
         first_data_cycle = None
         issue_cycle = request_admit_cycle + request_startup
         
         for chunk in chunks:
-            instance_completions = self._retire_completed_bursts(self._instance_burst_completions[chunk["inst_id"]], issue_cycle)
-            channel_key = (chunk["inst_id"], chunk["channel_id"])
+            if collect_profile:
+                chunk_size = chunk["size"]
+                chunk_instance_id = chunk["inst_id"]
+                channel_id = chunk["channel_id"]
+                rank_id = chunk["rank_id"]
+                bank_group_id = chunk["bank_group_id"]
+                bank_id = chunk["bank_id"]
+                row_id = chunk["row_id"]
+            else:
+                chunk_size, chunk_instance_id, channel_id, rank_id, bank_group_id, bank_id, row_id = chunk
+            instance_completions = self._retire_completed_bursts(self._instance_burst_completions[chunk_instance_id], issue_cycle)
+            channel_key = (chunk_instance_id, channel_id)
             channel_completions = self._retire_completed_bursts(self._channel_burst_completions[channel_key], issue_cycle)
             if len(instance_completions) >= max_outstanding or len(channel_completions) >= channel_max_outstanding:
                 earliest_completion = min(
@@ -495,22 +572,22 @@ class MemorySimulator:
                 issue_cycle = max(issue_cycle, earliest_completion)
                 instance_completions = self._retire_completed_bursts(instance_completions, issue_cycle)
                 channel_completions = self._retire_completed_bursts(channel_completions, issue_cycle)
-            self._instance_burst_completions[chunk["inst_id"]] = instance_completions
+            self._instance_burst_completions[chunk_instance_id] = instance_completions
             self._channel_burst_completions[channel_key] = channel_completions
             
-            bank_group_key = (*channel_key, chunk["rank_id"], chunk["bank_group_id"])
-            bank_key = (*bank_group_key, chunk["bank_id"])
+            bank_group_key = (*channel_key, rank_id, bank_group_id)
+            bank_key = (*bank_group_key, bank_id)
             row_key = bank_key
             
             command_start_cycle = max(
                 issue_cycle,
-                self._instance_command_next_free_cycle[chunk["inst_id"]],
+                self._instance_command_next_free_cycle[chunk_instance_id],
                 self._channel_command_next_free_cycle[channel_key],
             )
             bank_ready_cycle = self._bank_next_free_cycle.get(bank_key, 0)
             bank_group_ready_cycle = self._bank_group_next_free_cycle.get(bank_group_key, 0)
             open_row = self._open_row.get(row_key)
-            if open_row == chunk["row_id"]:
+            if open_row == row_id:
                 row_latency = row_hit_latency
             elif open_row is None:
                 row_latency = row_miss_penalty
@@ -523,49 +600,50 @@ class MemorySimulator:
             if last_is_write is not None and last_is_write != is_write:
                 bus_start_cycle += write_to_read_turnaround if last_is_write else read_to_write_turnaround
             
-            transfer_cycles = max(1, math.ceil(chunk["size"] / bandwidth))
+            transfer_cycles = max(1, math.ceil(chunk_size / bandwidth))
             bus_finish_cycle = bus_start_cycle + transfer_cycles
             chunk_finish_cycle = bus_finish_cycle + base_latency
-            chunk_accept_cycle = command_start_cycle + write_accept_latency if is_write else chunk_finish_cycle
-            queue_delay_cycles = max(0, bus_start_cycle - issue_cycle)
+            if track_accept:
+                chunk_accept_cycle = command_start_cycle + write_accept_latency if is_write else chunk_finish_cycle
             
-            self._instance_command_next_free_cycle[chunk["inst_id"]] = command_start_cycle + effective_instance_issue_gap
+            self._instance_command_next_free_cycle[chunk_instance_id] = command_start_cycle + effective_instance_issue_gap
             self._channel_command_next_free_cycle[channel_key] = command_start_cycle + issue_gap
             self._channel_next_free_cycle[channel_key] = bus_finish_cycle
             self._channel_last_is_write[channel_key] = is_write
             self._bank_next_free_cycle[bank_key] = bus_finish_cycle
             self._bank_group_next_free_cycle[bank_group_key] = bus_start_cycle + bank_group_penalty
-            self._open_row[row_key] = chunk["row_id"]
+            self._open_row[row_key] = row_id
             retire_finish_cycle = max(retire_finish_cycle, chunk_finish_cycle)
-            accept_finish_cycle = max(accept_finish_cycle, chunk_accept_cycle)
-            finish_cycle = accept_finish_cycle if is_write and write_completion_policy == "accept" else retire_finish_cycle
-            first_data_cycle = chunk_finish_cycle if first_data_cycle is None else min(first_data_cycle, chunk_finish_cycle)
-            outstanding_completion_cycle = (
-                chunk_accept_cycle
-                if is_write and write_completion_policy == "accept"
-                else chunk_finish_cycle
-            )
+            if track_accept:
+                accept_finish_cycle = max(accept_finish_cycle, chunk_accept_cycle)
+            if collect_profile:
+                first_data_cycle = chunk_finish_cycle if first_data_cycle is None else min(first_data_cycle, chunk_finish_cycle)
+            outstanding_completion_cycle = chunk_accept_cycle if accept_write else chunk_finish_cycle
             instance_completions.append(outstanding_completion_cycle)
             channel_completions.append(outstanding_completion_cycle)
             
-            scheduled_chunk = dict(chunk)
-            scheduled_chunk.update({
-                "command_start_cycle": command_start_cycle,
-                "dram_ready_cycle": dram_ready_cycle,
-                "bus_start_cycle": bus_start_cycle,
-                "bus_finish_cycle": bus_finish_cycle,
-                "finish_cycle": chunk_finish_cycle,
-                "accept_cycle": chunk_accept_cycle,
-                "transfer_cycles": transfer_cycles,
-                "base_latency_cycles": base_latency,
-                "row_latency_cycles": row_latency,
-                "queue_delay_cycles": queue_delay_cycles,
-            })
-            scheduled_chunks.append(scheduled_chunk)
+            if collect_profile:
+                scheduled_chunk = dict(chunk)
+                scheduled_chunk.update({
+                    "command_start_cycle": command_start_cycle,
+                    "dram_ready_cycle": dram_ready_cycle,
+                    "bus_start_cycle": bus_start_cycle,
+                    "bus_finish_cycle": bus_finish_cycle,
+                    "finish_cycle": chunk_finish_cycle,
+                    "accept_cycle": chunk_accept_cycle,
+                    "transfer_cycles": transfer_cycles,
+                    "base_latency_cycles": base_latency,
+                    "row_latency_cycles": row_latency,
+                    "queue_delay_cycles": max(0, bus_start_cycle - issue_cycle),
+                })
+                scheduled_chunks.append(scheduled_chunk)
             issue_cycle = command_start_cycle + effective_instance_issue_gap
 
         self._instance_request_completions[instance_id].append(retire_finish_cycle)
-        
+        finish_cycle = accept_finish_cycle if accept_write else retire_finish_cycle
+
+        if not collect_profile:
+            return finish_cycle
         return {
             "current_cycle": current_cycle,
             "finish_cycle": finish_cycle,
@@ -579,7 +657,22 @@ class MemorySimulator:
             "n_chunks": len(scheduled_chunks),
             "chunks": scheduled_chunks,
         }
-    
+
+    def send_request(
+        self,
+        addr: int,
+        size: int,
+        is_write: bool,
+        current_cycle: int = 0,
+        *,
+        profile: bool = False,
+    ) -> dict:
+        """Schedule one request; detailed burst data is opt-in for validation."""
+        result = self._schedule_request(addr, size, is_write, current_cycle, collect_profile=profile)
+        if profile:
+            return result
+        return {"finish_cycle": result, "latency_cycles": result - current_cycle}
+
     def send_requests(
         self,
         addrs: list[int],
@@ -591,11 +684,12 @@ class MemorySimulator:
         if current_cycle < 0:
             raise ValueError("current_cycle must be non-negative")
         finish_cycle = current_cycle
+        timing_cache = {}
+        mapping_settings = self._mapping_settings() if addrs else None
         for addr in addrs:
-            result = self.send_request(addr=addr, size=size, is_write=is_write, current_cycle=current_cycle)
-            finish_cycle = max(finish_cycle, result["finish_cycle"])
+            request_finish = self._schedule_request(addr, size, is_write, current_cycle, timing_cache=timing_cache, mapping_settings=mapping_settings)
+            finish_cycle = max(finish_cycle, request_finish)
         return {
-            "current_cycle": current_cycle,
             "finish_cycle": finish_cycle,
             "latency_cycles": finish_cycle - current_cycle,
         }

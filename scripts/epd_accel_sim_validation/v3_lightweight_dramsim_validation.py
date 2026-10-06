@@ -18,7 +18,7 @@ if SRCS_ROOT not in sys.path:
 import pydramsim3
 
 from neuromta.framework import parse_freq_str, parse_mem_cap_str
-from neuromta.component.context.global_context import MainMemoryConfig, MemorySimulator
+from neuromta.component.context.mem_context import MemoryConfig, MemorySimulator
 
 
 CACHE_DIR = os.environ.get("NEUROMTA_VALIDATION_CACHE_DIR", os.path.join(os.path.dirname(__file__), ".cache"))
@@ -172,7 +172,7 @@ def percentile(values: list[int], quantile: float) -> float:
 
 
 def create_lightweight_simulator(preset: MemoryPreset) -> MemorySimulator:
-    config = MainMemoryConfig(
+    config = MemoryConfig(
         processor_clock_freq=parse_freq_str("1GHz"),
         n_instance=1,
         channel_size=preset.channel_size,
@@ -243,6 +243,7 @@ def run_lightweight_trace(requests: list[Request], preset: MemoryPreset) -> Trac
             size=request.size,
             is_write=request.is_write,
             current_cycle=request.issue_cycle,
+            profile=True,
         )
         completions[request.request_id] = result["finish_cycle"]
         latencies[request.request_id] = result["latency_cycles"]

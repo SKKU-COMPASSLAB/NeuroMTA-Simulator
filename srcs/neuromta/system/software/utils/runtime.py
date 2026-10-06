@@ -356,8 +356,12 @@ class MeshDeviceRuntime(ABC):
     def workloads(self) -> tuple[MeshDeviceRuntimeWorkloadState, ...]:
         return tuple(self._workload_states.values())
 
-    def run(self) -> list[HostJob]:
+    def run(self, collect_jobs: bool = True, progress_callback: Callable[[int, int], None] | None = None, progress_interval: int = 1000) -> list[HostJob] | int:
+        if progress_interval <= 0:
+            raise ValueError("progress_interval must be positive.")
         jobs: list[HostJob] = []
+        dispatched_job_count = 0
+        completed_job_count = 0
         completion_events: list[MeshDeviceRuntimeKernelMaterialzer.Token] = []
 
         while not all(workload_state.is_completed for workload_state in self._workload_states.values()):
@@ -393,7 +397,9 @@ class MeshDeviceRuntime(ABC):
                 if token.workload_state.workload_id not in self._dispatched_workload_ids:
                     self._dispatched_workload_ids.add(token.workload_state.workload_id)
                     self._on_workload_dispatched(token.workload_state)
-                jobs.append(token.host_job)
+                dispatched_job_count += 1
+                if collect_jobs:
+                    jobs.append(token.host_job)
 
             if kernel_tokens:
                 metadata = self.kernel_materializer.scheduler.decision_metadata
@@ -416,6 +422,9 @@ class MeshDeviceRuntime(ABC):
                     for tensor_id in token.action.release_tensor_ids:
                         self.kernel_materializer.release_tensor(workload_state, tensor_id)
                     workload_state.commit_current_actions()
+                    completed_job_count += 1
+                    if progress_callback is not None and completed_job_count % progress_interval == 0:
+                        progress_callback(completed_job_count, self._device.timestamp)
                     self.kernel_materializer.scheduler.on_complete(workload_state.workload_id, token.action.kernel_id, self._device.timestamp)
                     if workload_state.is_completed:
                         workload_state._completion_cycle = self._device.timestamp
@@ -424,7 +433,7 @@ class MeshDeviceRuntime(ABC):
             elif next_workload_arrival is None and not self._running_kernel_ids:
                 raise RuntimeError("Runtime reached a deadlock with incomplete workloads.")
 
-        return jobs
+        return jobs if collect_jobs else dispatched_job_count
 
     def _reset_policy_state(self) -> None:
         return None
@@ -897,30 +906,38 @@ def _mesh_stage_ops(kernel: 'MeshKernel', stage: StagePlan) -> int:
                 output_channels_per_group = ofm.shape[3] // groups
                 input_tiles = {(location.ref.coord[1], location.ref.coord[2], location.ref.coord[3]) for location in inputs[0]}
                 weight_tiles = [location.ref.coord for location in inputs[1]]
-                for row in range(row_start, row_end):
-                    for column in range(column_start, column_end):
-                        for kh in range(kernel_height):
-                            input_row = row * stride_height + kh * dilation_height - padding_top
-                            if input_row < 0 or input_row >= ifm.shape[1]:
-                                continue
-                            for kw in range(kernel_width):
-                                input_column = column * stride_width + kw * dilation_width - padding_left
-                                if input_column < 0 or input_column >= ifm.shape[2]:
-                                    continue
-                                for weight_row, weight_column, weight_output, weight_input in weight_tiles:
-                                    if weight_row != kh or weight_column != kw:
-                                        continue
-                                    for group in range(groups):
-                                        output_start = max(coord[3] * ofm.tile_shape[3], group * output_channels_per_group, weight_output * wgt.tile_shape[2])
-                                        output_end = min(ofm.shape[3], (coord[3] + 1) * ofm.tile_shape[3], (group + 1) * output_channels_per_group, (weight_output + 1) * wgt.tile_shape[2])
-                                        if output_start >= output_end:
-                                            continue
-                                        input_start = group * input_channels_per_group + weight_input * wgt.tile_shape[3]
-                                        input_end = min((group + 1) * input_channels_per_group, input_start + wgt.tile_shape[3])
-                                        for channel_tile in range(input_start // ifm.tile_shape[3], (input_end - 1) // ifm.tile_shape[3] + 1):
-                                            if (input_row // ifm.tile_shape[1], input_column // ifm.tile_shape[2], channel_tile) in input_tiles:
-                                                channel_count = max(0, min(input_end, (channel_tile + 1) * ifm.tile_shape[3]) - max(input_start, channel_tile * ifm.tile_shape[3]))
-                                                total += 2 * output_batches * (output_end - output_start) * channel_count
+                # Count output positions by the input spatial tile they read. The
+                # count is independent of weight/output-channel tiles.
+                spatial_counts = {}
+                for kh, kw in {(tile[0], tile[1]) for tile in weight_tiles}:
+                    positions = {}
+                    for row in range(row_start, row_end):
+                        input_row = row * stride_height + kh * dilation_height - padding_top
+                        if input_row < 0 or input_row >= ifm.shape[1]:
+                            continue
+                        input_row_tile = input_row // ifm.tile_shape[1]
+                        for column in range(column_start, column_end):
+                            input_column = column * stride_width + kw * dilation_width - padding_left
+                            if 0 <= input_column < ifm.shape[2]:
+                                spatial_tile = (input_row_tile, input_column // ifm.tile_shape[2])
+                                positions[spatial_tile] = positions.get(spatial_tile, 0) + 1
+                    spatial_counts[kh, kw] = positions
+                for weight_row, weight_column, weight_output, weight_input in weight_tiles:
+                    positions = spatial_counts[weight_row, weight_column]
+                    if not positions:
+                        continue
+                    for group in range(groups):
+                        output_start = max(coord[3] * ofm.tile_shape[3], group * output_channels_per_group, weight_output * wgt.tile_shape[2])
+                        output_end = min(ofm.shape[3], (coord[3] + 1) * ofm.tile_shape[3], (group + 1) * output_channels_per_group, (weight_output + 1) * wgt.tile_shape[2])
+                        if output_start >= output_end:
+                            continue
+                        input_start = group * input_channels_per_group + weight_input * wgt.tile_shape[3]
+                        input_end = min((group + 1) * input_channels_per_group, input_start + wgt.tile_shape[3])
+                        for channel_tile in range(input_start // ifm.tile_shape[3], (input_end - 1) // ifm.tile_shape[3] + 1):
+                            position_count = sum(count for (input_row_tile, input_column_tile), count in positions.items() if (input_row_tile, input_column_tile, channel_tile) in input_tiles)
+                            if position_count:
+                                channel_count = max(0, min(input_end, (channel_tile + 1) * ifm.tile_shape[3]) - max(input_start, channel_tile * ifm.tile_shape[3]))
+                                total += 2 * output_batches * (output_end - output_start) * channel_count * position_count
                 if stage.group.last_chunk and len(descriptor.input_tensors) > 2:
                     total += output_elements
             else:
