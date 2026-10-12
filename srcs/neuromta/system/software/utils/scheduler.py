@@ -144,7 +144,13 @@ class MeshDeviceScheduler:
         self._submission_indices = {}
         self._next_submission_index = 0
 
-    def schedule_actions(self, runtime_context, actions: list[tuple], persistent_state_placements: dict[str, MeshDeviceCompiledTensorStats] | None = None, running_kernel_ids: tuple[str, ...] = ()) -> tuple[list[tuple[MeshDeviceCompiledAction, Any]], list[tuple[MeshDeviceCompiledAction, Any]]]:
+    def schedule_actions(
+        self, 
+        runtime_context, 
+        actions: list[tuple], 
+        persistent_state_placements: dict[str, MeshDeviceCompiledTensorStats] | None = None, 
+        running_kernel_ids: tuple[str, ...] = ()
+    ) -> tuple[list[tuple[MeshDeviceCompiledAction, Any]], list[tuple[MeshDeviceCompiledAction, Any]]]:
         if runtime_context is None:
             raise ValueError("A runtime context must be registered before scheduling kernel actions.")
 

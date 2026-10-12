@@ -28,35 +28,36 @@ class VirtualScheduler(MeshDeviceScheduler):
 class VirtualRuntime(MeshDeviceRuntime):
     def __init__(self, device_desc, instances=None, kernel_materializer=None, scheduler=None, enable_debug_log=False, require_full_coverage=True, exclusive_dma=True):
         super().__init__(device_desc, kernel_materializer=kernel_materializer, scheduler=VirtualScheduler() if scheduler is None and kernel_materializer is None else scheduler, enable_debug_log=enable_debug_log)
+        
         domains = (self._device_domain,) if instances is None else tuple(instances)
+        
         if not domains or any(not isinstance(domain, MeshSchedulingDomain) for domain in domains):
             raise TypeError("instances must contain MeshSchedulingDomain objects.")
         if len({domain.domain_id for domain in domains}) != len(domains):
             raise ValueError("Virtual instance domain IDs must be unique.")
+        
         device_ccg_ids = set(self._device_rt_context.ccg_tile_ids)
         device_dma_ids = set(self._device_rt_context.dma_tile_ids)
         assigned_ccg_ids = set()
         assigned_dma_ids = set()
-        device_mesh = self._device.get_ccg_tile_mesh()
+        
         for domain in domains:
             ccg_ids = set(domain.ccg_tile_mesh.flatten().tolist())
             dma_ids = set(domain.dma_ids)
+            
             if not ccg_ids.issubset(device_ccg_ids) or not dma_ids.issubset(device_dma_ids):
                 raise ValueError(f"Virtual domain '{domain.domain_id}' contains resources outside the device.")
-            positions = [tuple(position) for core_id in ccg_ids for position in zip(*((device_mesh == core_id).nonzero()))]
-            rows = sorted({position[0] for position in positions})
-            columns = sorted({position[1] for position in positions})
-            expected = device_mesh[rows[0]:rows[-1] + 1, columns[0]:columns[-1] + 1]
-            if expected.shape != domain.ccg_tile_mesh.shape or not (expected == domain.ccg_tile_mesh).all():
-                raise ValueError(f"Virtual domain '{domain.domain_id}' must be a contiguous rectangular submesh.")
             if assigned_ccg_ids & ccg_ids:
                 raise ValueError("Virtual domains must not overlap in CCG resources.")
             if exclusive_dma and assigned_dma_ids & dma_ids:
                 raise ValueError("Virtual domains must not overlap in DMA resources when exclusive_dma is enabled.")
+            
             assigned_ccg_ids.update(ccg_ids)
             assigned_dma_ids.update(dma_ids)
+            
         if require_full_coverage and assigned_ccg_ids != device_ccg_ids:
             raise ValueError("Virtual domains must cover every device CCG when require_full_coverage is enabled.")
+        
         self._virtual_domains = {domain.domain_id: domain for domain in domains}
         self._domain_workloads = {domain.domain_id: [] for domain in domains}
         self._active_workload_by_domain = {domain.domain_id: None for domain in domains}

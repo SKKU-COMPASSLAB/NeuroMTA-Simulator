@@ -36,16 +36,16 @@ def reduction_kernel_workload(M, N, dtype=torch.bfloat16):
 
 
 WORKLOADS: dict[str, Callable] = {
-    "linear_large": lambda: linear_kernel_workload(32, 1024, 1024),
-    "linear_medium": lambda: linear_kernel_workload(32, 512, 512),
+    "linear_large": lambda: linear_kernel_workload(32, 2048, 2048),
+    "linear_medium": lambda: linear_kernel_workload(32, 1024, 1024),
     "linear_small": lambda: linear_kernel_workload(32, 256, 256),
     "conv2d_large": lambda: conv2d_kernel_workload(32, 64, 32, 32, 128, 3, 3, stride=1, padding=1, dilation=1),
     "conv2d_medium": lambda: conv2d_kernel_workload(32, 32, 16, 16, 64, 3, 3, stride=1, padding=1, dilation=1),
     "conv2d_small": lambda: conv2d_kernel_workload(32, 16, 8, 8, 32, 3, 3, stride=1, padding=1, dilation=1),
-    "elementwise_large": lambda: elementwise_kernel_workload(1024, 1024),
+    "elementwise_large": lambda: elementwise_kernel_workload(2048, 2048),
     "elementwise_medium": lambda: elementwise_kernel_workload(512, 512),
     "elementwise_small": lambda: elementwise_kernel_workload(256, 256),
-    "reduction_large": lambda: reduction_kernel_workload(1024, 1024),
+    "reduction_large": lambda: reduction_kernel_workload(2048, 2048),
     "reduction_medium": lambda: reduction_kernel_workload(512, 512),
     "reduction_small": lambda: reduction_kernel_workload(256, 256),
 }

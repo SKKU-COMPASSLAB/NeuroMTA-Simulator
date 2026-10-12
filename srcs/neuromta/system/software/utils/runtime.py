@@ -40,6 +40,7 @@ from neuromta.system.software.utils.scheduler import (
 )
 from neuromta.system.software.utils.runtime_utils import *
 from neuromta.system.software.utils import runtime_utils as _runtime_utils
+from neuromta.system.software.utils import runtime_attn_utils as _runtime_attn_utils
 
 
 __all__ = [
@@ -864,6 +865,7 @@ def _mesh_stage_ops(kernel: 'MeshKernel', stage: StagePlan) -> int:
     descriptor = kernel.kernel_stats.kernel_desc
     ofm = descriptor.output_tensors[0]
     total = 0
+    counted_scores = set()
     for task, source in zip(stage.group.tasks, stage.group.source_tasks):
         output_elements = _mesh_tile_elements(ofm, task.output.ref.coord)
         inputs = dict(task.inputs)
@@ -968,12 +970,16 @@ def _mesh_stage_ops(kernel: 'MeshKernel', stage: StagePlan) -> int:
             query_end = min(q.shape[2], query_start + ofm.tile_shape[2])
             output_width = min(ofm.shape[3], (coord[3] + 1) * ofm.tile_shape[3]) - coord[3] * ofm.tile_shape[3]
             causal = descriptor.get_required_kwargs("is_causal")
-            scores = 0
             for key_tile in {location.ref.coord[2] for location in inputs[1]}:
                 key_start = key_tile * k.tile_shape[2]
                 key_end = min(k.shape[2], key_start + k.tile_shape[2])
-                scores += sum(max(0, min(key_end, k.shape[2] - q.shape[2] + query + 1) - key_start) if causal else key_end - key_start for query in range(query_start, query_end))
-            total += scores * (2 * q.shape[3] + 2 * output_width + int(descriptor.get_required_kwargs("softmax_ops_per_score")))
+                scores = sum(max(0, min(key_end, k.shape[2] - q.shape[2] + query + 1) - key_start) if causal else key_end - key_start for query in range(query_start, query_end))
+                total += scores * 2 * output_width
+                score_key = (coord[:3], key_tile)
+                if (score_key not in counted_scores
+                        and kernel.sdpa_score_owners[score_key] == (stage.core_id, stage.group.index)):
+                    total += scores * (2 * q.shape[3] + int(descriptor.get_required_kwargs("softmax_ops_per_score")))
+                    counted_scores.add(score_key)
         else:
             raise ValueError(f"Unsupported mesh kernel type: {kernel.kernel_type}")
     return math.ceil(total)
@@ -1125,6 +1131,23 @@ class MeshKernel(ABC):
         stage_plans = schedule_core_stages(groups, transfers, scratch_plans, residency_plan)
         stage_plans = _mesh_plan_ld_reuse(stage_plans, scratch_plans, residency_plan)
         validate_materialization_plan(stage_plans, scratch_plans, residency_plan)
+        if self.kernel_type == MeshKernelType.SDPA:
+            # A score/softmax tile is shared by all output-channel tiles of
+            # the same query and key tile, even when they occupy later stages.
+            score_owners = {}
+            query_owners = {}
+            for core_id, core_stages in stage_plans.items():
+                for stage in core_stages:
+                    if stage.kind != "COMPUTE":
+                        continue
+                    for task in stage.group.tasks:
+                        query = task.output.ref.coord[:3]
+                        previous = query_owners.setdefault(query, core_id)
+                        if previous != core_id:
+                            raise ValueError("SDPA output channels for one query tile must share a core.")
+                        for location in dict(task.inputs)[1]:
+                            score_owners.setdefault((query, location.ref.coord[2]), (core_id, stage.group.index))
+            self.sdpa_score_owners = score_owners
         self.scratch_plans = scratch_plans
         self.residency_plan = residency_plan
         self.stage_plans = stage_plans
@@ -1249,7 +1272,7 @@ class MeshLinearKernel(MeshKernel):
     def __init__(self, device_rt_context: MeshAcceleratorRuntimeContext, workload: MeshDeviceCompiledWorkload, kernel_stats: MeshDeviceCompiledKernelStats):
         super().__init__(device_rt_context, workload, kernel_stats)
 
-        output_grid, input_grids, ops = create_linear_mapping_requistes(kernel_stats.kernel_desc)
+        output_grid, input_grids, ops = create_linear_mapping_requisites(kernel_stats.kernel_desc)
         self.mapping = create_mapping(kernel_stats.ccg_tile_mesh, output_grid, input_grids, ops)
         ifm_bank = next(iter(self.input_placements[0].tile_placement.values()))
         wgt_bank = next(iter(self.input_placements[1].tile_placement.values()))
@@ -1272,7 +1295,7 @@ class MeshConv2dKernel(MeshKernel):
     def __init__(self, device_rt_context: MeshAcceleratorRuntimeContext, workload: MeshDeviceCompiledWorkload, kernel_stats: MeshDeviceCompiledKernelStats):
         super().__init__(device_rt_context, workload, kernel_stats)
 
-        output_grid, input_grids, ops = create_conv2d_mapping_requistes(kernel_stats.kernel_desc)
+        output_grid, input_grids, ops = create_conv2d_mapping_requisites(kernel_stats.kernel_desc)
         self.mapping = create_mapping(kernel_stats.ccg_tile_mesh, output_grid, input_grids, ops)
 
 
@@ -1282,7 +1305,7 @@ class MeshElementwiseKernel(MeshKernel):
     def __init__(self, device_rt_context: MeshAcceleratorRuntimeContext, workload: MeshDeviceCompiledWorkload, kernel_stats: MeshDeviceCompiledKernelStats):
         super().__init__(device_rt_context, workload, kernel_stats)
 
-        output_grid, input_grids, ops = create_elementwise_mapping_requistes(kernel_stats.kernel_desc)
+        output_grid, input_grids, ops = create_elementwise_mapping_requisites(kernel_stats.kernel_desc)
         self.mapping = create_mapping(kernel_stats.ccg_tile_mesh, output_grid, input_grids, ops)
 
 
@@ -1292,7 +1315,7 @@ class MeshReductionKernel(MeshKernel):
     def __init__(self, device_rt_context: MeshAcceleratorRuntimeContext, workload: MeshDeviceCompiledWorkload, kernel_stats: MeshDeviceCompiledKernelStats):
         super().__init__(device_rt_context, workload, kernel_stats)
 
-        output_grid, input_grids, ops = create_reduction_mapping_requistes(kernel_stats.kernel_desc)
+        output_grid, input_grids, ops = create_reduction_mapping_requisites(kernel_stats.kernel_desc)
         self.mapping = create_mapping(kernel_stats.ccg_tile_mesh, output_grid, input_grids, ops)
 
 
@@ -1301,22 +1324,114 @@ class MeshSDPAKernel(MeshKernel):
 
     def __init__(self, device_rt_context: MeshAcceleratorRuntimeContext, workload: MeshDeviceCompiledWorkload, kernel_stats: MeshDeviceCompiledKernelStats):
         super().__init__(device_rt_context, workload, kernel_stats)
-        ofm = kernel_stats.kernel_desc.output_tensors[0]
-        self.scratch_bytes_per_output = {coord: 8 * min(ofm.tile_shape[2], ofm.shape[2] - coord[2] * ofm.tile_shape[2]) for coord in np.ndindex(*ofm.tile_grid_shape)}
-        output_grid, input_grids, ops = create_sdpa_mapping_requistes(kernel_stats.kernel_desc)
-        self.mapping = create_mapping(kernel_stats.ccg_tile_mesh, output_grid, input_grids, ops)
-        output_shape = ofm.tile_grid_shape
-        pair_count = (output_shape[3] + 1) // 2
-        if output_shape[3] >= 8 and output_shape[2] * pair_count <= kernel_stats.kernel_desc.get_required_kwargs("max_cores_per_head"):
-            output_pairs = [tuple((batch, head, query, dim) for dim in range(start, min(start + 2, output_shape[3]))) for batch, head, query in np.ndindex(*output_shape[:3]) for start in range(0, output_shape[3], 2)]
-            assignments = [[] for _ in self.core_ids]
-            for index, pair in enumerate(output_pairs):
-                assignments[index % len(assignments)].extend(pair)
-            max_tiles = max(map(len, assignments))
-            self.mapping.output_mapping = np.full((*self.core_mesh.shape, max_tiles, len(output_shape)), -1, dtype=np.int64)
-            for index, core_coords in enumerate(np.ndindex(*self.core_mesh.shape)):
-                for slot, coord in enumerate(assignments[index]):
-                    self.mapping.output_mapping[core_coords][slot] = coord
+
+        self.mapping = _runtime_attn_utils.create_sdpa_mapping(
+            kernel_stats.kernel_desc, self.core_mesh,
+            self.ld_slot_size, self.st_slot_size,
+        )
+        self.sdpa_operations = {core_id: [] for core_id in self.core_ids}
+        for operation in self.mapping.operations:
+            self.sdpa_operations[operation.core_id].append(operation)
+
+        # === DEPRECATED CODE START ===
+        # ofm = kernel_stats.kernel_desc.output_tensors[0]
+        # self.scratch_bytes_per_output = {coord: 8 * min(ofm.tile_shape[2], ofm.shape[2] - coord[2] * ofm.tile_shape[2]) for coord in np.ndindex(*ofm.tile_grid_shape)}
+        # output_grid, input_grids, ops = create_sdpa_mapping_requisites(kernel_stats.kernel_desc)
+        # self.mapping = create_mapping(kernel_stats.ccg_tile_mesh, output_grid, input_grids, ops)
+        # output_shape = ofm.tile_grid_shape
+        # if output_shape[3] > 1:
+        #     # All channel tiles of a query tile share a score/softmax state.
+        #     # Keep them on one core so reuse needs no cross-core broadcast.
+        #     assignments = [[] for _ in self.core_ids]
+        #     for index, query in enumerate(np.ndindex(*output_shape[:3])):
+        #         assignments[index % len(assignments)].extend(
+        #             (*query, dim) for dim in range(output_shape[3])
+        #         )
+        #     max_tiles = max(map(len, assignments))
+        #     self.mapping.output_mapping = np.full((*self.core_mesh.shape, max_tiles, len(output_shape)), -1, dtype=np.int64)
+        #     for index, core_coords in enumerate(np.ndindex(*self.core_mesh.shape)):
+        #         for slot, coord in enumerate(assignments[index]):
+        #             self.mapping.output_mapping[core_coords][slot] = coord
+        # === DEPRECATED CODE END ===
+
+    @staticmethod
+    @jit_prototype
+    def sdpa_core_kernel(core: CCGTile, kernel_obj: 'MeshSDPAKernel', operations: tuple[_runtime_attn_utils.SDPAOperation, ...]):
+        descriptor = kernel_obj.kernel_stats.kernel_desc
+        q, k = descriptor.input_tensors[:2]
+        q_length, kv_length, head_dim = q.shape[2], k.shape[2], q.shape[3]
+        causal = descriptor.get_required_kwargs("is_causal")
+        softmax_ops = descriptor.get_required_kwargs("softmax_ops_per_score")
+
+        for operation in operations:
+            _, _, q_block = operation.query_block
+            q_start = q_block * kernel_obj.mapping.q_chunk_size
+            q_end = min(q_length, q_start + kernel_obj.mapping.q_chunk_size)
+            q_rows = q_end - q_start
+
+            if operation.input_tiles:
+                dma_reads = {}
+                remote_reads = {}
+                for tensor_index, coord in operation.input_tiles:
+                    placement = kernel_obj.input_placements[tensor_index]
+                    bank = placement.tile_placement[coord]
+                    size = placement.tensor_desc.get_tile_size()
+                    if bank.mem_type == MeshMemoryType.DEVICE_MEMORY:
+                        dma_reads.setdefault(size, []).append(bank.addr)
+                    elif bank.owner_id != core.core_id:
+                        remote_reads[bank.owner_id] = remote_reads.get(bank.owner_id, 0) + size
+                for size, addresses in dma_reads.items():
+                    core.dma_read_memory_batch(addresses, size, sync=True)
+                if remote_reads:
+                    core.icnt_recv_data_batch(remote_reads, sync=True)
+
+            if operation.kind == "init":
+                core.compute(2 * q_rows)
+            elif operation.kind in ("score", "softmax_update", "accumulate"):
+                kv_start = operation.kv_block * kernel_obj.mapping.kv_chunk_size
+                kv_end = min(kv_length, kv_start + kernel_obj.mapping.kv_chunk_size)
+                if causal:
+                    past = kv_length - q_length
+                    scores = sum(max(0, min(kv_end, past + row + 1) - kv_start)
+                                 for row in range(q_start, q_end))
+                else:
+                    scores = q_rows * (kv_end - kv_start)
+                if operation.kind == "softmax_update":
+                    flop_count = scores * softmax_ops
+                else:
+                    flop_count = scores * 2 * head_dim
+                if flop_count:
+                    core.compute(flop_count)
+            elif operation.kind == "finalize":
+                core.compute(q_rows * head_dim)
+
+            if operation.output_tiles:
+                dma_writes = {}
+                remote_writes = {}
+                placement = kernel_obj.output_placements[0]
+                for coord in operation.output_tiles:
+                    bank = placement.tile_placement[coord]
+                    size = placement.tensor_desc.get_tile_size()
+                    if bank.mem_type == MeshMemoryType.DEVICE_MEMORY:
+                        dma_writes.setdefault(size, []).append(bank.addr)
+                    elif bank.owner_id != core.core_id:
+                        remote_writes[bank.owner_id] = remote_writes.get(bank.owner_id, 0) + size
+                if remote_writes:
+                    core.icnt_send_data_batch(remote_writes, sync=True)
+                for size, addresses in dma_writes.items():
+                    core.dma_write_memory_batch(addresses, size, sync=True)
+
+    @staticmethod
+    @jit_program_prototype
+    def sdpa_program(device: MeshAccelerator, kernel_obj: 'MeshSDPAKernel'):
+        for core_id in kernel_obj.core_ids:
+            operations = tuple(kernel_obj.sdpa_operations[core_id])
+            if operations:
+                core = device.get_ccg_tile(core_id)
+                MeshSDPAKernel.sdpa_core_kernel(core, kernel_obj, operations)
+
+    def get_programs(self) -> dict[str, Program]:
+        return {"EX": self.sdpa_program(self.device, self)}
 
 
 class MeshMemCopyKernel(MeshKernel):

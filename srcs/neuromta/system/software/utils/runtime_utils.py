@@ -13,11 +13,11 @@ __all__ = [
     "convert_2d_grid_to_nd",
     "convert_nd_grid_to_2d",
     "create_input_output_grids",
-    "create_linear_mapping_requistes",
-    "create_elementwise_mapping_requistes",
-    "create_conv2d_mapping_requistes",
-    "create_reduction_mapping_requistes",
-    "create_sdpa_mapping_requistes",
+    "create_linear_mapping_requisites",
+    "create_elementwise_mapping_requisites",
+    "create_conv2d_mapping_requisites",
+    "create_reduction_mapping_requisites",
+    # "create_sdpa_mapping_requisites",
     "TileRef",
     "CoreTask",
     "TileLocation",
@@ -204,7 +204,7 @@ def create_input_output_grids(kernel_desc: MeshKernelDescriptor) -> tuple[np.nda
     return output_grid, input_grids
 
 
-def create_linear_mapping_requistes(kernel_desc: MeshKernelDescriptor):
+def create_linear_mapping_requisites(kernel_desc: MeshKernelDescriptor):
     """
     Create the output grid, input grids, and operations for a linear kernel descriptor.
 
@@ -259,7 +259,7 @@ def create_linear_mapping_requistes(kernel_desc: MeshKernelDescriptor):
         ops[output_coord] = inputs
     return output_grid, input_grids, ops
 
-def create_elementwise_mapping_requistes(kernel_desc: MeshKernelDescriptor):
+def create_elementwise_mapping_requisites(kernel_desc: MeshKernelDescriptor):
     """
     Create the output grid, input grids, and operations for an elementwise kernel descriptor.
 
@@ -288,7 +288,7 @@ def create_elementwise_mapping_requistes(kernel_desc: MeshKernelDescriptor):
         ops[output_coord] = inputs
     return output_grid, input_grids, ops
 
-def create_conv2d_mapping_requistes(kernel_desc: MeshKernelDescriptor):
+def create_conv2d_mapping_requisites(kernel_desc: MeshKernelDescriptor):
     """
     Create the output grid, input grids, and operations for a conv2d kernel descriptor.
 
@@ -356,7 +356,7 @@ def create_conv2d_mapping_requistes(kernel_desc: MeshKernelDescriptor):
 
     return output_grid, input_grids, ops
 
-def create_reduction_mapping_requistes(kernel_desc: MeshKernelDescriptor):
+def create_reduction_mapping_requisites(kernel_desc: MeshKernelDescriptor):
     """
     Create the output grid, input grids, and operations for a reduction kernel descriptor.
 
@@ -383,43 +383,43 @@ def create_reduction_mapping_requistes(kernel_desc: MeshKernelDescriptor):
         ops[output_coord] = {0: input_tiles}
     return output_grid, input_grids, ops
 
-def create_sdpa_mapping_requistes(kernel_desc: MeshKernelDescriptor):
-    """
-    Create the output grid, input grids, and operations for a SDPA kernel descriptor.
+# def create_sdpa_mapping_requisites(kernel_desc: MeshKernelDescriptor):
+#     """
+#     Create the output grid, input grids, and operations for a SDPA kernel descriptor.
 
-    Args:
-        kernel_desc (MeshKernelDescriptor): The kernel descriptor containing input and output tensor descriptors.
+#     Args:
+#         kernel_desc (MeshKernelDescriptor): The kernel descriptor containing input and output tensor descriptors.
 
-    Returns:
-        tuple: A tuple containing the output grid, a dictionary of input grids, and a dictionary of operations.
-    """
+#     Returns:
+#         tuple: A tuple containing the output grid, a dictionary of input grids, and a dictionary of operations.
+#     """
 
-    if kernel_desc.kernel_type != MeshKernelType.SDPA or len(kernel_desc.input_tensors) not in (3, 4) or len(kernel_desc.output_tensors) != 1:
-        raise ValueError("Kernel descriptor must contain Q, K, V, optional mask, and one SDPA output.")
-    q, k, v = kernel_desc.input_tensors[:3]
-    ofm = kernel_desc.output_tensors[0]
-    mask = kernel_desc.input_tensors[3] if len(kernel_desc.input_tensors) == 4 else None
-    output_grid, input_grids = create_input_output_grids(kernel_desc)
-    head_group_size = q.shape[1] // k.shape[1]
-    past_length = k.shape[2] - q.shape[2]
-    ops = {}
-    for batch, query_head, query_tile, output_dim_tile in np.ndindex(*ofm.tile_grid_shape):
-        kv_head = query_head // head_group_size
-        query_tiles = [(batch, query_head, query_tile, dim_tile) for dim_tile in range(q.tile_grid_shape[3])]
-        query_end = min((query_tile + 1) * q.tile_shape[2], q.shape[2])
-        key_end = min(k.shape[2], past_length + query_end) if kernel_desc.get_required_kwargs("is_causal") else k.shape[2]
-        kv_tiles = range((key_end + k.tile_shape[2] - 1) // k.tile_shape[2])
-        key_tiles = [(batch, kv_head, kv_tile, dim_tile) for kv_tile in kv_tiles for dim_tile in range(k.tile_grid_shape[3])]
-        value_tiles = [(batch, kv_head, kv_tile, output_dim_tile) for kv_tile in kv_tiles]
-        inputs = {0: query_tiles, 1: key_tiles, 2: value_tiles}
-        if mask is not None:
-            mask_tiles = []
-            for kv_tile in kv_tiles:
-                score_coord = (batch, query_head, query_tile, kv_tile)[-len(mask.tile_grid_shape):]
-                mask_tiles.append(tuple(0 if dim == 1 else index for dim, index in zip(mask.tile_grid_shape, score_coord)))
-            inputs[3] = list(dict.fromkeys(mask_tiles))
-        ops[(batch, query_head, query_tile, output_dim_tile)] = inputs
-    return output_grid, input_grids, ops
+#     if kernel_desc.kernel_type != MeshKernelType.SDPA or len(kernel_desc.input_tensors) not in (3, 4) or len(kernel_desc.output_tensors) != 1:
+#         raise ValueError("Kernel descriptor must contain Q, K, V, optional mask, and one SDPA output.")
+#     q, k, v = kernel_desc.input_tensors[:3]
+#     ofm = kernel_desc.output_tensors[0]
+#     mask = kernel_desc.input_tensors[3] if len(kernel_desc.input_tensors) == 4 else None
+#     output_grid, input_grids = create_input_output_grids(kernel_desc)
+#     head_group_size = q.shape[1] // k.shape[1]
+#     past_length = k.shape[2] - q.shape[2]
+#     ops = {}
+#     for batch, query_head, query_tile, output_dim_tile in np.ndindex(*ofm.tile_grid_shape):
+#         kv_head = query_head // head_group_size
+#         query_tiles = [(batch, query_head, query_tile, dim_tile) for dim_tile in range(q.tile_grid_shape[3])]
+#         query_end = min((query_tile + 1) * q.tile_shape[2], q.shape[2])
+#         key_end = min(k.shape[2], past_length + query_end) if kernel_desc.get_required_kwargs("is_causal") else k.shape[2]
+#         kv_tiles = range((key_end + k.tile_shape[2] - 1) // k.tile_shape[2])
+#         key_tiles = [(batch, kv_head, kv_tile, dim_tile) for kv_tile in kv_tiles for dim_tile in range(k.tile_grid_shape[3])]
+#         value_tiles = [(batch, kv_head, kv_tile, output_dim_tile) for kv_tile in kv_tiles]
+#         inputs = {0: query_tiles, 1: key_tiles, 2: value_tiles}
+#         if mask is not None:
+#             mask_tiles = []
+#             for kv_tile in kv_tiles:
+#                 score_coord = (batch, query_head, query_tile, kv_tile)[-len(mask.tile_grid_shape):]
+#                 mask_tiles.append(tuple(0 if dim == 1 else index for dim, index in zip(mask.tile_grid_shape, score_coord)))
+#             inputs[3] = list(dict.fromkeys(mask_tiles))
+#         ops[(batch, query_head, query_tile, output_dim_tile)] = inputs
+#     return output_grid, input_grids, ops
 
 @dataclass(frozen=True)
 class TileRef:
@@ -966,7 +966,7 @@ if __name__ == "__main__":
     wgt = MeshTensorDescriptor((384, 32), (32, 32), torch.bfloat16)
     ofm = MeshTensorDescriptor((32, 384), (32, 32), torch.bfloat16)
     descriptor = MESH_KERNEL_LINEAR(ifm, wgt, ofm)
-    output_grid, input_grids, ops = create_linear_mapping_requistes(descriptor)
+    output_grid, input_grids, ops = create_linear_mapping_requisites(descriptor)
     mapping = create_mapping(core_mesh, output_grid, input_grids, ops)
 
     def place_tensor(tensor: MeshTensorDescriptor, local: bool, base_addr: int) -> MeshDeviceCompiledTensorStats:
@@ -1043,7 +1043,7 @@ if __name__ == "__main__":
 #     ofm = MeshTensorDescriptor(shape=(32, 1024), tile_shape=(32, 32), dtype=torch.bfloat16)
 
 #     kernel_desc = MESH_KERNEL_LINEAR(ifm=ifm, wgt=wgt, bias=bias, ofm=ofm)
-#     output_grid, input_grids, ops = create_linear_mapping_requistes(kernel_desc)
+#     output_grid, input_grids, ops = create_linear_mapping_requisites(kernel_desc)
 #     mapping = create_mapping(np.arange(4).reshape(2, 2), output_grid, input_grids, ops)
 
 #     for core in np.ndindex(*mapping.mesh_shape):
@@ -1078,7 +1078,7 @@ if __name__ == "__main__":
 #     ofm = MeshTensorDescriptor(shape=(1, 224, 224, 64), tile_shape=(32, 32), dtype=torch.bfloat16)
 
 #     kernel_desc = MESH_KERNEL_CONV2D(ifm=ifm, wgt=wgt, bias=bias, ofm=ofm, padding=1, stride=1, dilation=1)
-#     output_grid, input_grids, ops = create_conv2d_mapping_requistes(kernel_desc)
+#     output_grid, input_grids, ops = create_conv2d_mapping_requisites(kernel_desc)
 #     mapping = create_mapping(np.arange(4).reshape(2, 2), output_grid, input_grids, ops)
 
 #     print(f"OFM tiles: {ofm.get_n_tiles()}, core mesh: {mapping.mesh_shape}")
@@ -1112,7 +1112,7 @@ if __name__ == "__main__":
 #     ofm = MeshTensorDescriptor(shape=(1024, 1024), tile_shape=(32, 32), dtype=torch.bfloat16)
 
 #     kernel_desc = MESH_KERNEL_ELEMENTWISE(ifm, ofm)
-#     output_grid, input_grids, ops = create_elementwise_mapping_requistes(kernel_desc)
+#     output_grid, input_grids, ops = create_elementwise_mapping_requisites(kernel_desc)
 #     mapping = create_mapping(np.arange(4).reshape(2, 2), output_grid, input_grids, ops)
 
 #     print(f"OFM tiles: {ofm.get_n_tiles()}, core mesh: {mapping.mesh_shape}")
@@ -1144,7 +1144,7 @@ if __name__ == "__main__":
 #     ofm = MeshTensorDescriptor(shape=(256, 1), tile_shape=(32, 1), dtype=torch.bfloat16)
 
 #     kernel_desc = MESH_KERNEL_REDUCTION(ifm=ifm, ofm=ofm, ops_per_input_element=1)
-#     output_grid, input_grids, ops = create_reduction_mapping_requistes(kernel_desc)
+#     output_grid, input_grids, ops = create_reduction_mapping_requisites(kernel_desc)
 #     mapping = create_mapping(np.arange(4).reshape(2, 2), output_grid, input_grids, ops)
 
 #     print(f"OFM tiles: {ofm.get_n_tiles()}, core mesh: {mapping.mesh_shape}")
@@ -1178,7 +1178,7 @@ if __name__ == "__main__":
 #     o = MeshTensorDescriptor(shape=(1, 32, 32, 64), tile_shape=(32, 32), dtype=torch.bfloat16)
 
 #     kernel_desc = MESH_KERNEL_SDPA(q=q, k=k, v=v, ofm=o)
-#     output_grid, input_grids, ops = create_sdpa_mapping_requistes(kernel_desc)
+#     output_grid, input_grids, ops = create_sdpa_mapping_requisites(kernel_desc)
 #     mapping = create_mapping(np.arange(4).reshape(2, 2), output_grid, input_grids, ops)
 
 #     print(f"OFM tiles: {o.get_n_tiles()}, core mesh: {mapping.mesh_shape}")

@@ -5,7 +5,7 @@ import numpy as np
 from neuromta.system.software.utils.compiler import MeshDeviceCompiler
 from neuromta.system.software.utils.scheduler import MeshDeviceScheduler, MeshPlanCandidate, MeshSchedulingContext
 from neuromta.system.software.utils.descriptor import MeshKernelType, MeshMemoryType
-from neuromta.system.software.utils.runtime_utils import create_linear_mapping_requistes, create_conv2d_mapping_requistes, create_elementwise_mapping_requistes, create_reduction_mapping_requistes, create_sdpa_mapping_requistes
+from neuromta.system.software.utils.runtime_utils import create_linear_mapping_requisites, create_conv2d_mapping_requisites, create_elementwise_mapping_requisites, create_reduction_mapping_requisites, create_sdpa_mapping_requisites
 from neuromta.system.software.utils.runtime import MeshDeviceRuntime
 
 from ._common import MeshFCFSScheduler, MeshFRFCFSScheduler, MeshRoundRobinScheduler
@@ -219,7 +219,21 @@ class SpatialScheduler(MeshDeviceScheduler):
                             continue
 
                         core_count = first_placement.ccg_tile_mesh.size + second_placement.ccg_tile_mesh.size
-                        plans.append(MeshPlanCandidate(plan_id, (first_id, second_id), (first_state.workload_id, second_state.workload_id), makespan_cycles, sequential_cycles, core_count / runtime_context.device.get_ccg_tile_mesh().size, benefit, peak_dma_utilization, ((first_action, first_state, first_domain, first_placement), (second_action, second_state, second_domain, second_placement))))
+                        plans.append(MeshPlanCandidate(
+                            plan_id, 
+                            (first_id, second_id), 
+                            (first_state.workload_id, 
+                             second_state.workload_id), 
+                            makespan_cycles, 
+                            sequential_cycles, 
+                            core_count / runtime_context.device.get_ccg_tile_mesh().size, 
+                            benefit, 
+                            peak_dma_utilization, 
+                            (
+                                (first_action, first_state, first_domain, first_placement),         # first kernel action
+                                (second_action, second_state, second_domain, second_placement),     # second kernel action
+                            )
+                        ))
                         record("pair", "eligible", (first_id, second_id), (first_placement, second_placement), (first_cycles, second_cycles), sequential_cycles, makespan_cycles, benefit, peak_dma_utilization, plan_id)
                         plan_id += 1
 
@@ -383,7 +397,7 @@ class SpatialScheduler(MeshDeviceScheduler):
         kind = kernel_desc.kernel_type
         if kind == MeshKernelType.MEMCOPY:
             return self._estimate_memcopy_noc_cycles(runtime_context, kernel_desc, placement)
-        helpers = {MeshKernelType.LINEAR: create_linear_mapping_requistes, MeshKernelType.CONV2D: create_conv2d_mapping_requistes, MeshKernelType.ELEMENTWISE: create_elementwise_mapping_requistes, MeshKernelType.REDUCTION: create_reduction_mapping_requistes, MeshKernelType.SDPA: create_sdpa_mapping_requistes}
+        helpers = {MeshKernelType.LINEAR: create_linear_mapping_requisites, MeshKernelType.CONV2D: create_conv2d_mapping_requisites, MeshKernelType.ELEMENTWISE: create_elementwise_mapping_requisites, MeshKernelType.REDUCTION: create_reduction_mapping_requisites, MeshKernelType.SDPA: create_sdpa_mapping_requisites}
         if kind not in helpers:
             return 0
         cache_key = id(kernel_desc)

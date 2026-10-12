@@ -6,7 +6,7 @@ import torch
 from neuromta.framework.logger import *
 from neuromta.system.hardware import *
 from neuromta.system.software.api import *
-from neuromta.system.software.implementation.calm import CALMCompiler, CALMRuntime, CALMScheduler
+from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime, SequentialScheduler
 
 
 def main():
@@ -21,9 +21,9 @@ def main():
         device=device, 
         default_tile_shape=(32, 32), 
         default_dtype=torch.bfloat16, 
-        runtime=CALMRuntime(device, scheduler=CALMScheduler(), enable_debug_log=False)
+        runtime=SequentialRuntime(device, scheduler=SequentialScheduler(), enable_debug_log=False)
     ) as context:    
-        with context.new_compiler_context(CALMCompiler(manual_ccg_tile_mesh=manual_ccg_tile_mesh), arrival_cycle=0, workload_id="relu"):
+        with context.new_compiler_context(SequentialCompiler(manual_ccg_tile_mesh=manual_ccg_tile_mesh), arrival_cycle=0, workload_id="relu"):
             mesh_relu(mesh_tensor(128, 128))
         
         runtime = context.runtime
