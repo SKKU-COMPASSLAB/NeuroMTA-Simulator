@@ -4,8 +4,7 @@ import torch
 from neuromta.framework.logger import *
 from neuromta.system.hardware import *
 from neuromta.system.software.api import *
-from neuromta.system.software.implementation.spatial import SpatialCompiler, SpatialRuntime
-from neuromta.system.software.utils.scheduler import MeshRoundRobinScheduler
+from neuromta.system.software.implementation.spatial import SpatialCompiler, SpatialRuntime, MeshRoundRobinScheduler
 
 
 def main():

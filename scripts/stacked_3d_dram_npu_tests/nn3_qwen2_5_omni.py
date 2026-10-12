@@ -5,9 +5,8 @@ import torch
 
 from neuromta.framework.logger import *
 from neuromta.system.hardware import *
-from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime
+from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime, SequentialScheduler
 from neuromta.system.software.nn.qwen2_5_omni import *
-from neuromta.system.software.utils.scheduler import MeshRoundRobinScheduler
 
 
 def main():
@@ -22,7 +21,7 @@ def main():
         device=device, 
         default_tile_shape=(128, 128), 
         default_dtype=torch.bfloat16, 
-        runtime=SequentialRuntime(device, scheduler=MeshRoundRobinScheduler(), enable_debug_log=False)
+        runtime=SequentialRuntime(device, scheduler=SequentialScheduler(), enable_debug_log=False)
     ) as context:
         with context.new_compiler_context(SequentialCompiler(), arrival_cycle=0, workload_id="Qwen2.5-Omni.encode_prefill_decode"):
             model = Qwen2_5_Omni(hidden_dim=1024, intermediate_dim=128, num_layers=1, num_heads=2, num_kv_heads=1, vocab_size=128, max_seq_len=8, vision_hidden_dim=64, vision_intermediate_dim=128, vision_num_layers=2, vision_num_heads=2, vision_patch_size=16, vision_temporal_patch_size=2, vision_spatial_merge_size=2, vision_window_size=16, vision_full_attention_layers=(1,), vision_max_tokens=8)

@@ -3,9 +3,8 @@ import time
 import torch
 
 from neuromta.system.hardware import *
-from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime
+from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime, SequentialScheduler
 from neuromta.system.software.api import *
-from neuromta.system.software.utils.scheduler import MeshRoundRobinScheduler
 
 
 def main():
@@ -16,7 +15,7 @@ def main():
         device=device,
         default_tile_shape=(128, 128),
         default_dtype=torch.bfloat16,
-        runtime=SequentialRuntime(device, scheduler=MeshRoundRobinScheduler(), enable_debug_log=False),
+        runtime=SequentialRuntime(device, scheduler=SequentialScheduler(), enable_debug_log=False),
     ) as context:
         with context.new_compiler_context(SequentialCompiler(), arrival_cycle=0, workload_id="Linear.forward") as compiler:
             ifm = mesh_tensor(4096, 4096).as_intermediate()

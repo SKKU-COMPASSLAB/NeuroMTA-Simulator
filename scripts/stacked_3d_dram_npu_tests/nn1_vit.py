@@ -5,9 +5,8 @@ import torch
 
 from neuromta.framework.logger import *
 from neuromta.system.hardware import *
-from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime
-from neuromta.system.software.nn.vit import *
-from neuromta.system.software.utils.scheduler import MeshRoundRobinScheduler
+from neuromta.system.software.implementation.sequential import SequentialCompiler, SequentialRuntime, SequentialScheduler
+from neuromta.system.software.nn.vit import * 
 
 
 def main():
@@ -20,7 +19,7 @@ def main():
         device=device,
         default_tile_shape=(128, 128),
         default_dtype=torch.bfloat16,
-        runtime=SequentialRuntime(device, scheduler=MeshRoundRobinScheduler(), enable_debug_log=False),
+        runtime=SequentialRuntime(device, scheduler=SequentialScheduler(), enable_debug_log=False),
     ) as context:
         with context.new_compiler_context(SequentialCompiler(), arrival_cycle=0, workload_id="ViT.forward") as compiler:
             model = ViT(image_size=64, patch_size=32, num_layers=2, num_heads=4, hidden_dim=1024, mlp_dim=256, num_classes=10)
